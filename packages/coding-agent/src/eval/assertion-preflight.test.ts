@@ -9,6 +9,10 @@ import {
 	streamedAssertionPreflightCacheStats,
 } from "./assertion-preflight";
 
+import { checkPythonKernelAvailability } from "./py/kernel";
+
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -28,9 +32,9 @@ async function makeFixture(content: string): Promise<{ directory: string; file: 
 
 function pythonCell(file: string): string {
 	return [
-		"from pathlib import Path",
-		`p = Path(${JSON.stringify(file)})`,
-		"text = p.read_text()",
+		"import proto_harness as harness",
+		`p = ${JSON.stringify(file)}`,
+		"text = harness.fs.read_text(p)",
 		'old = "needle"',
 		'new = "replacement"',
 		"assert text.count(old) == 1",
@@ -38,7 +42,7 @@ function pythonCell(file: string): string {
 }
 
 function heredoc(code: string): string {
-	return `python3 - <<'PY'\n${code}\nPY\n`;
+	return `'${python.pythonPath}' - <<'PY'\n${code}\nPY\n`;
 }
 
 test("finds the first failing Python count while JSON input is still streaming", async () => {
@@ -99,7 +103,15 @@ test("never resolves a relative literal against the evaluator process cwd", asyn
 
 test("supports a source-local Path variable and explicit builtins.open, but not inherited names", async () => {
 	const { directory, file } = await makeFixture("needle\n");
-	const passing = await preflightKernelSource(pythonCell(file), { cwd: directory });
+	const passing = await preflightKernelSource(
+		[
+			"from pathlib import Path",
+			`p = Path(${JSON.stringify(file)})`,
+			"text = p.read_text()",
+			'assert text.count("needle") == 1',
+		].join("\n"),
+		{ cwd: directory },
+	);
 	expect(passing).toBeUndefined();
 
 	const failingWithOpen = [
@@ -118,6 +130,41 @@ test("supports a source-local Path variable and explicit builtins.open, but not 
 		"assert text.count(old) == 1",
 	].join("\n");
 	expect(await preflightKernelSource(inherited, { cwd: directory })).toBeUndefined();
+});
+
+test("explicit harness filesystem reads report failed assertions with current file provenance", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const source = [
+		"import proto_harness as context",
+		`text = context.fs.read_text(${JSON.stringify(file)}, encoding="utf-8")`,
+		'assert text.count("needle") == 1',
+	].join("\n");
+	const failure = await preflightKernelSource(source, { cwd: directory });
+	expect(failure?.count).toBe(0);
+	expect(failure?.path).toBe(file);
+	expect(failure?.provenance?.map(observation => observation.path)).toEqual([file]);
+	expect(
+		await preflightKernelSource(source.replace('encoding="utf-8"', 'encoding="latin-1"'), { cwd: directory }),
+	).toBeUndefined();
+	const unaliased = source
+		.replace("import proto_harness as context", "import proto_harness")
+		.replace("context.fs", "proto_harness.fs");
+	expect((await preflightKernelSource(unaliased, { cwd: directory }))?.count).toBe(0);
+});
+
+test("foreign, inherited, rebound or copied harness aliases cannot authorize a preflight file read", async () => {
+	const { directory, file } = await makeFixture("haystack\n");
+	const read = `text = context.fs.read_text(${JSON.stringify(file)})\nassert text.count("needle") == 1`;
+	for (const prefix of [
+		"import foreign_package as context",
+		"",
+		'import proto_harness as context\ncontext = "foreign"',
+		'import proto_harness as context\ncontext.fs = "foreign"',
+		"import proto_harness as original\ncontext = original",
+	]) {
+		expect(await preflightKernelSource(`${prefix}\n${read}`, { cwd: directory })).toBeUndefined();
+	}
+	expect(await fs.readFile(file, "utf8")).toBe("haystack\n");
 });
 
 test("fails open for unsafe dependencies, control flow, dynamic paths, and writes", async () => {

@@ -1,14 +1,28 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{error, variables};
 
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PathCache {
-	cache: std::collections::HashMap<String, PathBuf>,
+	cache:          std::collections::HashMap<String, PathBuf>,
+	search_context: Option<(String, PathBuf)>,
 }
 
 impl PathCache {
+	/// Cached commands belong to the effective PATH and shell working directory.
+	pub fn set_search_context(&mut self, path: &str, cwd: &Path) {
+		if self
+			.search_context
+			.as_ref()
+			.is_some_and(|(prior_path, prior_cwd)| prior_path == path && prior_cwd == cwd)
+		{
+			return;
+		}
+		self.cache.clear();
+		self.search_context = Some((path.to_owned(), cwd.to_owned()));
+	}
+
 	pub fn reset(&mut self) {
 		self.cache.clear();
 	}

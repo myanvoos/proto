@@ -1,8 +1,5 @@
 /**
- * Shared filesystem-tracking policy for the eval kernels. The JS tracker
- * (eval/js/shared/fs-tracker.ts) uses these lists; the Python prelude
- * (eval/py/prelude.py) keeps a cross-language mirror. Update both in the same
- * change.
+ * Filesystem-tracking exclusions for JavaScript kernel cells.
  */
 
 // Cache/build noise by directory-name component.

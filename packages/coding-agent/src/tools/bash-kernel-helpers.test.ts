@@ -2,26 +2,44 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+
+import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import type { ToolSession } from ".";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+import { ReadTool } from "./read";
+
+const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+if (!availability.ok || !availability.pythonPath) throw new Error(availability.reason ?? "Python unavailable");
+const PYTHON = JSON.stringify(availability.pythonPath);
+const TEMP_ROOT = await fs.realpath(os.tmpdir());
 
 const KERNEL_OWNER = `eval-helpers-test:${process.pid}`;
 
 function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 	const settings = new Map<string, unknown>();
-	return {
+	const tools = new Map<string, Tool>();
+	const session = {
 		cwd,
 		skills,
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
-		getEvalSessionId: () => "eval-helpers-test",
+		getSessionId: () => KERNEL_OWNER,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
+		getEvalSessionId: () => `helpers-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
 	} as unknown as ToolSession;
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
 }
 
 function cellCommand(code: string): string {
-	return `python <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
+	return `${PYTHON} -m proto_harness.kernel main --interpreter ${PYTHON} <<'__PROTO_CELL__'\nimport proto_harness as harness\n${code}\n__PROTO_CELL__`;
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -37,28 +55,31 @@ async function runCell(dir: string, code: string, session = stubSession(dir)) {
 		timeout: 60,
 	});
 	return {
-		status: result.isError ? "error" : "complete",
+		status: result.isError || result.details?.execution?.exitCode !== 0 ? "error" : "complete",
 		output: textOf(result),
 		statusEvents: result.details?.statusEvents ?? [],
 	};
 }
 
 async function makeDir(): Promise<string> {
-	return await fs.mkdtemp(path.join(os.tmpdir(), "eval-helpers-"));
+	return await fs.mkdtemp(path.join(TEMP_ROOT, "eval-helpers-"));
 }
+
+retainFsObservationLedger(KERNEL_OWNER, KERNEL_OWNER);
 
 afterAll(async () => {
 	await disposeKernelSessionsByOwner(KERNEL_OWNER);
+	releaseFsObservationLedger(KERNEL_OWNER, KERNEL_OWNER);
 });
 
-test("a Path.write_text mutation emits a write event with a hunk diff", async () => {
+test("a harness.fs.write_text mutation emits a write event with a hunk diff", async () => {
 	const dir = await makeDir();
 	try {
 		const target = path.join(dir, "mutation.txt");
 		await Bun.write(target, "alpha\nbeta\ngamma\n");
 		const cell = await runCell(
 			dir,
-			`p = Path(${JSON.stringify(target)})\ntext = p.read_text()\np.write_text(text.replace("beta", "BETA-EDITED"))`,
+			`p = ${JSON.stringify(target)}\ntext = harness.fs.read_text(p)\nharness.fs.write_text(p, text.replace("beta", "BETA-EDITED"))`,
 		);
 		expect(cell.status).toBe("complete");
 		expect(await Bun.file(target).text()).toBe("alpha\nBETA-EDITED\ngamma\n");
@@ -71,27 +92,27 @@ test("a Path.write_text mutation emits a write event with a hunk diff", async ()
 	}
 });
 
-test("the stale-write guard aborts a raw write after an external mutation; re-reading re-arms", async () => {
+test("the stale-write guard aborts a guarded write after an external mutation; re-reading re-arms", async () => {
 	const dir = await makeDir();
 	try {
 		const target = path.join(dir, "stale.txt");
 		await Bun.write(target, "original content\n");
-		const readCell = await runCell(dir, `text = Path(${JSON.stringify(target)}).read_text()\nprint(len(text))`);
+		const readCell = await runCell(dir, `text = harness.fs.read_text(${JSON.stringify(target)})\nprint(len(text))`);
 		expect(readCell.status).toBe("complete");
 
 		await Bun.write(target, "externally rewritten while the kernel held the old text\n");
 
-		const clobber = await runCell(dir, `open(${JSON.stringify(target)}, "w").write(text + "kernel-edit\\n")`);
+		const clobber = await runCell(dir, `harness.fs.write_text(${JSON.stringify(target)}, text + "kernel-edit\\n")`);
 		expect(clobber.status).toBe("error");
 		expect(clobber.output).toContain("StaleWriteError");
-		expect(clobber.output).toContain("changed on disk");
+		expect(clobber.output).toContain("changed since its last read");
 		expect(await Bun.file(target).text()).toBe("externally rewritten while the kernel held the old text\n");
 
-		// Any read re-arms the guard to the file's current state, so the same
+		// An explicit harness read re-arms the guard to the file's current state, so the same
 		// mutation redone after a fresh read lands.
 		const rearmed = await runCell(
 			dir,
-			`text = Path(${JSON.stringify(target)}).read_text()\nopen(${JSON.stringify(target)}, "w").write(text + "kernel-edit\\n")`,
+			`text = harness.fs.read_text(${JSON.stringify(target)})\nharness.fs.write_text(${JSON.stringify(target)}, text + "kernel-edit\\n")`,
 		);
 		expect(rearmed.status).toBe("complete");
 		expect(await Bun.file(target).text()).toBe(
@@ -102,20 +123,20 @@ test("the stale-write guard aborts a raw write after an external mutation; re-re
 	}
 });
 
-test("a raw write-mode open raises StaleWriteError before truncating an armed path", async () => {
+test("an atomic write raises StaleWriteError before truncating an armed path", async () => {
 	const dir = await makeDir();
 	try {
 		const target = path.join(dir, "plain-read.txt");
 		await Bun.write(target, "seen by kernel\n");
-		const readCell = await runCell(dir, `src = open(${JSON.stringify(target)}).read()\nprint(len(src))`);
+		const readCell = await runCell(dir, `src = harness.fs.read_text(${JSON.stringify(target)})\nprint(len(src))`);
 		expect(readCell.status).toBe("complete");
 
 		await Bun.write(target, "seen by kernel\nplus an external line the kernel never read\n");
 
-		const cell = await runCell(dir, `open(${JSON.stringify(target)}, "w").write("clobbered\\n")`);
+		const cell = await runCell(dir, `harness.fs.write_text(${JSON.stringify(target)}, "clobbered\\n")`);
 		expect(cell.status).toBe("error");
 		expect(cell.output).toContain("StaleWriteError");
-		// The guard raised out of open() itself — nothing was truncated.
+		// The atomic helper refuses the edit before replacing any content.
 		expect(await Bun.file(target).text()).toBe("seen by kernel\nplus an external line the kernel never read\n");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -130,10 +151,10 @@ test("the kernel's own writes never trip the guard; untracked new files are unaf
 			dir,
 			[
 				`p = ${JSON.stringify(target)}`,
-				'open(p, "w").write("v1\\n")',
-				"text = Path(p).read_text()",
-				'open(p, "w").write(text + "v2\\n")',
-				'open(p, "w").write("v3\\n")',
+				'harness.fs.write_text(p, "v1\\n")',
+				"text = harness.fs.read_text(p)",
+				'harness.fs.write_text(p, text + "v2\\n")',
+				'harness.fs.write_text(p, "v3\\n")',
 				'print("all-writes-ok")',
 			].join("\n"),
 		);
@@ -161,9 +182,7 @@ test("Python raw file APIs consume shell-resolved skill paths", async () => {
 			},
 		]);
 		const result = await new BashTool(session).execute("skill-path-handoff", {
-			command: cellCommand(
-				'print(Path(os.environ["SKILL_DIR"]).name)\nprint(Path(os.environ["SKILL_FILE"]).read_text())',
-			),
+			command: `${PYTHON} <<'__PROTO_CELL__'\nimport os\nfrom pathlib import Path\nprint(Path(os.environ["SKILL_DIR"]).name)\nprint(Path(os.environ["SKILL_FILE"]).read_text())\n__PROTO_CELL__`,
 			env: { SKILL_DIR: "skill://example", SKILL_FILE: "skill://example/notes.txt" },
 		});
 		expect(result.isError, textOf(result)).not.toBe(true);
@@ -174,12 +193,12 @@ test("Python raw file APIs consume shell-resolved skill paths", async () => {
 	}
 });
 
-test("symbols(code=) outlines an in-memory string per language", async () => {
+test("harness.symbols(code=) outlines an in-memory string per language", async () => {
 	const dir = await makeDir();
 	try {
 		const py = await runCell(
 			dir,
-			'print(symbols(code="def greet(name):\\n    return name\\n\\nclass Widget:\\n    pass\\n", lang="python"))',
+			'print(harness.symbols(code="def greet(name):\\n    return name\\n\\nclass Widget:\\n    pass\\n", lang="python"))',
 		);
 		expect(py.status).toBe("complete");
 		expect(py.output).toContain("def greet(name)");
@@ -187,12 +206,12 @@ test("symbols(code=) outlines an in-memory string per language", async () => {
 
 		const ts = await runCell(
 			dir,
-			'print(symbols(code="export function shout(x: string): string {\\n  return x.toUpperCase();\\n}\\n", lang="ts"))',
+			'print(harness.symbols(code="export function shout(x: string): string {\\n  return x.toUpperCase();\\n}\\n", lang="ts"))',
 		);
 		expect(ts.status).toBe("complete");
 		expect(ts.output).toContain("function shout");
 
-		const both = await runCell(dir, 'symbols("x.py", code="pass")');
+		const both = await runCell(dir, 'harness.symbols("x.py", code="pass")');
 		expect(both.status).toBe("error");
 		expect(both.output).toContain("exactly one of");
 	} finally {
@@ -200,7 +219,7 @@ test("symbols(code=) outlines an in-memory string per language", async () => {
 	}
 });
 
-test("symbols(path) equals symbols(code=) for the same content", async () => {
+test("harness.symbols(path) equals harness.symbols(code=) for the same content", async () => {
 	const dir = await makeDir();
 	try {
 		const target = path.join(dir, "sample.py");
@@ -209,8 +228,8 @@ test("symbols(path) equals symbols(code=) for the same content", async () => {
 		const cell = await runCell(
 			dir,
 			[
-				`by_path = symbols(${JSON.stringify(target)})`,
-				`by_code = symbols(code=${JSON.stringify(source)}, lang="python")`,
+				`by_path = harness.symbols(${JSON.stringify(target)})`,
+				`by_code = harness.symbols(code=${JSON.stringify(source)}, lang="python")`,
 				'print("MATCH" if by_path == by_code else f"DIFFER:\\n{by_path}\\n---\\n{by_code}")',
 			].join("\n"),
 		);

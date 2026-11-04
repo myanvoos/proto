@@ -1,4 +1,9 @@
-Preloaded globals, in Python notation{{#if py}}; `help(fn)` shows details. Python helpers are synchronous; options are kwargs{{/if}}.
+{{#if py}}Python imports `proto_harness as harness`; all names below require the `harness.` prefix. Helpers are synchronous with keyword options. No implicit globals.
+
+- `harness.store` is a session-owned mapping for rich Python values; concurrent commits reject stale revisions.
+- `harness.kernel(name, interpreter=None, cwd=None, target=None)` exposes `.run(code)`, `.exec(file)`, `.status()`, `.stop()`, `.restart()`.
+- `harness.fs.read_text(path)`, `.read_bytes(path)`, `.replace(path, old, new, count=1)`, `.write_text(path, text)` and `.write_bytes(path, data)` use host tool admission, atomic edits and cross-process stale-read checks.
+{{else}}Preloaded JavaScript globals, described below in Python-style notation.{{/if}}
 {{#if js}}JS cells: same helpers in camelCase, `await`ed, options in ONE trailing object — Renamed options: `timeout` (s) → `timeoutMs`, `cancel` → `signal` (thunks receive an `AbortSignal`), `on_result` → `onResult`; `budget.total` → `await budget.total()`.
 {{/if}}
 
@@ -33,8 +38,6 @@ budget.total (None = no ceiling); budget.spent(); budget.remaining()    ceiling 
 ### State, history, artifacts
 
 ```
-defs() → {name: cell}        kernel_state(limit=200) → {generation, cwd, variables, tasks}
-save_state(path, names); load_state(path, collision="reject"|"overwrite")
 executions(id=None, limit=20) → {records, evicted}
 publish_artifact(value, kind="json"|"text"|"binary", path=None) → ref {uri: "artifact://N", mimeType, bytes, sha256, …}
 read_artifact(ref, offset=0, length=None, encoding="utf8"|"base64"|"json") → {data, offset, bytes, eof}
@@ -42,10 +45,13 @@ display(value)    images (PIL, matplotlib), DataFrames, JSON render in the TUI; 
 env(key=None, value=None) → str | None | dict
 ```
 
-- `save_state`/`load_state` move named plain values (JSON-like data, bytes, artifact refs) across lanes, languages, and restarts — not objects, handles, or closures. Python bytes ↔ JS `Buffer`; ints beyond ±2^53−1 load only in Python. JS overwrite restores mutable live bindings; `const` and imports stay read-only (the whole restore is rejected).
+{{#if py}}- Inside an explicit warm Python kernel only: `harness.defs()` reports binding cells; `harness.kernel_state(limit=200)` reports generation, variables and tasks; `harness.retain_task(task)` retains work beyond its cell. Live resources prevent safe snapshots. Fresh processes use `harness.kernel(name).status()` for lifecycle metadata.
+- Python persistence uses `harness.store` or automatic supported-graph snapshots of named kernels. No manual selected-data save/load adapter exists.
+{{/if}}{{#if js}}- JavaScript `defs()` / `kernelState()` inspect the current kernel. `saveState(path, names)` / `loadState(path, {collision:"reject"|"overwrite"})` remain a data-only file codec for named plain values, bytes and artifact references. They do not clone arbitrary objects/resources. Overwrite restores mutable live bindings; `const` and imports reject the whole restore before mutation.
+{{/if}}
 - `executions`: recent bash calls with status and captured streams; post-process earlier output without re-running. Capture is bounded: check `evicted` and each stream's `truncated`.
 - `read_artifact` reads only artifacts this kernel published. Bash/tool output artifacts → `tool.read({"path": "artifact://N"})`.
-- Remote (SSH/container) kernels: file APIs address the target; tools, bash-resolved URI paths, and artifact `path` address this host. Host paths are not remote filesystem paths. Move target bytes with `publish_artifact`.
+- Remote kernels: ordinary Python `open`/`Path` and JavaScript file APIs address the target. Python `harness.fs`, tools and artifact paths address this host under session policy. Host paths are not remote paths. Transfer target bytes through the artifact API; NEVER forward local capability tokens to a target.
 
 ### Rare: live tool events, delegation
 

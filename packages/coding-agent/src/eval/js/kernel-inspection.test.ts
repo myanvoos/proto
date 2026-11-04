@@ -16,7 +16,7 @@ interface State {
 	tasks: { id: string; kind: string; state: string; cell: number }[];
 }
 
-test("JavaScript inspection avoids getters and proxies, bounds previews, and reflects process restart", async () => {
+test("JavaScript inspection avoids getters and proxies, bounds previews, and requires reset after a dirty crash", async () => {
 	using tempDir = TempDir.createSync("@js-inspection-");
 	const cwd = tempDir.path();
 	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
@@ -29,7 +29,7 @@ test("JavaScript inspection avoids getters and proxies, bounds previews, and ref
 	};
 	const ownerId = `inspection:${crypto.randomUUID()}`;
 	const events: JsStatusEvent[] = [];
-	const run = async (code: string) => {
+	const run = async (code: string, reset = false) => {
 		let output = "";
 		await executeInVmContext({
 			runtime: "bun",
@@ -40,6 +40,7 @@ test("JavaScript inspection avoids getters and proxies, bounds previews, and ref
 			session,
 			code,
 			filename: "inspection.js",
+			reset,
 			runState: {
 				onText: chunk => {
 					output += chunk;
@@ -94,7 +95,8 @@ var probe_cell = kernelState().executionCount;`);
 		await run("delete globalThis.probe_value; delete globalThis.probe_getter;");
 		expect((await run('Object.hasOwn(defs(), "probe_value")')).value).toBe("false");
 		await expect(run('process.kill(process.pid, "SIGKILL")')).rejects.toThrow("completion is uncertain");
-		const restarted = JSON.parse(String((await run("JSON.stringify(kernelState())")).value)) as State;
+		await expect(run("JSON.stringify(kernelState())")).rejects.toThrow("refusing an older or fresh namespace");
+		const restarted = JSON.parse(String((await run("JSON.stringify(kernelState())", true)).value)) as State;
 		expect(restarted.generation).not.toBe(state.generation);
 		expect(restarted.variables.some(v => v.name === "probe_large")).toBe(false);
 		expect(events.filter(event => event.op === "kernel-state").map(event => event.generation)).toContain(

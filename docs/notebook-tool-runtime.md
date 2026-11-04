@@ -1,6 +1,6 @@
 # Notebook file runtime internals
 
-This document describes current `.ipynb` handling in `coding-agent` and its relationship to the kernel-backed Python runtime.
+This document describes current `.ipynb` handling in `coding-agent` and its relationship to native Python execution and optional explicit warm kernels. The Python execution overhaul is **unreleased**; notebook file conversion/editing is unchanged.
 
 The critical distinction: **notebook support is file conversion/editing, not notebook execution**. `.ipynb` files are exposed as editable cell-marked text through `read` and the edit pipeline; no notebook-specific tool starts or talks to a Python kernel.
 
@@ -9,7 +9,7 @@ The critical distinction: **notebook support is file conversion/editing, not not
 - [`src/edit/notebook.ts`](../packages/coding-agent/src/edit/notebook.ts)
 - [`src/edit/read-file.ts`](../packages/coding-agent/src/edit/read-file.ts)
 - [`src/tools/read.ts`](../packages/coding-agent/src/tools/read.ts)
-- [`src/eval/shell-bridge.ts`](../packages/coding-agent/src/eval/shell-bridge.ts) — Bash kernel-cell bridge.
+- [`src/eval/py/harness-bridge.ts`](../packages/coding-agent/src/eval/py/harness-bridge.ts) — Authenticated explicit Python host integration.
 - [`src/eval/py/executor.ts`](../packages/coding-agent/src/eval/py/executor.ts)
 - [`src/eval/py/kernel.ts`](../packages/coding-agent/src/eval/py/kernel.ts)
 - [`src/session/streaming-output.ts`](../packages/coding-agent/src/session/streaming-output.ts)
@@ -37,11 +37,11 @@ No kernel lifecycle exists in this path:
 - no rich display capture
 - no output artifact pipeline from execution
 
-## Bash kernel-cell execution path (`src/eval/shell-bridge.ts` + `src/eval/py/*`)
+## Python execution path (separate from notebook editing)
 
-When the agent needs to run cell-style Python code with persistent state and rich displays, that goes through a supported **`bash`** invocation such as `python <<'PY' ... PY` or bare `python -c '...'`, not through notebook file handling. The Bash command is the model-facing execution surface; the Python subprocess and kernel remain internal runtime machinery.
+A Bash invocation such as `python <<'PY' ... PY`, `python -c '...'`, or `python script.py` runs an ordinary **fresh Python process**. It does not implicitly submit a cell to a persistent kernel. `import proto_harness as harness` explicitly accesses host tools, safe filesystem operations, rich displays, artifacts and model/agent APIs; `harness.store` persists session-owned rich graph values across fresh invocations.
 
-That path is where Python subprocess lifecycle, `%reset` behavior, cancellation, chunk streaming, rich displays, and output artifact truncation live. See [Bash tool runtime](bash-tool-runtime.md#kernel-cell-reference) for the cross-language cell API and enclosing command timeout semantics.
+For a warm namespace, use `harness.kernel("notebook").run(code)` / `.exec(file)` or `python -m proto_harness.kernel notebook -c '...'`. The warm namespace must also import the library explicitly; there are no injected helper globals or IPython magic/reset contract. None of these execution surfaces reads/writes notebook outputs or execution counts automatically. See [Python APIs](./python-repl.md) and [explicit named kernels](./bash-tool-runtime.md#explicit-named-python-kernels).
 
 ## 2) Notebook cell handling semantics
 
@@ -81,48 +81,23 @@ Hard failures are thrown for:
 
 These surface through notebook-aware callers such as `read` and the edit pipeline as normal tool errors. The standalone `write` path does not parse notebook JSON.
 
-## 3) Kernel session semantics (where they actually exist)
+## 3) Explicit warm namespace semantics
 
-Kernel semantics are implemented in `executePython` / `PythonKernel` and apply to Python cells routed through the Bash kernel bridge.
+Ordinary Python commands and the fresh `executePython` API do not retain globals. There is no `python.kernelMode` session/per-call switch. Persistence is an explicit product choice:
 
-## Modes
+- `harness.store` commits one session-owned rich mapping graph with revision CAS. Assignment/deletion commits; nested in-place mutations need `commit()` or a transaction batch. Stale concurrent writers fail without overwrite/retry.
+- `harness.kernel(name, interpreter=None, cwd=None, target=None)` selects an optional owner-scoped warm namespace. Its `run(code)` and `exec(file)` execute in order; native persistent imports remain cached until deliberately reloaded/restarted.
+- `status()` reports the actual environment/lifecycle/residency. `stop()` and `restart()` intentionally discard that namespace; they do not change notebook files or other language runtimes. There is no `%reset` or prelude reinjection API.
+- Warm namespaces automatically capture the whole supported Python graph at exact durable continuity boundaries, including aliases, cycles, functions, closures, classes and module metadata. Unsupported live resources refuse capture before destructive transitions. Durable parking/host restart restores exact compatible manifests, not a recent/older/fresh approximation.
+- Errored/interrupted cells are **not replayed automatically**. Definitions, mutations and external effects completed before failure may remain; inspect them before retrying. Process loss after an uncaptured mutation refuses silent state substitution.
 
-`PythonKernelMode`:
+See [session state boundaries](./session-operations.md#declared-state-at-temporal-boundaries) and [residency policy](./interactive-memory.md#interpreters-subprocesses-and-provider-state). Python's 64 MiB **encoded graph payload** limit is distinct from JavaScript's unchanged 16 MiB selected-data codec. Neither is notebook JSON editing policy.
 
-- `session` (default)
-  - kernels are cached by `(session id, cwd, interpreter)`
-  - multiple owners can share a retained kernel for the same key
-  - concurrent Bash calls may overlap at `await` points; put dependent cells in one ordered Bash command
-  - dead kernels are replaced before execution
-- `per-call`
-  - creates a subprocess for the request
-  - executes
-  - always shuts down the subprocess in `finally`
+## 4) Host integration and execution environment
 
-## Reset behavior
+The managed agent shell makes the explicit `proto_harness` package available through a tiny authenticated bootstrap, without modifying installed Python. Native `-I`, `-E`, `-S` flags remain opt-outs. Helpers remain bound to their owning run/session and canonical tool authority; user code cannot choose another session's capability. Ordinary Python `Path`/`open` use native executing-target filesystem semantics; `harness.fs` and path-taking source helpers use permission-checked host filesystem operations.
 
-A Python Bash kernel cell can use the `%reset` magic to clear its user namespace and re-inject the prelude. It resets only that Python runtime; it does not reset JavaScript state or notebook file state. Bash has no structured per-cell `reset` flag.
-
-## Kernel death / restart / retry
-
-In session mode:
-
-- if the retained subprocess is not alive before execution, it is replaced
-- if execution fails because the subprocess died, the kernel is replaced and the code is retried once
-- concurrent resets for the same session key coalesce: a reset already in flight is awaited instead of starting another, and runs queued behind it proceed on the freshly-restarted kernel
-
-## 4) Environment/session variable injection
-
-Kernel startup and per-execution environment patching can receive:
-
-- `PI_SESSION_FILE`
-- `PI_ARTIFACTS_DIR`
-- `PI_TOOL_BRIDGE_URL`
-- `PI_TOOL_BRIDGE_TOKEN`
-- `PI_TOOL_BRIDGE_SESSION`
-- `PI_EVAL_LOCAL_ROOTS`
-
-The runner initializes process state so code executes in the requested cwd, managed env entries are reflected in `os.environ`, and cwd is available on `sys.path`.
+Warm kernels execute in the selected interpreter/cwd/target environment. They do not fake fresh imports between submissions. Ordinary synchronous cells preserve native `asyncio.run()`; explicit top-level await is supported. Live retained tasks/threads have process lifetime and prevent safe durable capture. These runtime choices do not alter `.ipynb` parsing, cell markers, metadata preservation or serialization.
 
 ## 5) Streaming/chunk and display handling (kernel-backed path)
 
@@ -148,7 +123,7 @@ Structured outputs captured separately include:
 Cancellation/timeout:
 
 - abort/timeout sends `SIGINT` to the runner
-- if the runner does not settle after the interrupt grace window, shutdown escalates and the kernel is recreated on the next call
+- if the runner does not settle after the interrupt grace window, shutdown escalates; no cell is silently replayed, and uncaptured state cannot silently fall back to an older or fresh namespace
 - timeout output is annotated with a timeout message
 
 ## 6) Truncation and artifact behavior
@@ -187,8 +162,8 @@ This renderer behavior is unrelated to notebook JSON editing except that both re
 If a workflow needs both notebook mutation and execution:
 
 1. read the `.ipynb` file in its default editable view and mutate that view with the edit pipeline
-2. copy one desired cell source into a Bash Python heredoc or `python -c` invocation
-3. repeat for later cells; session-mode Python state persists across Bash kernel-cell calls
+2. execute desired source in a normal Bash Python heredoc/`python -c` for a fresh process, or explicitly submit it to `harness.kernel("notebook")` / `python -m proto_harness.kernel notebook` for warm state
+3. repeat using the same explicit kernel name when later cells depend on globals; use `harness.store` for durable values shared across fresh processes
 4. apply later source changes through the edit pipeline; a whole-file `write` must contain notebook JSON
 
 Current implementation does not provide a single tool that both mutates `.ipynb` and executes notebook cells through kernel context.

@@ -11,9 +11,8 @@ import { PRUNED_DIRS, SKIPPED_SUFFIXES } from "../../fs-policy";
 import type { JsStatusEvent } from "./types";
 
 /**
- * Filesystem mutation tracking for JS kernel cells — the counterpart of the
- * Python prelude's audit hook (eval/py/prelude.py). Bun has no audit hook, so
- * the tracker wraps the mutation APIs user code can reach: the `fs` global,
+ * Filesystem mutation tracking for JS kernel cells. The tracker wraps the
+ * mutation APIs user code can reach: the `fs` global,
  * `import`/`require` of node:fs and node:fs/promises (via `trackedFsModule` /
  * `maybeTrackedModule`), and `Bun.write` in dedicated worker processes
  * (`installBunWriteTracking`; never installed inline, where the runtime
@@ -25,9 +24,8 @@ import type { JsStatusEvent } from "./types";
  * for `flushFileTracking` at cell end. Every report is the NET diff from the
  * pre-cell content, carrying an id of run id + path so the host replaces the
  * earlier report of the same path (eval/status-events.ts): a cell that
- * writes a file twice exposes one mutation — the same shape as the Python
- * flush, so the host walker dedupes both identically (writes by path + final
- * sha, deletes by path).
+ * writes a file twice exposes one mutation. The host walker dedupes writes
+ * by path + final sha, deletes by path.
  */
 
 const DIFF_MAX_BYTES = 8 * 1024 * 1024;
@@ -38,9 +36,8 @@ const MAX_EVENTS = 50;
 // file leaves the net diff to the flush instead of re-diffing every write.
 const EAGER_REPORTS_PER_PATH = 8;
 const SHA_LENGTH = 16;
-// Aggregate budget for pre-mutation snapshots kept per cell (kept aligned
-// with _FS_CAPTURE_TEXT_BUDGET in eval/py/prelude.py); past it noteTouched
-// stores only the sha and the flush emits writes without diffs.
+// Aggregate budget for pre-mutation snapshots kept per cell; past it
+// noteTouched stores only the sha and the flush emits writes without diffs.
 const CAPTURE_TEXT_BUDGET = 16 * 1024 * 1024;
 const WRITE_FLAGS =
 	fsSync.constants.O_WRONLY |
@@ -368,9 +365,8 @@ function notePath(tracking: CellTracking, absPath: string): string {
 
 /**
  * One compact `<kernel> note:` line per net-mutated path, in the cell's own
- * output — the bash tool prompt promises it for every kernel language, and the
- * status events alone are invisible to the model. Same wording and the same
- * once-per-path-per-cell timing as _fs_emit_mutation_note in eval/py/prelude.py.
+ * output: status events alone are invisible to the model. Reports share the
+ * shell receipt format and emit once per path at cell settlement.
  */
 function emitMutationNote(tracking: CellTracking, absPath: string, record: TouchedRecord): void {
 	const meta = tracking.reportedMeta.get(absPath);

@@ -71,7 +71,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		filename: &'a str,
 	) -> impl Iterator<Item = PathBuf> + 'a {
 		let path_var = self.env.get_str("PATH", self).unwrap_or_default();
-		let paths = crate::sys::fs::split_paths(path_var.as_ref());
+		let paths =
+			crate::sys::fs::split_paths(path_var.as_ref()).map(|entry| self.working_dir().join(entry));
 
 		pathsearch::search_for_executable(paths, filename)
 	}
@@ -82,7 +83,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		case_insensitive: bool,
 	) -> impl Iterator<Item = PathBuf> {
 		let path_var = self.env.get_str("PATH", self).unwrap_or_default();
-		let paths = crate::sys::fs::split_paths(path_var.as_ref());
+		let paths =
+			crate::sys::fs::split_paths(path_var.as_ref()).map(|entry| self.working_dir().join(entry));
 
 		pathsearch::search_for_executable_with_prefix(paths, filename_prefix, case_insensitive)
 	}
@@ -92,7 +94,8 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		candidate_name: S,
 	) -> Option<PathBuf> {
 		let path_var = self.env_str("PATH").unwrap_or_default();
-		let paths = crate::sys::fs::split_paths(path_var.as_ref());
+		let paths =
+			crate::sys::fs::split_paths(path_var.as_ref()).map(|entry| self.working_dir().join(entry));
 		pathsearch::search_for_executable(paths, candidate_name.as_ref()).next()
 	}
 
@@ -103,6 +106,9 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	where
 		String: From<S>,
 	{
+		let path = self.env_str("PATH").unwrap_or_default().into_owned();
+		let cwd = self.working_dir().to_owned();
+		self.program_location_cache.set_search_context(&path, &cwd);
 		if let Some(cached_path) = self.program_location_cache.get(&candidate_name) {
 			Some(cached_path)
 		} else if let Some(found_path) = self.find_first_executable_in_path(&candidate_name) {

@@ -140,7 +140,10 @@ describe("session host worker", () => {
 		first.sendCommand({ id: "state-1", type: "get_state" });
 		const response = await first.frames.findResponse("state-1", BOOTSTRAP_TIMEOUT_MS);
 		expect(response.success).toBe(true);
-		expect((response.data as { sessionFile?: string }).sessionFile).toBe(path.resolve(sessionFile));
+		const reportedFile = (response.data as { sessionFile?: string }).sessionFile;
+		if (!reportedFile) throw new Error("Host response omitted its session file");
+		expect(path.isAbsolute(reportedFile)).toBe(true);
+		expect(await fs.realpath(reportedFile)).toBe(await fs.realpath(sessionFile));
 
 		// Latest client wins: attaching a second client closes the first.
 		const second = await connectSessionRpc(socketPath);

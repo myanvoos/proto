@@ -2,37 +2,37 @@ import { expect, test } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { disposeKernelSessionsByOwner, executePython } from "./executor";
 
-test("%%capture preserves small output and binding while bounding large output", async () => {
+test("native redirect_stdout retains captured bindings while emitted output stays bounded", async () => {
 	using tempDir = TempDir.createSync("@python-kernel-capture-bounds-");
 	const ownerId = `test-owner:${crypto.randomUUID()}`;
 	const options = {
 		cwd: tempDir.path(),
-		artifactsDir: tempDir.path(),
 		sessionId: `test-session:${crypto.randomUUID()}`,
 		kernelOwnerId: ownerId,
-		kernelMode: "session" as const,
 		timeoutMs: 30_000,
 	};
 	try {
-		const small = await executePython("%%capture captured_small\nprint('first')\nprint('second')", options);
+		const small = await executePython(
+			"import io, contextlib\ncaptured = io.StringIO()\nwith contextlib.redirect_stdout(captured):\n    print('first')\n    print('second')\ncaptured_small = captured.getvalue()",
+			options,
+		);
+		expect(small.exitCode, small.output).toBe(0);
 		expect(small.output).toBe("");
-		expect(small.displayOutputs).toContainEqual({ type: "text", text: "'first\\nsecond\\n'\n" });
 		const smallBinding = await executePython("print(len(captured_small), repr(captured_small))", options);
 		expect(smallBinding.output).toContain("13 'first\\nsecond\\n'");
 
-		await executePython("%%capture captured_large\nprint('x' * 1_100_000)\nprint('not retained')", options);
-		const largeBinding = await executePython(
-			"print(len(captured_large) <= 1048576 + 150, captured_large.endswith('remaining output discarded]\\n'), 'not retained' not in captured_large)",
-			options,
-		);
-		expect(largeBinding.output).toContain("True True True");
+		const large = await executePython("print('x' * 1_100_000)\nprint('tail-marker')", options);
+		expect(large.exitCode, large.output).toBe(0);
+		expect(large.truncated).toBe(true);
+		expect(large.totalBytes).toBeGreaterThan(1_100_000);
+		expect(large.outputBytes).toBeLessThan(large.totalBytes);
+		expect(large.output).toContain("tail-marker");
 
-		await executePython("%%capture captured_lines\nprint('row\\n' * 3005, end='')", options);
-		const lineBinding = await executePython(
-			"print(captured_lines.count('row'), captured_lines.endswith('remaining output discarded]\\n'))",
-			options,
-		);
-		expect(lineBinding.output).toContain("3000 True");
+		const lines = await executePython("print('row\\n' * 100_005, end='')", options);
+		expect(lines.exitCode).toBe(0);
+		expect(lines.totalLines).toBeGreaterThanOrEqual(100_005);
+		expect(lines.truncated).toBe(true);
+		expect(lines.outputLines).toBeLessThan(lines.totalLines);
 	} finally {
 		await disposeKernelSessionsByOwner(ownerId);
 	}
@@ -43,16 +43,21 @@ test("defs metadata prunes deleted names without losing live definitions", async
 	const ownerId = `test-owner:${crypto.randomUUID()}`;
 	const options = {
 		cwd: tempDir.path(),
-		artifactsDir: tempDir.path(),
 		sessionId: `test-session:${crypto.randomUUID()}`,
 		kernelOwnerId: ownerId,
-		kernelMode: "session" as const,
 		timeoutMs: 30_000,
 	};
 	try {
-		await executePython("transient_for_defs = 1\ndef live_for_defs():\n    return 2", options);
-		await executePython("del transient_for_defs", options);
-		const result = await executePython("print('transient_for_defs' in defs(), 'live_for_defs' in defs())", options);
+		await executePython(
+			"import proto_harness as harness\n" + "transient_for_defs = 1\ndef live_for_defs():\n    return 2",
+			options,
+		);
+		await executePython("import proto_harness as harness\n" + "del transient_for_defs", options);
+		const result = await executePython(
+			"import proto_harness as harness\n" +
+				"print('transient_for_defs' in harness.defs(), 'live_for_defs' in harness.defs())",
+			options,
+		);
 		expect(result.output).toContain("False True");
 	} finally {
 		await disposeKernelSessionsByOwner(ownerId);

@@ -21,25 +21,28 @@ describe("Python kernel figure display", () => {
 			cwd: tempDir.path(),
 			sessionId,
 			kernelOwnerId: ownerId,
-			kernelMode: "session" as const,
 			timeoutMs: 60_000,
 		};
 		try {
-			const probe = await executePython("import matplotlib; print(matplotlib.get_backend())", options);
+			const probe = await executePython(
+				"import proto_harness as harness\n" + "import matplotlib; print(matplotlib.get_backend())",
+				options,
+			);
 			if (!probe.output.toLowerCase().includes("agg")) {
 				console.warn("skipping figure display test: matplotlib unavailable");
 				return;
 			}
 			const result = await executePython(
-				[
-					"import matplotlib",
-					"matplotlib.use('Agg')",
-					"import matplotlib.pyplot as plt",
-					"fig, ax = plt.subplots()",
-					"ax.plot([1, 2], [3, 4])",
-					"fig.savefig('out.png')",
-					"plt.close(fig)",
-				].join("\n"),
+				"import proto_harness as harness\n" +
+					[
+						"import matplotlib",
+						"matplotlib.use('Agg')",
+						"import matplotlib.pyplot as plt",
+						"fig, ax = plt.subplots()",
+						"ax.plot([1, 2], [3, 4])",
+						"fig.savefig('out.png')",
+						"plt.close(fig)",
+					].join("\n"),
 				options,
 			);
 			const image = result.displayOutputs.find(
@@ -51,19 +54,20 @@ describe("Python kernel figure display", () => {
 			expect(image.data.startsWith("iVBOR")).toBe(true);
 			// Contract: figures closed before cell end without savefig (no user
 			// reference left for `plt.close("all")`) still display, each once;
-			// a figure already shown via display() is not repeated.
+			// a figure already shown via harness.display() is not repeated.
 			const closed = await executePython(
-				[
-					"import matplotlib.pyplot as plt",
-					"fig, ax = plt.subplots()",
-					"ax.plot([1, 2], [3, 4])",
-					"plt.close(fig)",
-					"plt.subplots()[1].plot([4, 3])",
-					'plt.close("all")',
-					"shown, _ = plt.subplots()",
-					"display(shown)",
-					"plt.close(shown)",
-				].join("\n"),
+				"import proto_harness as harness\n" +
+					[
+						"import matplotlib.pyplot as plt",
+						"fig, ax = plt.subplots()",
+						"ax.plot([1, 2], [3, 4])",
+						"plt.close(fig)",
+						"plt.subplots()[1].plot([4, 3])",
+						'plt.close("all")',
+						"shown, _ = plt.subplots()",
+						"harness.display(shown)",
+						"plt.close(shown)",
+					].join("\n"),
 				options,
 			);
 			expect(closed.displayOutputs.filter(output => output.type === "image")).toHaveLength(3);

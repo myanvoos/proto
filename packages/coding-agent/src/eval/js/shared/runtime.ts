@@ -647,7 +647,8 @@ export class JsRuntime {
 		const injected: Record<string, unknown> = {
 			__proto_scope__: this.#scope,
 			__proto_cell_globals__: (moduleMode: boolean) => {
-				const cwd = this.#activeCwd();
+				// Native eval metadata uses the physical process cwd, not a shell symlink spelling.
+				const cwd = fs.realpathSync(this.#activeCwd());
 				const invocation = this.#als.getStore()?.invocation;
 				const filename = invocation?.filename ?? (typeof Bun === "undefined" ? "[eval]" : path.join(cwd, "[eval]"));
 				const module = new Module(typeof Bun === "undefined" && !invocation?.filename ? "[eval]" : filename);

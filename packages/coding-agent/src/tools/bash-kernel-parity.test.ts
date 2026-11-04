@@ -6,27 +6,39 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { galleryFixtures } from "../cli/gallery-fixtures";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { EvalStatusEvent } from "../eval/types";
 import { ToolExecutionComponent } from "../modes/components/tool-execution";
 import { initTheme, theme } from "../modes/theme/theme";
 import type { ToolSession } from ".";
 import { BashTool, type BashToolDetails } from "./bash";
 import { formatOutputNotice, type OutputMeta } from "./output-meta";
+import { ReadTool } from "./read";
 import { truncateToWidth } from "./render-utils";
 import { toolRenderers } from "./renderers";
 
 await initTheme(false, false, "proto");
 const OWNER = `bash-kernel-parity:${process.pid}`;
+const python = await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true });
 
 function stub(cwd: string): ToolSession {
 	const m = new Map<string, unknown>();
-	return {
+	const tools = new Map<string, BashTool | ReadTool>();
+	const session = {
 		cwd,
+		getSessionId: () => OWNER,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
 		settings: { get: (k: string) => m.get(k), getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
 		getEvalSessionId: () => `bash-kernel-parity:${cwd}`,
 		getEvalKernelOwnerId: () => OWNER,
 	} as unknown as ToolSession;
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
 }
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
@@ -83,7 +95,7 @@ test("mixed shell and kernel commands keep the full bash source", () => {
 	const preview = renderBashCall(command);
 	expect(preview).toContain("printf 'before");
 	expect(preview).toContain("printf 'after");
-	expect(preview).toContain("Bash");
+	expect(preview).toContain("$ printf");
 	expect(preview).not.toContain("· ast");
 });
 
@@ -101,7 +113,7 @@ test("mixed kernel results keep status hunks and JSON alongside Bash source", ()
 	);
 	expect(rendered).toContain("printf 'before");
 	expect(rendered).toContain("printf 'after");
-	expect(rendered).toContain("Bash");
+	expect(rendered).toContain("$ printf");
 	expect(rendered).toContain("Status");
 	expect(rendered).toContain("mixed.txt");
 	expect(rendered).toContain("result");
@@ -113,7 +125,7 @@ test("mixed kernel results keep status hunks and JSON alongside Bash source", ()
 test("settled mixed calls outline the kernel block between its shell lines", () => {
 	const command = "printf 'before\\n'\npython <<'PY'\ndef greet(name):\n    return name\nPY\nprintf 'after\\n'";
 	const lines = renderBashResult({ content: [{ type: "text", text: "" }] }, command).split("\n");
-	expect(lines[0]).toContain("· ast");
+	expect(lines[0]).toContain("$ printf");
 	const before = lines.findIndex(line => line.includes("printf 'before"));
 	const open = lines.findIndex(line => line.includes("python <<'PY'"));
 	const outline = lines.findIndex(line => line.includes("└─ def greet(name)"));
@@ -157,7 +169,7 @@ test("a kernel block that does not parse keeps its source and no ast marker", ()
 // shell listing a non-kernel bash call gets.
 async function renderSettledCell(label: string, interpreter: string, code: string): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `cell-${label}-`));
-	const command = `${interpreter} <<'CELLEOF'\n${code}\nCELLEOF`;
+	const command = `${interpreter === "python" ? JSON.stringify(python.pythonPath) : interpreter} <<'CELLEOF'\n${code}\nCELLEOF`;
 	try {
 		const result = await new BashTool(stub(dir)).execute(`cell-${label}`, { command });
 		return renderBashResult(result, command);
@@ -170,8 +182,7 @@ test("running kernel cell streams status events and their hunks live", async () 
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "live-"));
 	try {
 		await Bun.write(path.join(dir, "f.txt"), "a\nb\n");
-		const command =
-			"python <<'PYEOF'\nfrom pathlib import Path\np = Path('f.txt')\np.write_text(p.read_text().replace('b', 'B'))\nprint('done')\nPYEOF";
+		const command = `${JSON.stringify(python.pythonPath)} <<'PYEOF'\nimport proto_harness as harness\nharness.fs.replace('f.txt', 'b', 'B')\nprint('done')\nPYEOF`;
 		const updates: Array<{ statusEvents?: unknown[] }> = [];
 		await new BashTool(stub(dir)).execute(
 			"live",
@@ -289,13 +300,13 @@ test("bun-in-bash renderResult uses the shared JavaScript AST renderer", async (
 	expect(rendered).toContain("x");
 }, 120000);
 
-test("a settled python cell renders the AST outline above its captured output", async () => {
+test("settled native Python retains a source outline above captured output", async () => {
 	const rendered = await renderSettledCell(
 		"print",
 		"python",
 		"def greet(n):\n    return n\n\nprint('hi', greet('x'))",
 	);
-	expect(rendered).toContain("· ast");
+	expect(rendered).toContain("Module");
 	expect(rendered).toContain("def greet(n)");
 	expect(rendered).toContain("return n");
 	const outlineIndex = rendered.indexOf("def greet(n)");
@@ -305,7 +316,11 @@ test("a settled python cell renders the AST outline above its captured output", 
 }, 120000);
 
 test("display() output renders as a JSON tree, not a bare repr", async () => {
-	const rendered = await renderSettledCell("display", "python", "display({'k': [1, 2, 3], 'nested': {'x': 1}})");
+	const rendered = await renderSettledCell(
+		"display",
+		"python",
+		"import proto_harness as harness\nharness.display({'k': [1, 2, 3], 'nested': {'x': 1}})",
+	);
 	expect(rendered).toContain("Output");
 	expect(rendered).toContain('"nested"');
 	expect(rendered).toContain("└─ ▤ x: 1");
@@ -315,19 +330,29 @@ test("in-cell file edits render as Status diff hunks with the mutated path", asy
 	const rendered = await renderSettledCell(
 		"hunks",
 		"python",
-		"open('f.txt', 'w').write('a\\nb\\n')\ntext = open('f.txt').read()\nopen('f.txt', 'w').write(text.replace('b', 'B'))",
+		"import proto_harness as harness\nharness.fs.write_text('f.txt', 'a\\nb\\n')\nharness.fs.replace('f.txt', 'b', 'B')",
 	);
 	expect(rendered).toContain("Status");
-	expect(rendered).toMatch(/write \S*f\.txt ⟦\+2⟧/);
+	expect(rendered).toMatch(/write[\s\S]*f\.txt ⟦\+2⟧/);
 	expect(rendered).toContain("+1│a");
-	expect(rendered).toContain("+2│B");
+	expect(rendered).toContain("+2│b");
+	expect(rendered).toContain("-2│b");
+	expect(rendered).toContain("+│B");
 }, 120000);
 
-test("a raising cell renders its traceback and a failed cell marker", async () => {
-	const rendered = await renderSettledCell("boom", "python", "x = 1 / 0");
-	expect(rendered).toContain("✗");
-	expect(rendered).toContain("ZeroDivisionError: division by zero");
-	expect(rendered).toContain('File "<stdin>", line 1');
+test("raising native Python preserves exit metadata and traceback under generic shell soft-exit policy", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "native-traceback-"));
+	const command = `${JSON.stringify(python.pythonPath)} <<'PY'\nx = 1 / 0\nPY`;
+	try {
+		const result = await new BashTool(stub(dir)).execute("native-error", { command });
+		expect(result.details?.execution?.exitCode).toBe(1);
+		expect(result.isError).not.toBe(true);
+		const rendered = renderBashResult(result, command);
+		expect(rendered).toContain("ZeroDivisionError: division by zero");
+		expect(rendered).toContain('File "<stdin>", line 1');
+	} finally {
+		await fs.rm(dir, { recursive: true, force: true });
+	}
 }, 120000);
 
 test("bash kernel live and rebuilt partial results preserve multiline string source", () => {

@@ -55,7 +55,7 @@ mod history;
 #[cfg(feature = "builtin.jobs")]
 mod jobs;
 
-#[cfg(all(any(feature = "util.python", feature = "util.node"), unix))]
+#[cfg(all(feature = "util.node", unix))]
 mod kernel_cell;
 mod kernel_route;
 #[cfg(all(feature = "builtin.kill", unix))]
@@ -74,8 +74,6 @@ mod printf;
 mod pushd;
 #[cfg(feature = "builtin.pwd")]
 mod pwd;
-#[cfg(all(feature = "util.python", unix))]
-mod python;
 #[cfg(feature = "builtin.read")]
 mod read;
 #[cfg(feature = "builtin.return")]
@@ -283,7 +281,6 @@ pub use builder::ShellBuilderExt;
 pub use embedded_code::{CodeCell, CodeLanguage, EmbeddedCode, FileWrite, scan_embedded_code};
 pub use factory::{BuiltinSet, default_builtins, process_builtins, utility_builtins};
 pub use host::{panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available};
-pub use kernel_route::kernel_builtin_alias;
 #[cfg(feature = "util.procs")]
 pub use proc_snapshot::sys as proc_sys;
 #[cfg(feature = "util.procs")]

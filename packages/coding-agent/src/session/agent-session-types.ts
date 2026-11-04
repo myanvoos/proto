@@ -34,6 +34,7 @@ import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
 import type { RootExtensionEnvironment } from "../sdk";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
 import type { AgentSession } from "./agent-session";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
@@ -92,6 +93,8 @@ export interface InitialRetryFallbackState {
 
 export interface AgentSessionConfig {
 	rootExtensionEnvironment?: RootExtensionEnvironment;
+	/** Authenticated tools for explicit Python helpers; absent in standalone AgentSession embeddings. */
+	evalToolSession?: ToolSession;
 	/** Construct a fresh root; never reuse the source worker runtime or ownership. */
 	createIndependentFork?: (manager: SessionManager) => Promise<AgentSession>;
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void;

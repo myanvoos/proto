@@ -1,8 +1,45 @@
 # Session-node architecture: fixes to bring back to proto
 
-Status: P0–P6 implemented for the v20 release. Grounded on 2026-11-04. The original investigation and acceptance contract are retained below as historical context, not a description of the remaining implementation.
+Status: P0–P6 were delivered for v20. The subsequent Python overhaul below targets **v20.1.2**; it is not included retroactively in v20.0.2. Grounded on 2026-11-04. The prior P5 contract and original investigation remain historical records, not competing current Python guidance.
 
-## Implementation record
+## Python overhaul (v20.1.2)
+
+The Python product migration is now separate from the prior P0–P6 delivery:
+
+- **Native fresh execution:** ordinary Python commands, aliases, scripts, shebangs, subprocesses, interactive `$` / `$$` and fresh `executePython` start real processes. No implicit warm routing, source transforms, helper injection, automatic project-import recreation or replay after failure. Native argv, binary I/O, imports, signals, exits and shutdown semantics remain native. Managed agent-shell integration is explicit through `import proto_harness as harness`; isolated/environment/site flags `-I`, `-E`, `-S` retain their ordinary opt-out behavior.
+- **Explicit public APIs:** `harness.tool`, completion/agent/workflow helpers, filesystem operations, artifacts, display and budget retain canonical authority, spawn/admission, cancellation and stale-edit safeguards. `harness.store` persists session-owned rich values. `harness.kernel(name, interpreter=None, cwd=None, target=None)` offers optional warm `run`/`exec`/`status`/`stop`/`restart`; `python -m proto_harness.kernel name` is the explicit CLI. Nested kernels work; a wait dependency back to an ancestor is refused.
+- **One Python graph:** warm namespaces capture automatically, without `declare_state`. Lazy vendored cloudpickle 3.1.2 preserves supported aliases, cycles, closures, functions, classes and module metadata; store writes commit one mapping graph by revision CAS. Nested store mutations require `commit()` or a transaction batch; conflicts surface without retry/overwrite. Unsupported live resources refuse capture before source teardown, never silently disappear. Restore validates interpreter, format and declared module environment; external files/processes are not rolled back.
+- **Exact durable continuity:** the existing manifest owner captures under the owner/kernel gate and commits before destructive transitions. History, independent-root fork, runtime parking and host restart use exact compatible manifests with no twenty-turn window, nearest-earlier restore or silent fresh fallback. Destination copies are independent and the fork source is unchanged. Context-only `checkpoint`/`rewind(report)` preserves current computation. Explicit kernel reset/stop/restart remains intentional namespace discard.
+- **Separate bounds:** Python graphs allow **64 MiB encoded payload**, with **96 MiB state transport framing**; ordinary HTTP requests remain **8 MiB** and ordinary warm request queues **16 MiB**. JavaScript remains explicit `declareState`, data-only **16 MiB** selected snapshots and **256 process-wide / 16 per-owner** interpreter admission. Python does not share that old admission cap.
+- **Measured residency:** `python.kernelMemoryBudgetBytes` defaults to `min(25% physical RAM, 4 GiB)` and `python.kernelMaxResidentCount` to **64**, a safety count separate from execution concurrency. macOS physical footprint/Linux private mappings account for forkserver parents and children, not summed RSS. Only idle LRU kernels with exact durable restorable state may park; dirty, busy, frozen, unknown-busy or unmeasured kernels are not eviction candidates. Unknown pressure is visible rather than treated as a proven cap.
+- **Actual forkserver:** supported local POSIX CPython uses a per-interpreter sterile, single-threaded `-I -S` parent, without user-library imports and with child threads created only after fork. Buffered `node:net` transport and actual process settlement govern capacity release. Unsupported local/remote targets report their supported spawn/remote mode; no cross-platform speedup or global RSS claim follows from this implementation.
+
+Canonical owners include `eval/py/proto_harness/`, `eval/py/harness-bridge.ts`, `eval/py/harness-dispatch.ts`, `eval/py/python-store.ts`, `eval/declared-state.ts`, `eval/state-limits.ts`, `eval/kernel-memory.ts` and `eval/py/forkserver.*`. User-facing contracts and measurements are in [Python APIs](./python-repl.md), [session operations](./session-operations.md#declared-state-at-temporal-boundaries) and [interactive memory](./interactive-memory.md#interpreters-subprocesses-and-provider-state).
+
+### Clean Python cutover
+
+The previous Python builtin/router, prelude injection, notebook magics, source-repair/replay paths, `python.kernelMode`, manual selected-file save/load helpers, bootstrap user cells and legacy tool HTTP bridge are removed rather than retained as aliases. Fresh and warm helpers share authenticated host dispatch; agent output reads use the host `agent://` protocol rather than ambient session paths. JavaScript's active prelude and selected-state APIs remain intact.
+
+Native stores validate with their own captured interpreter, separately from the supported warm-kernel minimum, and preserve virtualenv launcher identity. Named scripts do not leave internal open-file objects in user globals. CLI environment precedence is shared with the canonical runtime resolver; remote paths stay target paths.
+
+### Current scoped continuity evidence
+
+Real-process regressions exercise rich graph/store aliases, cycles, closures/classes/functions and shared globals, revision conflicts, exact history beyond 23 turns, independent forks, restart and refusal of uncaptured boundaries. An actual **40 MiB raw-byte graph** crossed store HTTP and warm state transport (55,924,120 encoded bytes), preserved aliases and reopened durably from disk. Over-limit capture refused while leaving the live namespace intact. These are scoped implementation proofs, not a rerun of the historical v20 integrated-suite figures below or a performance guarantee.
+
+### Pre-release verification (v20.1.2)
+
+- Final affected integration selection: **1,960 passed, four skipped, zero failed; 12,019 assertions across 315 files**, on Bun 1.4.2. Scope: eval, session/state, registry, controlled orchestration, controllers, slash commands, daemon launch, tasks/async, session host and Bash tools. This is not a claim that every repository test was run.
+- Full terminal-library suite: **411 passed, one skipped, zero failed; 5,645 assertions across 35 files**.
+- The real source CLI and locally built compiled CLI both pass the supervised-terminal fixture: distinct fresh Python PIDs, no injected globals, named reuse, published worker output through the host protocol, root/child store isolation, depth-three focused Python and an independent fork preserving aliases, cycles and closures. The compiled selection also passes its JavaScript worker regression: **two tests passed, zero failed**.
+- Real-process regressions cover native Python 3.9 store validation alongside a supported Python 3.15 warm kernel, virtualenv launcher/prefix fidelity, script-result continuity, per-request completion identity, host policy/stale-edit refusal and confirmed process cleanup. A 40 MiB raw-byte graph and over-limit refusal passed again in the final integration selection.
+- Repository `bun check` passed, including TypeScript, Biome and Rust checks. Native routing integration passed **three Rust tests**; Python runtime assets passed syntax compilation. The local signed compiled-binary build succeeded.
+- Live SSH/container environments and cross-platform performance were not verified. Target configuration, literal remote interpreter selection, authority and the production remote stdio/bootstrap path were exercised locally. Matplotlib was unavailable for the optional figure-display probe.
+
+These are local pre-release checks for v20.1.2. Published-artifact validation is a separate release gate, not implied by these results.
+
+## Prior v20 implementation record (historical)
+
+The following P0–P6 record, including its P5 selected-data limits, measurements and test totals, describes the original v20 delivery. The v20.1.2 Python contract above supersedes **Python-only** data/declaration/admission guidance in this historical section; JavaScript's selected-data contract remains current.
 
 | Slice | Delivered behavior and canonical owner |
 | --- | --- |

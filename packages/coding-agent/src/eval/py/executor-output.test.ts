@@ -14,16 +14,19 @@ kernelTest(
 		const owner = `python-output:${crypto.randomUUID()}`;
 		const streamed: KernelDisplayOutput[] = [];
 		try {
-			const result = await executePython('for i in range(16):\n    display({"i": i, "s": "x" * 1048576})', {
-				cwd: directory.path(),
-				sessionId: owner,
-				kernelOwnerId: owner,
-				kernelMode: "session",
-				timeoutMs: 60_000,
-				onDisplay: output => {
-					if (output.type !== "status") streamed.push(output);
+			const result = await executePython(
+				"import proto_harness as harness\n" +
+					'for i in range(16):\n    harness.display({"i": i, "s": "x" * 1048576})',
+				{
+					cwd: directory.path(),
+					sessionId: owner,
+					kernelOwnerId: owner,
+					timeoutMs: 60_000,
+					onDisplay: output => {
+						if (output.type !== "status") streamed.push(output);
+					},
 				},
-			});
+			);
 			expect(result.exitCode).toBe(0);
 			expect(Buffer.byteLength(JSON.stringify(result.displayOutputs))).toBeLessThan(257 * 1024);
 			expect(Buffer.byteLength(JSON.stringify(streamed))).toBeLessThan(257 * 1024);

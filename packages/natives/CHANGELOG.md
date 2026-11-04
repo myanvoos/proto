@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Execute Python through the selected native interpreter instead of an in-process shell builtin or implicit kernel route.
+
+### Fixed
+
+- Resolve empty and relative PATH entries against the shell working directory and invalidate executable lookups when PATH or cwd changes.
+- Preserve the resolved native JavaScript executable identity in routed program arguments.
+- Report successful builtin file and empty-directory removals to shared stale-write tracking.
+
 ## [19.2.2] - 2026-11-03
 
 ### Changed

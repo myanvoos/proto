@@ -4,8 +4,8 @@ NDJSON protocol over stdin/stdout. Host writes one JSON object per line;
 wrapper writes typed frames back.
 
 Host -> wrapper:
-  {"id": str, "code": str, "silent": bool?, "storeHistory": bool?}
-  {"id": str, "code": str, "silent": bool?, "storeHistory": bool?, "cwd": str?, "env": dict?}
+  {"id": str, "code": str}
+  {"id": str, "code": str, "cwd": str?, "env": dict?}
   # Code requests may include invocation: {"argv": [str, ...], "filename": str?}
   {"type": "stdin", "id": str, "data": base64, "eof": bool}  # one <=64 KiB credit
   {"type": "tool_response", "requestId": str, "reply": dict}  # remote bridge only
@@ -61,31 +61,48 @@ import json
 import locale
 import math
 import os
-import re
-import runpy
-import shlex
 import select
 import signal
-import site
-import subprocess
 import sys
-import sysconfig
 import threading
 import time
-import tokenize
 import traceback
 import types
 import weakref
-from pathlib import Path
 from typing import Any, Callable
 
 
-# The host embeds this asset when staging a standalone runner (including remote targets).
-_PERSISTENCE_SOURCE = None
-_persistence = types.ModuleType("_proto_kernel_state")
-exec(compile(_PERSISTENCE_SOURCE if _PERSISTENCE_SOURCE is not None
-             else Path(__file__).with_name("state.py").read_text(encoding="utf-8"),
-             "<kernel-state>", "exec"), _persistence.__dict__)
+# Lazy in-memory package loader: source/compiled/remote runners carry identical assets.
+_PYTHON_PACKAGE_ASSETS = None
+
+
+class _RuntimePackageFinder:
+    def find_spec(self, fullname, path=None, target=None):
+        if not (fullname == "proto_harness" or fullname.startswith("proto_harness.")):
+            return None
+        assets = _PYTHON_PACKAGE_ASSETS
+        if assets is None:
+            return None
+        name = fullname.replace(".", "/")
+        package = name + "/__init__.py"
+        filename = package if package in assets else name + ".py"
+        if filename not in assets:
+            return None
+        return importlib.machinery.ModuleSpec(fullname, self, is_package=filename == package)
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        name = module.__name__.replace(".", "/")
+        filename = name + ("/__init__.py" if hasattr(module, "__path__") else ".py")
+        module.__file__ = "<proto-runtime>/" + filename
+        exec(compile(_PYTHON_PACKAGE_ASSETS[filename], module.__file__, "exec"), module.__dict__)
+
+
+if _PYTHON_PACKAGE_ASSETS is not None:
+    sys.meta_path.append(_RuntimePackageFinder())
+
 
 
 try:
@@ -470,7 +487,7 @@ _BRIDGE_REPLIES: dict[str, tuple[threading.Event, list[dict]]] = {}
 _BRIDGE_LOCK = threading.Lock()
 
 
-def __proto_bridge_call__(name: str, args: dict, completion_invocation_id=None):
+def __proto_bridge_call__(name: str, args: dict):
     rid = _current_run_id()
     if rid is None:
         raise RuntimeError("Tool bridge called outside an active cell")
@@ -483,11 +500,11 @@ def __proto_bridge_call__(name: str, args: dict, completion_invocation_id=None):
         _BRIDGE_REPLIES[request_id] = (event, replies)
     try:
         _emit({"type": "tool_request", "id": rid, "requestId": request_id,
-               "payload": {"name": name, "args": args, "completionInvocationId": completion_invocation_id}})
+               "payload": {"name": name, "args": args, "cwd": os.getcwd()}})
         while not event.wait(0.1):
-            check = _prelude_fn("task_signal")
-            if check is not None:
-                check().check()
+            helper = sys.modules.get("proto_harness.helpers")
+            if helper is not None:
+                helper.task_signal().check()
         reply = replies[0]
         if not reply.get("ok"):
             error = reply.get("error") or {}
@@ -505,15 +522,10 @@ class _RunnerState:
         self.user_module = types.ModuleType("__main__")
         self.user_ns = self.user_module.__dict__
         self.filename = "<string>"
-        self.last_install_marker: int = 0
         self.loop: asyncio.AbstractEventLoop | None = None
         self.shutting_down: bool = False
         self.active_executions: int = 0
         self.defs: dict[str, int] = {}
-        self.prelude_names: set[str] | None = None
-        self.prelude_ns: dict[str, Any] | None = None
-        self.prelude_exports: dict[str, Any] = {}
-        self.shadow_warned: set[str] = set()
         self.request_tasks: set[asyncio.Task] = set()
         self.cell_tasks: dict[asyncio.Task, str] = {}
         self.thread_owners: weakref.WeakKeyDictionary[threading.Thread, str] = weakref.WeakKeyDictionary()
@@ -522,17 +534,13 @@ class _RunnerState:
         self.pending_request_ids: set[str] = set()
         self.cancelled_request_ids: set[str] = set()
         self.active_request_id: str | None = None
-        # Set when something may have rewritten project source mid-cell; the
-        # next import re-checks loaded project modules.
-        self.sources_dirty: bool = False
         # The sys.path entries the current cell's cwd and PYTHONPATH put first.
         self.import_path_prefix: list[str] = []
-        # Names the executing cell binds itself; not reported as stale.
-        self.cell_bindings: frozenset[str] = frozenset()
 
 
 _REQUEST_QUEUE_MAX_COUNT = 128
 _REQUEST_QUEUE_MAX_BYTES = 16 * 1024 * 1024
+_STATE_REQUEST_MAX_BYTES = 96 * 1024 * 1024
 
 
 class _BoundedRequestQueue:
@@ -556,8 +564,9 @@ class _BoundedRequestQueue:
 
     def put_nowait(self, request: dict, size: int) -> bool:
         with self._lock:
+            limit = _STATE_REQUEST_MAX_BYTES if request.get("type") == "state" else _REQUEST_QUEUE_MAX_BYTES
             if (self._closed or len(self._queue) >= _REQUEST_QUEUE_MAX_COUNT
-                    or self._bytes + size > _REQUEST_QUEUE_MAX_BYTES):
+                    or self._bytes + size > limit):
                 return False
             self._queue.append((request, size))
             self._bytes += size
@@ -584,9 +593,7 @@ class _BoundedRequestQueue:
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "proto_current_rid", default=None
 )
-_CURRENT_COMPLETION_COUNT: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
-    "proto_completion_count", default=None
-)
+_CURRENT_COMPLETION_INVOCATIONS = contextvars.ContextVar("proto_completion_invocations", default=None)
 _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS: contextvars.ContextVar[set[int] | None] = (
     contextvars.ContextVar(
         "proto_displayed_matplotlib_figure_ids",
@@ -755,274 +762,15 @@ _CHILD_SPAWN_AUDIT_EVENTS = frozenset(
 )
 
 
-_OPEN_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
-_MODULE_FILE_SUFFIXES = tuple(
-    importlib.machinery.SOURCE_SUFFIXES + importlib.machinery.EXTENSION_SUFFIXES
-)
-
-
-def _is_module_file(path: Any) -> bool:
-    if isinstance(path, int):
-        return False
-    try:
-        return os.fsdecode(path).endswith(_MODULE_FILE_SUFFIXES)
-    except TypeError:
-        return False
-
-
 def _audit_runner_event(event: str, args: tuple) -> None:
     if event in _CHILD_SPAWN_AUDIT_EVENTS:
-        # A child can rewrite project source before the cell's next import.
-        _STATE.sources_dirty = True
         capture = _CAPTURE_STATE
         if capture is not None:
             capture.child_started = True
-    elif event == "open":
-        if (
-            len(args) > 2
-            and isinstance(args[2], int)
-            and args[2] & _OPEN_WRITE_FLAGS
-            and _is_module_file(args[0])
-        ):
-            _STATE.sources_dirty = True
-    elif event in ("os.rename", "os.remove", "os.truncate"):  # os.replace audits as os.rename
-        if any(_is_module_file(arg) for arg in args[:2]):
-            _STATE.sources_dirty = True
 
 
 def _install_runner_audit() -> None:
-    try:
-        sys.addaudithook(_audit_runner_event)
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# Import freshness
-#
-# A cell stands in for a fresh `python` process, so an import must see project
-# source as it is on disk now, not as an earlier cell loaded it. Project
-# modules are those loaded from outside the interpreter's stdlib and
-# site-packages: the code being edited. Library modules are never evicted;
-# C extensions and global registries rarely survive re-execution.
-# ---------------------------------------------------------------------------
-
-
-def _library_roots() -> tuple[str, ...]:
-    roots: set[str] = set()
-    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
-        try:
-            roots.add(sysconfig.get_path(key))
-        except KeyError:
-            pass
-    try:
-        roots.update(site.getsitepackages())
-        roots.add(site.getusersitepackages())
-    except AttributeError:  # site.py of an old virtualenv
-        pass
-    # Raw and resolved forms: origins arrive unresolved; resolving each one is not free.
-    forms = {form for root in roots if root for form in (root, os.path.realpath(root))}
-    return tuple(os.path.join(form, "") for form in forms)
-
-
-_LIBRARY_ROOTS = _library_roots()
-_LIBRARY_DIR_NAMES = frozenset({"site-packages", "dist-packages"})
-
-
-def _is_project_file(path: str) -> bool:
-    return not path.startswith(_LIBRARY_ROOTS) and _LIBRARY_DIR_NAMES.isdisjoint(path.split(os.sep))
-
-
-class _ProjectModule:
-    """A loaded project module: its file's stamp at load time, and whether a
-    plain ``import name`` found it on ``sys.path`` (so a cwd or PYTHONPATH
-    change can make the same name resolve to a different file)."""
-
-    __slots__ = ("module", "path", "stamp", "native", "by_name")
-
-    def __init__(
-        self,
-        module: types.ModuleType,
-        path: str,
-        stamp: tuple[int, int],
-        native: bool,
-        by_name: bool,
-    ) -> None:
-        self.module = weakref.ref(module)
-        self.path = path
-        self.stamp: tuple[int, int] | None = stamp
-        self.native = native
-        self.by_name = by_name
-
-
-_PROJECT_MODULES: dict[str, _ProjectModule] = {}
-_PROJECT_MODULES_LOCK = threading.RLock()
-_EVICTED_MODULES: "weakref.WeakSet[types.ModuleType]" = weakref.WeakSet()
-
-
-def _file_stamp(path: str) -> tuple[int, int] | None:
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return (st.st_mtime_ns, st.st_size)
-
-
-def _track_module_load(module: types.ModuleType, native: bool) -> None:
-    spec = getattr(module, "__spec__", None)
-    origin = getattr(spec, "origin", None)
-    if not isinstance(origin, str) or not getattr(spec, "has_location", False):
-        return
-    if not _is_project_file(origin):
-        return
-    path = os.path.realpath(origin)
-    stamp = _file_stamp(path)
-    if stamp is None or not _is_project_file(path):
-        return
-    by_name = False
-    if "." not in spec.name:
-        home = os.path.dirname(path)
-        if spec.submodule_search_locations is not None:
-            home = os.path.dirname(home)
-        by_name = any(
-            isinstance(entry, str) and os.path.realpath(entry or os.curdir) == home
-            for entry in sys.path
-        )
-    with _PROJECT_MODULES_LOCK:
-        _PROJECT_MODULES[spec.name] = _ProjectModule(module, path, stamp, native, by_name)
-
-
-def _install_module_load_tracking() -> None:
-    """Stamp every module as its loader executes it: the stamp must describe
-    the source that was loaded, not the file as a later check finds it."""
-    for loader_class, native in (
-        (importlib.machinery.SourceFileLoader, False),
-        (importlib.machinery.ExtensionFileLoader, True),
-    ):
-        load = loader_class.exec_module
-
-        def exec_module(self, module, _load=load, _native=native):
-            try:
-                _track_module_load(module, _native)
-            except Exception:
-                pass
-            return _load(self, module)
-
-        loader_class.exec_module = exec_module
-
-
-def _project_module_changed(name: str, entry: _ProjectModule) -> bool:
-    if _file_stamp(entry.path) != entry.stamp:
-        return True
-    if not entry.by_name:
-        return False
-    spec = importlib.machinery.PathFinder.find_spec(name)
-    origin = getattr(spec, "origin", None)
-    return not isinstance(origin, str) or os.path.realpath(origin) != entry.path
-
-
-def _name_list(names: list[str]) -> str:
-    names = sorted(names)
-    shown = ", ".join(names[:4])
-    return f"{shown} +{len(names) - 4} more" if len(names) > 4 else shown
-
-
-def _stale_bindings(evicted: set[str]) -> list[str]:
-    """Kernel names bound by earlier cells that still hold evicted code."""
-    stale = []
-    for name, value in list(_STATE.user_ns.items()):
-        if name.startswith("__") or name in _STATE.cell_bindings:
-            continue
-        try:
-            if isinstance(value, types.ModuleType):
-                owner = value.__name__
-            else:
-                owner = getattr(value, "__module__", None)
-                if not isinstance(owner, str):
-                    owner = type(value).__module__
-        except Exception:
-            continue
-        if owner in evicted:
-            stale.append(name)
-    return stale
-
-
-def _refresh_project_modules() -> None:
-    """Evict project modules whose source changed, or whose name now resolves
-    to another file, since they were loaded; the next import re-reads them as
-    a fresh interpreter would."""
-    _STATE.sources_dirty = False
-    changed: list[str] = []
-    rebuilt: list[str] = []
-    evicted: set[str] = set()
-    with _PROJECT_MODULES_LOCK:
-        for name, entry in list(_PROJECT_MODULES.items()):
-            module = entry.module()
-            if module is None or sys.modules.get(name) is not module:
-                del _PROJECT_MODULES[name]
-                continue
-            try:
-                if not _project_module_changed(name, entry):
-                    continue
-            except Exception:
-                continue
-            if entry.native:
-                # CPython cannot re-initialize an extension in place; report each build once.
-                rebuilt.append(name)
-                entry.stamp = _file_stamp(entry.path)
-                entry.by_name = False
-            else:
-                changed.append(name)
-        if changed:
-            # Unchanged modules can hold objects from changed ones (`from m import f`)
-            # and nothing records who imported whom, so every project module goes.
-            for name, entry in list(_PROJECT_MODULES.items()):
-                if entry.native:
-                    continue
-                module = entry.module()
-                if module is not None and sys.modules.get(name) is module:
-                    del sys.modules[name]
-                    _EVICTED_MODULES.add(module)
-                    evicted.add(name)
-                del _PROJECT_MODULES[name]
-            importlib.invalidate_caches()
-    if changed:
-        stale = _stale_bindings(evicted)
-        if stale:
-            _emit_kernel_note(
-                f"{_name_list(changed)} changed on disk; imports load the new source, but "
-                f"names from earlier cells still hold the old code: {_name_list(stale)}"
-            )
-    if rebuilt:
-        _emit_kernel_note(
-            f"native module {_name_list(rebuilt)} changed on disk; CPython cannot reload an "
-            "extension in place, so this kernel keeps the old build until it is reset"
-        )
-
-
-def _mark_sources_dirty() -> None:
-    _STATE.sources_dirty = True
-
-
-_BUILTIN_IMPORT = builtins.__import__
-_IMPORTLIB_RELOAD = importlib.reload
-
-
-def _import_with_fresh_sources(name, globals=None, locals=None, fromlist=(), level=0):
-    if _STATE.sources_dirty:
-        _refresh_project_modules()
-    return _BUILTIN_IMPORT(name, globals, locals, fromlist, level)
-
-
-def _reload_in_place(module):
-    """``importlib.reload`` of a module the kernel evicted re-executes it in
-    place, exactly as if the kernel had kept it in ``sys.modules``."""
-    if module in _EVICTED_MODULES:
-        spec = getattr(module, "__spec__", None)
-        name = getattr(spec, "name", None) or getattr(module, "__name__", None)
-        if isinstance(name, str) and sys.modules.get(name) is not module:
-            sys.modules[name] = module
-    return _IMPORTLIB_RELOAD(module)
+    sys.addaudithook(_audit_runner_event)
 
 
 def _set_import_path_prefix(cwd: str) -> None:
@@ -1039,16 +787,6 @@ def _set_import_path_prefix(cwd: str) -> None:
             pass
     sys.path[0:0] = entries
     _STATE.import_path_prefix = entries
-
-
-def _install_import_freshness() -> None:
-    _install_module_load_tracking()
-    builtins.__import__ = _import_with_fresh_sources
-    importlib.reload = _reload_in_place
-    # `python runner.py` put the runner's own directory first; the first cell's cwd replaces it.
-    runner_dir = os.path.dirname(os.path.realpath(__file__))
-    if sys.path and os.path.realpath(sys.path[0] or os.curdir) == runner_dir:
-        _STATE.import_path_prefix = [sys.path[0]]
 
 
 def _drain_capture_before_frame(rid: str | None) -> None:
@@ -1094,423 +832,6 @@ def _end_fd_capture() -> None:
             pass
 
 
-_CURLY_DOUBLE_RE = re.compile("[\u201c\u201d]")
-_CURLY_SINGLE_RE = re.compile("[\u2018\u2019]")
-_NBSP_RE = re.compile("\u00a0")
-_ZERO_WIDTH_RE = re.compile("[\u200b\u200c\u200d\ufeff]")
-
-_FENCE_LINE_RE = re.compile(r"```[A-Za-z0-9_+\-.#]*\s*")
-
-_INVALID_CHAR_HINTS = {
-    "\u201c": "curly double quote",
-    "\u201d": "curly double quote",
-    "\u2018": "curly single quote / apostrophe",
-    "\u2019": "curly single quote / apostrophe",
-    "\u2014": "em dash",
-    "\u2013": "en dash",
-    "\u00a0": "non-breaking space",
-    "\u2026": "ellipsis",
-}
-
-
-class PreparedCell:
-    """Pre-processed cell ready for compilation.
-
-    ``source`` is what will execute. ``notes`` disclose behavior the model
-    did not explicitly request (accepted repairs); ``hints``
-    carry diagnostics for a cell that will fail to compile regardless.
-    """
-
-    __slots__ = ("source", "notes", "hints")
-
-    def __init__(self, source: str, notes: list[str], hints: list[str]) -> None:
-        self.source = source
-        self.notes = notes
-        self.hints = hints
-
-
-def _compiles(source: str) -> bool:
-    try:
-        compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
-    except (SyntaxError, ValueError):
-        return False
-    return True
-
-
-def _unicode_repairs(source: str) -> tuple[str, list[str]]:
-    """Replace typography homoglyphs that are never valid code.
-
-    Only applied when the cell fails to compile, and every substitution is
-    disclosed: string contents can legitimately hold these characters, so
-    the unmodified source always gets first refusal.
-    """
-    notes: list[str] = []
-    repaired = _ZERO_WIDTH_RE.sub("", source)
-    repaired = _NBSP_RE.sub(" ", repaired)
-    curly_double = len(_CURLY_DOUBLE_RE.findall(repaired))
-    curly_single = len(_CURLY_SINGLE_RE.findall(repaired))
-    if curly_double:
-        repaired = _CURLY_DOUBLE_RE.sub('"', repaired)
-        notes.append(f"normalized {curly_double} curly double quote(s) to ASCII")
-    if curly_single:
-        repaired = _CURLY_SINGLE_RE.sub("'", repaired)
-        notes.append(f"normalized {curly_single} curly single quote(s) to ASCII")
-    return repaired, notes
-
-
-def _strip_markdown_fences(source: str) -> str | None:
-    """Strip a wrapping ``` fence pair (```` ```python ... ``` ````) when the
-    whole cell is fenced. Returns ``None`` when the shape does not match;
-    the caller must recompile before trusting the result."""
-    lines = source.split("\n")
-    first = next((k for k, l in enumerate(lines) if l.strip()), None)
-    last = next((k for k in range(len(lines) - 1, -1, -1) if lines[k].strip()), None)
-    if first is None or last is None or last <= first:
-        return None
-    open_line = lines[first].strip()
-    if not _FENCE_LINE_RE.fullmatch(open_line):
-        return None
-    if lines[last].strip() != "```":
-        return None
-    inner = lines[first + 1 : last]
-    if not any(l.strip() for l in inner):
-        return None
-    return "\n".join(inner)
-
-
-def _quote_style_at(source: str, pos: tuple[int, ...] | None) -> str:
-    """Best-effort description of the string literal opened at ``pos``."""
-    if not pos or len(pos) < 2:
-        return "string literal"
-    row, col = pos[0], max(0, pos[1] - 1)
-    lines = source.split("\n")
-    if not (1 <= row <= len(lines)):
-        return "string literal"
-    m = re.search(r'([A-Za-z]{0,2})("""|\'\'\'|"|\')', lines[row - 1][col:])
-    if not m:
-        return "string literal"
-    prefix, quote = m.group(1), m.group(2)
-    return f"string literal {prefix}{quote}" if prefix else f"string literal {quote}"
-
-
-def _syntax_hints(source: str) -> list[str]:
-    """Diagnostics for a cell that failed every compile attempt.
-
-    The caret traceback still comes from the ordinary error path; hints add
-    the context that caret cannot show (where an unterminated string opened,
-    which character is a homoglyph, why a path literal exploded).
-    """
-    hints: list[str] = []
-    try:
-        for _ in tokenize.generate_tokens(io.StringIO(source).readline):
-            pass
-    except tokenize.TokenError as exc:
-        message = exc.args[0] if exc.args else ""
-        pos = exc.args[1] if len(exc.args) > 1 else None
-        if "multi-line string" in message and pos:
-            hints.append(
-                f"{_quote_style_at(source, pos)} opened at line {pos[0]} is never closed — "
-                "count the quote runs; text containing triple quotes is the usual cause"
-            )
-        elif pos:
-            hints.append(
-                f"string literal on line {pos[0]} is not closed before the end of the line"
-            )
-    except (SyntaxError, ValueError, IndentationError):
-        pass
-    try:
-        compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
-    except SyntaxError as exc:
-        message = exc.msg or ""
-        lineno = exc.lineno or 0
-        if "invalid character" in message:
-            m = re.search(r"\(U\+([0-9A-Fa-f]+)\)", message)
-            glyph = ""
-            if m:
-                try:
-                    glyph = chr(int(m.group(1), 16))
-                except ValueError:
-                    glyph = ""
-            name = _INVALID_CHAR_HINTS.get(glyph, "non-ASCII character")
-            if glyph:
-                hints.append(
-                    f"line {lineno}: {name} ({glyph!r}) used as code — "
-                    "typography homoglyphs are not Python syntax"
-                )
-            else:
-                hints.append(f"line {lineno}: {message}")
-        elif "unicodeescape" in message:
-            hints.append(
-                f"line {lineno}: backslash escape in a normal string literal "
-                "— use a raw string r'...' or forward slashes"
-            )
-    if _strip_markdown_fences(source) is not None:
-        hints.append(
-            "cell is wrapped in ``` markdown fences — stripping them did not fix the parse"
-        )
-    return hints
-
-
-def prepare_cell(code: str) -> PreparedCell:
-    """Full pre-processing pipeline for a user cell.
-
-    Magics are translated first, then a repair ladder runs only if the
-    result still fails to compile. Every
-    accepted repair is disclosed in ``notes``; ``hints`` are populated only
-    when no repair compiles.
-    """
-    transformed = transform_cell(code)
-    if _compiles(transformed):
-        return PreparedCell(transformed, [], [])
-    fenced = _strip_markdown_fences(transformed)
-    cleaned, repair_notes = _unicode_repairs(transformed)
-    candidates: list[tuple[str, list[str]]] = []
-    if fenced is not None:
-        candidates.append((fenced, ["stripped wrapping markdown code fence"]))
-    if repair_notes:
-        candidates.append((cleaned, repair_notes))
-    if fenced is not None and repair_notes:
-        both = _strip_markdown_fences(cleaned)
-        if both is not None:
-            candidates.append(
-                (both, ["stripped wrapping markdown code fence", *repair_notes])
-            )
-    for candidate, applied in candidates:
-        if _compiles(candidate):
-            return PreparedCell(
-                candidate,
-                [f"executed repaired cell: {'; '.join(applied)}"],
-                [],
-            )
-    return PreparedCell(transformed, [], _syntax_hints(transformed))
-
-
-def _emit_cell_prep(prepared: PreparedCell) -> None:
-    for note in prepared.notes:
-        _emit_kernel_note(note)
-    for hint in prepared.hints:
-        _emit_kernel_note(hint, level="hint")
-
-
-_MAGIC_LINE_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<name>[A-Za-z_][A-Za-z_0-9]*)(?:[ \t]+(?P<args>.*))?$"
-)
-_ASSIGN_LINE_RE = re.compile(
-    r"^(?P<indent>[ \t]*)(?P<lhs>[A-Za-z_][A-Za-z_0-9.\[\], ]*?)\s*=\s*(?P<rhs>.+)$"
-)
-
-
-def _fold_continuations(lines: list[str], start: int) -> tuple[str, int]:
-    """Fold trailing backslash continuations starting at ``start``. Returns
-    ``(folded_text, lines_consumed)``."""
-    parts: list[str] = []
-    i = start
-    while i < len(lines):
-        line = lines[i]
-        if line.endswith("\\"):
-            parts.append(line[:-1])
-            i += 1
-            continue
-        parts.append(line)
-        i += 1
-        break
-    return ("".join(parts), i - start)
-
-
-def _quote_arg(text: str) -> str:
-    """Return a Python string literal that round-trips ``text`` exactly."""
-    return json.dumps(text, ensure_ascii=False)
-
-
-_STRING_START_TOKENS = {
-    getattr(tokenize, name, -1) for name in ("FSTRING_START", "TSTRING_START")
-}
-_STRING_END_TOKENS = {
-    getattr(tokenize, name, -1) for name in ("FSTRING_END", "TSTRING_END")
-}
-
-
-def _magic_line_indices(lines: list[str]) -> set[int]:
-    """Find command lines outside Python strings without lexing shell payloads."""
-    indices: set[int] = set()
-    offset = 0
-    while offset < len(lines):
-        # A synthetic enclosing expression suppresses indentation checks when
-        # restarting in the middle of a suite; this pass only identifies tokens.
-        stream = itertools.chain(
-            ("(\n",),
-            (line + "\n" for line in itertools.islice(lines, offset, None)),
-            (")\n",),
-        )
-        last_row = -1
-        string_depth = 0
-        try:
-            for item in tokenize.generate_tokens(lambda: next(stream, "")):
-                if item.type in _STRING_START_TOKENS:
-                    string_depth += 1
-                elif item.type in _STRING_END_TOKENS:
-                    string_depth -= 1
-                    continue
-                if string_depth or item.type in (
-                    tokenize.NL, tokenize.NEWLINE, tokenize.INDENT,
-                    tokenize.DEDENT, tokenize.ENDMARKER, tokenize.COMMENT,
-                ) or (item.type == tokenize.ERRORTOKEN and item.string.isspace()):
-                    # Python < 3.12 emits indentation before `!` as one
-                    # whitespace ERRORTOKEN per column.
-                    continue
-                row = offset + item.start[0] - 2
-                if row < offset or row >= len(lines) or row == last_row:
-                    continue
-                last_row = row
-                stripped = lines[row].lstrip()
-                if item.start[1] != len(lines[row]) - len(stripped):
-                    continue
-                assignment = _ASSIGN_LINE_RE.match(lines[row])
-                rhs = assignment.group("rhs").strip() if assignment else ""
-                if not stripped.startswith(("%", "!")) and not rhs.startswith(("%", "!")):
-                    continue
-                indices.add(row)
-                if stripped.startswith("%%"):
-                    return indices
-                # Shell quotes and cell/line magic arguments are not Python.
-                # Restart after the command instead of tokenizing its payload.
-                consumed = _fold_continuations(lines, row)[1] if stripped.startswith(("%", "!")) else 1
-                offset = row + consumed
-                break
-            else:
-                return indices
-        except (tokenize.TokenError, IndentationError):
-            # Leave incomplete Python source to the ordinary syntax-error path.
-            return indices
-    return indices
-
-
-def transform_cell(source: str) -> str:
-    """Translate IPython-style magics + shell escapes into plain Python.
-
-    Rules
-    -----
-    * ``%name args``              -> ``__proto_magic("name", "args")``
-    * ``var = %name args``        -> ``var = __proto_magic("name", "args")``
-    * ``!cmd``                    -> ``__proto_shell("cmd")``
-    * ``var = !cmd``              -> ``var = __proto_shell("cmd")``
-    * ``%%name args\\n<body>``    -> ``__proto_magic_cell("name", "args", "<body>")``
-      (cell magic must be the first non-whitespace token of a top-level line and
-      consumes the remainder of the cell)
-
-    A cell that compiles is left untouched. Otherwise Python tokenization
-    identifies command lines outside strings and comments, restarting after
-    each command without lexing shell quotes or magic arguments as Python.
-    """
-
-    if "%" not in source and "!" not in source:
-        return source
-    try:
-        compile(source, "<cell>", "exec", flags=ast.PyCF_ONLY_AST | _TLA_FLAG)
-        return source
-    except SyntaxError:
-        pass
-
-    lines = source.splitlines()
-    magic_lines = _magic_line_indices(lines)
-    out: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if i not in magic_lines:
-            out.append(line)
-            i += 1
-            continue
-        stripped = line.lstrip()
-        indent = line[: len(line) - len(stripped)]
-
-        if stripped.startswith("%%"):
-            head, _ = _split_magic_head(stripped[2:])
-            name, args = head
-            body_lines = lines[i + 1 :]
-            body = "\n".join(body_lines)
-            out.append(
-                f"{indent}__proto_magic_cell({_quote_arg(name)}, {_quote_arg(args)}, {_quote_arg(body)})"
-            )
-            return "\n".join(out)
-
-        if stripped.startswith("%") and not stripped.startswith("%%"):
-            folded, consumed = _fold_continuations(lines, i)
-            stripped_folded = folded.lstrip()
-            indent = folded[: len(folded) - len(stripped_folded)]
-            head, _ = _split_magic_head(stripped_folded[1:])
-            name, args = head
-            out.append(f"{indent}__proto_magic({_quote_arg(name)}, {_quote_arg(args)})")
-            i += consumed
-            continue
-
-        if stripped.startswith("!"):
-            folded, consumed = _fold_continuations(lines, i)
-            stripped_folded = folded.lstrip()
-            indent = folded[: len(folded) - len(stripped_folded)]
-            cmd = stripped_folded[1:].strip()
-            out.append(f"{indent}__proto_shell({_quote_arg(cmd)})")
-            i += consumed
-            continue
-
-        m = _ASSIGN_LINE_RE.match(line)
-        if m:
-            rhs = m.group("rhs").strip()
-            if rhs.startswith("!"):
-                cmd = rhs[1:].strip()
-                out.append(
-                    f"{m.group('indent')}{m.group('lhs').rstrip()} = __proto_shell({_quote_arg(cmd)})"
-                )
-                i += 1
-                continue
-            if rhs.startswith("%") and not rhs.startswith("%%"):
-                head, _ = _split_magic_head(rhs[1:])
-                name, args = head
-                out.append(
-                    f"{m.group('indent')}{m.group('lhs').rstrip()} = __proto_magic({_quote_arg(name)}, {_quote_arg(args)})"
-                )
-                i += 1
-                continue
-
-        out.append(line)
-        i += 1
-
-    return "\n".join(out)
-
-
-def _split_magic_head(text: str) -> tuple[tuple[str, str], str]:
-    """Split ``"name rest"`` into ``("name", "rest")``."""
-    text = text.lstrip()
-    if not text:
-        return ("", ""), ""
-    m = re.match(r"([A-Za-z_][A-Za-z_0-9]*)(?:\s+(.*))?$", text)
-    if not m:
-        return ("", text), ""
-    return (m.group(1), (m.group(2) or "").rstrip()), ""
-
-
-_LINE_MAGICS: dict[str, Callable[[str], Any]] = {}
-_CELL_MAGICS: dict[str, Callable[[str, str], Any]] = {}
-
-
-def line_magic(name: str) -> Callable[[Callable[[str], Any]], Callable[[str], Any]]:
-    def decorator(fn: Callable[[str], Any]) -> Callable[[str], Any]:
-        _LINE_MAGICS[name] = fn
-        return fn
-
-    return decorator
-
-
-def cell_magic(
-    name: str,
-) -> Callable[[Callable[[str, str], Any]], Callable[[str, str], Any]]:
-    def decorator(fn: Callable[[str, str], Any]) -> Callable[[str, str], Any]:
-        _CELL_MAGICS[name] = fn
-        return fn
-
-    return decorator
-
-
 def _emit_status(op: str, **data: Any) -> None:
     bundle = {"application/x-proto-status": {"op": op, **data}}
     rid = _current_run_id()
@@ -1520,790 +841,19 @@ def _emit_status(op: str, **data: Any) -> None:
     _emit({"type": "display", "id": rid, "bundle": bundle})
 
 
-_SHELL_READ_CHUNK_BYTES = 8192
-_SHELL_OUTPUT_MAX_BYTES = 1024 * 1024
-_SHELL_OUTPUT_MAX_LINES = 3000
-_SHELL_RESULT_CAPTURE_BYTES = _SHELL_OUTPUT_MAX_BYTES
-_PIP_LINE_SCAN_CHARS = 64 * 1024
-_SHELL_TRUNCATION_NOTICE = (
-    f"[output truncated: shell helper exceeded {_SHELL_OUTPUT_MAX_BYTES} bytes "
-    f"or {_SHELL_OUTPUT_MAX_LINES} lines; remaining output discarded]\n"
-)
-
-
-def _process_output_encoding() -> str:
-    return locale.getpreferredencoding(False) or "utf-8"
-
-
-def _process_output_decoder(encoding: str) -> codecs.IncrementalDecoder:
-    return codecs.getincrementaldecoder(encoding)(errors="replace")
-
-
-def _take_prefix_by_lines(text: str, max_lines: int) -> str:
-    if max_lines <= 0:
-        return ""
-    cursor = 0
-    for _ in range(max_lines):
-        newline = text.find("\n", cursor)
-        if newline < 0:
-            return text
-        cursor = newline + 1
-    return text[:cursor]
-
-
-def _take_prefix_by_encoded_bytes(text: str, max_bytes: int, encoding: str) -> str:
-    if max_bytes <= 0:
-        return ""
-    if len(text.encode(encoding, errors="strict")) <= max_bytes:
-        return text
-    lo = 0
-    hi = len(text)
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if len(text[:mid].encode(encoding, errors="strict")) <= max_bytes:
-            lo = mid
-        else:
-            hi = mid - 1
-    return text[:lo]
-
-
-class _ShellOutputLimiter:
-    def __init__(self, *, max_bytes: int, max_lines: int, encoding: str) -> None:
-        self._remaining_bytes = max_bytes
-        self._remaining_lines = max_lines
-        self._encoding = encoding
-        self._truncated = False
-        self._at_line_start = True
-
-    def write(self, text: str) -> None:
-        if not text or self._truncated:
-            return
-        limited = _take_prefix_by_lines(text, self._remaining_lines)
-        truncated = limited != text
-        byte_limited = _take_prefix_by_encoded_bytes(
-            limited, self._remaining_bytes, self._encoding
-        )
-        truncated = truncated or byte_limited != limited
-        if byte_limited:
-            sys.stdout.write(byte_limited)
-            sys.stdout.flush()
-            self._remaining_bytes -= len(
-                byte_limited.encode(self._encoding, errors="strict")
-            )
-            self._remaining_lines -= byte_limited.count("\n")
-            self._at_line_start = byte_limited.endswith("\n")
-        if truncated:
-            self._emit_truncation_notice()
-
-    def _emit_truncation_notice(self) -> None:
-        if self._truncated:
-            return
-        prefix = "" if self._at_line_start else "\n"
-        sys.stdout.write(prefix + _SHELL_TRUNCATION_NOTICE)
-        sys.stdout.flush()
-        self._truncated = True
-
-
-def _stream_process_output(
-    proc: subprocess.Popen, on_text: Callable[[str], None] | None = None
-) -> None:
-    assert proc.stdout is not None
-    encoding = _process_output_encoding()
-    decoder = _process_output_decoder(encoding)
-    limiter = _ShellOutputLimiter(
-        max_bytes=_SHELL_OUTPUT_MAX_BYTES,
-        max_lines=_SHELL_OUTPUT_MAX_LINES,
-        encoding=encoding,
-    )
-    while True:
-        chunk = os.read(proc.stdout.fileno(), _SHELL_READ_CHUNK_BYTES)
-        if not chunk:
-            break
-        text = decoder.decode(chunk)
-        if text:
-            limiter.write(text)
-            if on_text is not None:
-                on_text(text)
-    tail = decoder.decode(b"", final=True)
-    if tail:
-        limiter.write(tail)
-        if on_text is not None:
-            on_text(tail)
-
-
-class _BoundedTextCapture:
-    def __init__(self, max_bytes: int, max_lines: int, encoding: str) -> None:
-        self._remaining_bytes = max_bytes
-        self._remaining_lines = max_lines
-        self._encoding = encoding
-        self._parts: list[str] = []
-
-    def add(self, text: str) -> None:
-        if self._remaining_bytes <= 0 or self._remaining_lines <= 0:
-            return
-        line_limited = _take_prefix_by_lines(text, self._remaining_lines)
-        part = _take_prefix_by_encoded_bytes(
-            line_limited, self._remaining_bytes, self._encoding
-        )
-        if not part:
-            return
-        self._parts.append(part)
-        self._remaining_bytes -= len(part.encode(self._encoding, errors="strict"))
-        self._remaining_lines -= part.count("\n")
-
-    def text(self) -> str:
-        return "".join(self._parts)
-
-
-class _BoundedLineScanner:
-    def __init__(self, max_chars: int, on_line: Callable[[str], None]) -> None:
-        self._max_chars = max_chars
-        self._on_line = on_line
-        self._partial = ""
-
-    def add(self, text: str) -> None:
-        data = self._partial + text
-        lines = data.splitlines(keepends=True)
-        if not lines:
-            return
-        if lines[-1].endswith(("\n", "\r")):
-            self._partial = ""
-        else:
-            self._partial = lines.pop()
-        for line in lines:
-            self._on_line(line)
-        if len(self._partial) > self._max_chars:
-            self._partial = self._partial[-self._max_chars :]
-
-    def finish(self) -> None:
-        if self._partial:
-            self._on_line(self._partial)
-            self._partial = ""
-
-
-@line_magic("pip")
-def _magic_pip(args: str) -> None:
-    argv = shlex.split(args) if args else ["--help"]
-    # Installs are host work, not cell compute: suspend the eval watchdog (same
-    # protocol as bridge waits in bridge-timeout.ts). Caller aborts still apply.
-    _emit_status("timeout-pause")
-    try:
-        _run_pip(argv, args)
-    finally:
-        _emit_status("timeout-resume")
-
-
-def _has_pip() -> bool:
-    import importlib.util
-
-    importlib.invalidate_caches()
-    try:
-        return importlib.util.find_spec("pip") is not None
-    except (ImportError, ValueError):
-        return False
-
-
-def _procfs_usable() -> bool:
-    # /proc can be missing, unreadable or an empty unmounted directory (some
-    # containers and chroots); a mounted procfs lists this process. One
-    # inherited from a parent PID namespace lists outer pids, which can collide
-    # with ours (init is 1 in both) but never match its parents to our children:
-    # its /proc/self is this process under another pid.
-    try:
-        if str(os.getpid()) not in os.listdir("/proc"):
-            return False
-        with open("/proc/self/stat", "rb") as stat:
-            return int(stat.read().split(b" ", 1)[0]) == os.getpid()
-    except (OSError, ValueError):
-        return False
-
-
-def _child_pids() -> dict[int, list[int]]:
-    """Map each live pid to the pids of its children."""
-    children: dict[int, list[int]] = {}
-    if sys.platform.startswith("linux"):
-        try:
-            entries = os.listdir("/proc")
-        except OSError:
-            return children
-        for entry in entries:
-            if not entry.isdigit():
-                continue
-            try:
-                with open(f"/proc/{entry}/stat", "rb") as stat:
-                    ppid = int(stat.read().rsplit(b")", 1)[1].split()[1])
-            except (OSError, ValueError, IndexError):
-                continue
-            children.setdefault(ppid, []).append(int(entry))
-        return children
-    try:
-        listing = subprocess.run(
-            # /bin/ps first: the kernel's PATH is the user's and may not hold it.
-            ["/bin/ps" if os.path.exists("/bin/ps") else "ps", "-A", "-o", "pid=,ppid="],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return children
-    for line in listing.splitlines():
-        fields = line.split()
-        if len(fields) == 2:
-            children.setdefault(int(fields[1]), []).append(int(fields[0]))
-    return children
-
-
-def _kill_process_tree(proc: subprocess.Popen) -> None:
-    # Installers spawn their own children (ensurepip runs pip in one, source
-    # builds run backends and compilers), so killing `proc` alone is not enough.
-    # The tree stays in the kernel's process group so kernel shutdown still
-    # reaches it.
-    # Stop each process before listing its children, so nothing can spawn
-    # behind the walk; then kill every stopped process.
-    stopped: list[int] = []
-    level = [proc.pid]
-    while level:
-        for pid in level:
-            try:
-                os.kill(pid, signal.SIGSTOP)
-            except ProcessLookupError:
-                continue
-            stopped.append(pid)
-        children = _child_pids()
-        level = [child for pid in level for child in children.get(pid, ())]
-    for pid in stopped:
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-    proc.wait()
-
-
-def _run_installer(
-    cmd: list[str],
-    on_text: Callable[[str], None] | None = None,
-    env: dict[str, str] | None = None,
-) -> int:
-    if sys.platform.startswith("linux") and not _procfs_usable():
-        return _run_guarded_installer(cmd, on_text, env)
-    # stdin=DEVNULL: see _run_shell_body.
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        env=env,
-    )
-    try:
-        _stream_process_output(proc, on_text)
-        return proc.wait()
-    except BaseException:
-        # Cancelling the cell interrupts only the kernel: stop the installer too.
-        _kill_process_tree(proc)
-        raise
-
-
-# Parent of the installer in a session of its own. Its stdin is a pipe only the
-# kernel writes to, which reads EOF once the kernel closes it or exits by any
-# means (SIGKILL included); the whole group dies with it then.
-_INSTALLER_GUARD = """\
-import os, signal, subprocess, sys, threading
-def guard():
-    while os.read(0, 1):
-        pass
-    os.killpg(0, signal.SIGKILL)
-threading.Thread(target=guard, daemon=True).start()
-code = subprocess.call(sys.argv[1:], stdin=subprocess.DEVNULL)
-sys.exit(code if code >= 0 else 128 - code)
-"""
-
-
-def _run_guarded_installer(
-    cmd: list[str],
-    on_text: Callable[[str], None] | None,
-    env: dict[str, str] | None,
-) -> int:
-    # Without procfs nothing on Linux can list processes (ps reads /proc too),
-    # so the installer cannot stay in the kernel's group to be walked: it runs
-    # in a group of its own, under a guard that kills the group when the kernel
-    # goes, since kernel shutdown sweeps only the kernel's group.
-    read_end, write_end = os.pipe()
-    proc: subprocess.Popen | None = None
-    try:
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-I", "-c", _INSTALLER_GUARD, *cmd],
-                stdin=read_end,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                env=env,
-                start_new_session=True,
-            )
-        finally:
-            os.close(read_end)
-        _stream_process_output(proc, on_text)
-        return proc.wait()
-    finally:
-        # Ends the guard, so a cancel landing inside Popen still stops the tree.
-        os.close(write_end)
-        if proc is not None:
-            # A cancel, or what the installer left running once it exited.
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-
-
-def _bootstrap_pip() -> int:
-    # Environments made by `uv venv` ship without pip. Install it from the
-    # stdlib wheel; where ensurepip is missing or disabled (Debian's system
-    # Python), have uv install it into the kernel's interpreter instead.
-    code = _run_installer([sys.executable, "-m", "ensurepip"])
-    uv = shutil.which("uv")
-    if code == 0 or uv is None:
-        return code
-    return _run_installer(
-        [uv, "pip", "install", "pip"],
-        env={**os.environ, "UV_PYTHON": sys.executable},
-    )
-
-
-def _run_pip(argv: list[str], args: str) -> None:
-    if not _has_pip():
-        code = _bootstrap_pip()
-        if code != 0:
-            _emit_status("pip", args=args, installed=[], exit_code=code)
-            return
-    installed_packages: list[str] = []
-
-    def scan_pip_line(raw_line: str) -> None:
-        m = re.search(r"Successfully installed\s+(.+)$", raw_line)
-        if m:
-            for token in m.group(1).split():
-                # Token is name-version; drop the version suffix.
-                pkg = token.rsplit("-", 1)[0]
-                installed_packages.append(pkg.replace("_", "-"))
-
-    scanner = _BoundedLineScanner(_PIP_LINE_SCAN_CHARS, scan_pip_line)
-    returncode = _run_installer([sys.executable, "-m", "pip", *argv], scanner.add)
-    scanner.finish()
-    if installed_packages:
-        import importlib
-
-        importlib.invalidate_caches()
-        prefixes = {pkg.lower().replace("-", "_") for pkg in installed_packages}
-        for mod_name in list(sys.modules):
-            head = mod_name.split(".", 1)[0].lower()
-            if head in prefixes:
-                sys.modules.pop(mod_name, None)
-    _emit_status(
-        "pip", args=args, installed=installed_packages, exit_code=returncode
-    )
-
-
-@line_magic("cd")
-def _magic_cd(args: str) -> str:
-    path = os.path.expanduser(args.strip()) or os.path.expanduser("~")
-    os.chdir(path)
-    cwd = os.getcwd()
-    _emit_status("cd", path=cwd)
-    return cwd
-
-
-@line_magic("pwd")
-def _magic_pwd(_args: str) -> str:
-    cwd = os.getcwd()
-    _emit_status("pwd", path=cwd)
-    return cwd
-
-
-@line_magic("ls")
-def _magic_ls(args: str) -> list[str]:
-    target = os.path.expanduser(args.strip()) or "."
-    entries = sorted(os.listdir(target))
-    _emit_status("ls", path=os.path.abspath(target), count=len(entries))
-    return entries
-
-
-@line_magic("env")
-def _magic_env(args: str) -> Any:
-    args = args.strip()
-    if not args:
-        return dict(sorted(os.environ.items()))
-    if "=" in args:
-        key, value = args.split("=", 1)
-        os.environ[key.strip()] = value.strip()
-        return value.strip()
-    return os.environ.get(args)
-
-
-@line_magic("set_env")
-def _magic_set_env(args: str) -> str:
-    parts = args.split(None, 1)
-    if len(parts) != 2:
-        raise ValueError("Usage: %set_env KEY VALUE")
-    key, value = parts
-    os.environ[key] = value
-    return value
-
-
-@line_magic("time")
-def _magic_time(args: str) -> Any:
-    start = time.perf_counter()
-    result = eval(args, _STATE.user_ns)
-    elapsed = time.perf_counter() - start
-    sys.stdout.write(f"Wall time: {elapsed * 1000:.2f} ms\n")
-    _emit_status("time", elapsed_ms=round(elapsed * 1000, 3))
-    return result
-
-
-@line_magic("timeit")
-def _magic_timeit(args: str) -> None:
-    import timeit as _timeit
-
-    timer = _timeit.Timer(stmt=args, globals=_STATE.user_ns)
-    iters, total = timer.autorange()
-    per = total / iters
-    sys.stdout.write(f"{iters} loops, best of 1: {per * 1e6:.2f} us per loop\n")
-    _emit_status("timeit", loops=iters, total_ms=round(total * 1000, 3))
-
-
-@line_magic("who")
-def _magic_who(_args: str) -> list[str]:
-    names = sorted(
-        name
-        for name, value in _STATE.user_ns.items()
-        if not name.startswith("_")
-        and not callable(value)
-        or hasattr(value, "__class__")
-    )
-    return [n for n in names if not n.startswith("__")]
-
-
-@line_magic("whos")
-def _magic_whos(_args: str) -> list[tuple[str, str]]:
-    rows = []
-    for name in sorted(_STATE.user_ns):
-        if name.startswith("__"):
-            continue
-        value = _STATE.user_ns[name]
-        rows.append((name, type(value).__name__))
-    return rows
-
-
-@line_magic("reset")
-def _magic_reset(_args: str) -> None:
-    global _DECLARED_STATE_NAMES
-    _DECLARED_STATE_NAMES = []
-    _STATE.user_ns.clear()
-    _STATE.user_ns.update({"__name__": "__main__", "__doc__": None})
-    _install_builtins(_STATE.user_ns)
-    _STATE.defs.clear()
-    _STATE.shadow_warned.clear()
-    _emit_status("reset")
-
-
-@line_magic("load")
-def _magic_load(args: str) -> None:
-    path = Path(os.path.expanduser(args.strip()))
-    source = path.read_text(encoding="utf-8")
-    _sync_before_frame(_CURRENT_RID.get())
-    _emit(
-        {"type": "display", "id": _CURRENT_RID.get(), "bundle": {"text/plain": source}}
-    )
-    _exec_source(source, _STATE.user_ns)
-
-
-@line_magic("run")
-def _magic_run(args: str) -> None:
-    parts = shlex.split(args) if args else []
-    if not parts:
-        raise ValueError("Usage: %run <path>")
-    target = os.path.expanduser(parts[0])
-    saved_argv = sys.argv
-    try:
-        sys.argv = [target, *parts[1:]]
-        result_ns = runpy.run_path(target, run_name="__main__")
-    finally:
-        sys.argv = saved_argv
-    for name, value in result_ns.items():
-        if name.startswith("__"):
-            continue
-        _STATE.user_ns[name] = value
-
-
-@cell_magic("bash")
-def _magic_cell_bash(args: str, body: str) -> int:
-    return _run_shell_body(body, shell_arg="/bin/bash")
-
-
-_CAPTURE_TRUNCATION_NOTICE = (
-    f"[output truncated: capture exceeded {_SHELL_OUTPUT_MAX_BYTES} bytes "
-    f"or {_SHELL_OUTPUT_MAX_LINES} lines; remaining output discarded]\n"
-)
-
-
-class _BoundedCapture(io.StringIO):
-    """String stream retaining at most the shell helper byte/line limits."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._bytes = 0
-        self._lines = 0
-        self._truncated = False
-
-    def write(self, value: str) -> int:
-        if not isinstance(value, str):
-            raise TypeError(f"write() argument must be str, not {type(value).__name__}")
-        original_length = len(value)
-        if self._truncated or not value:
-            return original_length
-        remaining = _SHELL_OUTPUT_MAX_BYTES - self._bytes
-        prefix = value[:remaining]
-        encoded = prefix.encode("utf-8", "replace")
-        if len(encoded) > remaining:
-            prefix = encoded[:remaining].decode("utf-8", "ignore")
-            encoded = prefix.encode("utf-8")
-        allowed_lines = _SHELL_OUTPUT_MAX_LINES - self._lines
-        if allowed_lines <= 0:
-            prefix = ""
-        else:
-            cursor = 0
-            for _ in range(allowed_lines):
-                newline = prefix.find("\n", cursor)
-                if newline < 0:
-                    break
-                cursor = newline + 1
-            else:
-                prefix = prefix[:cursor]
-        if prefix:
-            super().write(prefix)
-            self._bytes += len(prefix.encode("utf-8"))
-            self._lines += prefix.count("\n")
-        if len(prefix) < len(value):
-            self._truncated = True
-        return original_length
-
-    def getvalue(self) -> str:
-        text = super().getvalue()
-        return text + (_CAPTURE_TRUNCATION_NOTICE if self._truncated else "")
-
-
-@cell_magic("capture")
-def _magic_cell_capture(args: str, body: str) -> str:
-    """Capture stdout/stderr of body; bind to ``args`` (a name) if provided."""
-    captured = _BoundedCapture()
-    saved_stdout, saved_stderr = sys.stdout, sys.stderr
-    sys.stdout = sys.stderr = captured
-    try:
-        _exec_source(body, _STATE.user_ns)
-    finally:
-        sys.stdout, sys.stderr = saved_stdout, saved_stderr
-    text = captured.getvalue()
-    name = args.strip()
-    if name:
-        _STATE.user_ns[name] = text
-    return text
-
-
-@cell_magic("timeit")
-def _magic_cell_timeit(args: str, body: str) -> None:
-    import timeit as _timeit
-
-    timer = _timeit.Timer(stmt=body, globals=_STATE.user_ns)
-    iters, total = timer.autorange()
-    per = total / iters
-    sys.stdout.write(f"{iters} loops, best of 1: {per * 1e6:.2f} us per loop\n")
-    _emit_status("timeit", loops=iters, total_ms=round(total * 1000, 3))
-
-
-@cell_magic("writefile")
-def _magic_cell_writefile(args: str, body: str) -> str:
-    path = Path(os.path.expanduser(args.strip()))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body, encoding="utf-8")
-    _emit_status("writefile", path=str(path), bytes=len(body))
-    return str(path)
-
-
-def _run_shell_body(body: str, *, shell_arg: str) -> int:
-    proc = subprocess.Popen(
-        [shell_arg, "-c", body],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    _stream_process_output(proc)
-    proc.wait()
-    return proc.returncode
-
-
-def __proto_magic(name: str, args: str) -> Any:
-    fn = _LINE_MAGICS.get(name)
-    if fn is None:
-        raise NameError(f"UsageError: Line magic function '%{name}' not found.")
-    return fn(args)
-
-
-def __proto_magic_cell(name: str, args: str, body: str) -> Any:
-    fn = _CELL_MAGICS.get(name)
-    if fn is None:
-        raise NameError(f"UsageError: Cell magic function '%%{name}' not found.")
-    return fn(args, body)
-
-
-class _ShellResult(list):
-    """Result of ``!cmd`` — list of stripped output lines."""
-
-    def __init__(self, lines: list[str], returncode: int) -> None:
-        super().__init__(lines)
-        self.returncode = returncode
-
-    @property
-    def n(self) -> str:
-        return "\n".join(self)
-
-    @property
-    def s(self) -> str:
-        return " ".join(self)
-
-
-def __proto_shell(cmd: str) -> _ShellResult:
-    proc = subprocess.Popen(
-        cmd,
-        shell=True,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    capture = _BoundedTextCapture(
-        _SHELL_RESULT_CAPTURE_BYTES, _SHELL_OUTPUT_MAX_LINES, _process_output_encoding()
-    )
-    _stream_process_output(proc, capture.add)
-    proc.wait()
-    lines = [line for line in capture.text().splitlines()]
-    return _ShellResult(lines, proc.returncode)
-
-
-_REPR_MIMES = [
-    ("_repr_html_", "text/html"),
-    ("_repr_markdown_", "text/markdown"),
-    ("_repr_svg_", "image/svg+xml"),
-    ("_repr_png_", "image/png"),
-    ("_repr_jpeg_", "image/jpeg"),
-    ("_repr_json_", "application/json"),
-    ("_repr_latex_", "text/latex"),
-]
-
-
-def _is_matplotlib_figure(value: Any) -> bool:
-    figure_module = sys.modules.get("matplotlib.figure")
-    figure_cls = getattr(figure_module, "Figure", None)
-    if isinstance(figure_cls, type) and isinstance(value, figure_cls):
-        return True
-
-    value_type = type(value)
-    return (
-        value_type.__module__ == "matplotlib.figure" and value_type.__name__ == "Figure"
-    )
-
-
-def _matplotlib_figure_png(value: Any) -> str | None:
-    if not _is_matplotlib_figure(value):
-        return None
-
-    savefig = getattr(value, "savefig", None)
-    if not callable(savefig):
-        return None
-
-    try:
-        buf = io.BytesIO()
-        savefig(buf, format="png", bbox_inches="tight")
-    except Exception:
-        return None
-
-    displayed_ids = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.get()
-    if displayed_ids is not None:
-        displayed_ids.add(id(value))
-    return base64.b64encode(buf.getvalue()).decode("ascii")
-
-
-def _coerce_image_bytes(value: Any) -> str:
-    if isinstance(value, (bytes, bytearray)):
-        return base64.b64encode(bytes(value)).decode("ascii")
-    if isinstance(value, str):
-        return value
-    return base64.b64encode(repr(value).encode("utf-8")).decode("ascii")
-
-
 def _mime_bundle(value: Any) -> dict:
-    """Build a Jupyter-style MIME bundle for ``value``.
-
-    Honors ``_repr_mimebundle_`` first, falls back to individual ``_repr_*_``
-    accessors, and always provides ``text/plain``.
-    """
-    bundle: dict[str, Any] = {}
-    matplotlib_png = _matplotlib_figure_png(value)
-    if matplotlib_png is not None:
-        bundle["image/png"] = matplotlib_png
-
-    mimebundle = getattr(value, "_repr_mimebundle_", None)
-    if callable(mimebundle):
-        try:
-            data = mimebundle()
-        except Exception:
-            data = None
-        if isinstance(data, tuple):
-            data = data[0]
-        if isinstance(data, dict):
-            for key, mime_value in data.items():
-                key_str = str(key)
-                if key_str in ("image/png", "image/jpeg"):
-                    bundle[key_str] = _coerce_image_bytes(mime_value)
-                else:
-                    bundle[key_str] = mime_value
-
-    for attr, mime in _REPR_MIMES:
-        if mime in bundle:
-            continue
-        repr_fn = getattr(value, attr, None)
-        if not callable(repr_fn):
-            continue
-        try:
-            data = repr_fn()
-        except Exception:
-            continue
-        if data is None:
-            continue
-        if mime in ("image/png", "image/jpeg"):
-            bundle[mime] = _coerce_image_bytes(data)
-        else:
-            bundle[mime] = data
-
-    if "text/plain" not in bundle:
-        try:
-            bundle["text/plain"] = repr(value)
-        except Exception:
-            bundle["text/plain"] = f"<unrepr {type(value).__name__}>"
-
+    from proto_harness._display import _mime_bundle as convert, _is_matplotlib_figure
+    bundle = convert(value)
+    if "image/png" in bundle and _is_matplotlib_figure(value):
+        displayed = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.get()
+        if displayed is not None:
+            displayed.add(id(value))
     return bundle
 
 
-_MAX_SAFE_JSON_INTEGER = (1 << 53) - 1
-
-
 def _safe_display_json(value: Any) -> Any:
-    """Preserve integers that JavaScript cannot represent exactly as decimal strings."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return str(value) if abs(value) > _MAX_SAFE_JSON_INTEGER else value
-    if isinstance(value, dict):
-        return {key: _safe_display_json(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_safe_display_json(item) for item in value]
-    return value
+    from proto_harness._display import _safe_display_json as convert
+    return convert(value)
 
 
 def _emit_display(bundle: dict, *, kind: str = "display") -> None:
@@ -2326,31 +876,6 @@ def __proto_display(value: Any, *, raw: bool = False, kind: str = "display") -> 
         _emit_display(bundle, kind=kind)
         return
     _emit_display(_mime_bundle(value), kind=kind)
-
-
-def _prelude_fn(name: str):
-    """Fetch a private prelude helper by name (prelude ns first, then the
-    legacy user-ns layout)."""
-    fn = None
-    if _STATE.prelude_ns is not None:
-        fn = _STATE.prelude_ns.get(name)
-    if fn is None:
-        fn = _STATE.user_ns.get(name)
-    return fn if callable(fn) else None
-
-
-def _flush_fs_status() -> None:
-    """Emit status events for filesystem mutations made without a helper API."""
-    fn = _prelude_fn("_flush_fs_status")
-    if fn is not None:
-        fn()
-
-
-def _reset_fs_status() -> None:
-    """Drop mutation records left by runner machinery between requests."""
-    fn = _prelude_fn("_reset_fs_status")
-    if fn is not None:
-        fn()
 
 
 def _ensure_matplotlib_saved_hook() -> None:
@@ -2525,10 +1050,9 @@ def __proto_kernel_state(*, limit: int = 200) -> dict:
         raise ValueError("kernel_state limit must be an integer from 0 to 1000")
     variables = []
     total = 0
-    hidden = set(_runner_exports()) | set(_STATE.prelude_exports)
     for name in sorted(name for name in _STATE.user_ns if type(name) is str):
         value = _STATE.user_ns[name]
-        if name.startswith("__") or (name in hidden and name not in _STATE.defs):
+        if name.startswith("__"):
             continue
         total += 1
         if len(variables) >= limit:
@@ -2566,54 +1090,34 @@ def __proto_defs_view() -> dict[str, int]:
     return dict(_STATE.defs)
 
 
-def _state_path(path):
-    resolver = _prelude_fn("_filesystem_path")
-    return str(resolver(path) if resolver else Path(path).expanduser())
-
-
-_DECLARED_STATE_NAMES = []
-
-
-def __proto_declare_state(names):
-    global _DECLARED_STATE_NAMES
-    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
-    selected = [] if type(names) is list and not names else _persistence._names(names, reserved)
-    if selected:
-        _persistence.capture_state(selected, _STATE.user_ns, reserved)
-    _DECLARED_STATE_NAMES = selected
-    return list(selected)
-
-
 def _declared_state_request(req):
-    global _DECLARED_STATE_NAMES
-    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
-    if _DECLARED_STATE_NAMES and any(not task.done() for task in _STATE.retained):
-        raise ValueError("Declared state cannot cross a boundary with retained tasks")
-    if _DECLARED_STATE_NAMES and any(thread.is_alive() for thread in list(_STATE.thread_owners)):
-        raise ValueError("Declared state cannot cross a boundary with live user threads")
+    # A boundary must reject before teardown, even when the resource is not named.
+    if any(not task.done() for task in _STATE.retained):
+        raise ValueError("Python namespace cannot cross a boundary with retained resources/tasks")
+    if any(thread.is_alive() for thread in list(_STATE.thread_owners)):
+        raise ValueError("Python namespace cannot cross a boundary with live user threads/resources")
+    from proto_harness import _serialization
     if req.get("action") == "capture":
-        return _persistence.capture_state(_DECLARED_STATE_NAMES, _STATE.user_ns, reserved) if _DECLARED_STATE_NAMES else None
+        plumbing = {"__builtins__": vars(builtins)}
+        for name, value in plumbing.items():
+            if name in _STATE.user_ns and _STATE.user_ns[name] is not value:
+                raise ValueError("Python namespace overrides reserved runtime binding: " + name)
+        values = {name: value for name, value in _STATE.user_ns.items() if name not in plumbing}
+        return _serialization.dumps(values, namespace=_STATE.user_ns)
     if req.get("action") != "restore":
-        raise ValueError("Invalid declared state operation")
+        raise ValueError("Invalid Python namespace state operation")
+    # Deserialize completely before touching live computation; function globals and
+    # the restored module dictionary are the very same memoized graph object.
     snapshot = req.get("snapshot")
-    names = _persistence.restore_state(snapshot, _STATE.user_ns, reserved, compatible=True)
-    _DECLARED_STATE_NAMES = names
-    for name in names:
-        _STATE.defs[name] = _STATE.execution_count
+    if isinstance(snapshot, dict) and snapshot.get("format") != "proto.python-graph":
+        raise ValueError("Unsupported Python namespace checkpoint codec; explicitly reset or close this named Python kernel to discard its old namespace. History and JavaScript state remain readable.")
+    module = _serialization.loads_namespace(snapshot)
+    _STATE.user_module = module
+    _STATE.user_ns = module.__dict__
+    sys.modules["__main__"] = module
+    _install_builtins(_STATE.user_ns)
+    _STATE.defs = {name: _STATE.execution_count for name in _STATE.user_ns}
     return None
-
-
-def __proto_save_state(path, names) -> dict:
-    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
-    return _persistence.save_state(_state_path(path), names, _STATE.user_ns, reserved)
-
-
-def __proto_load_state(path, *, collision="reject") -> dict:
-    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
-    result = _persistence.load_state(_state_path(path), _STATE.user_ns, reserved, collision=collision)
-    for name in result["names"]:
-        _STATE.defs[name] = _STATE.execution_count
-    return result
 
 
 def _current_run_id() -> str | None:
@@ -2647,6 +1151,27 @@ def _create_user_task(loop, coro, **kwargs):
     return task
 
 
+def _retire_cell_task(task: asyncio.Task, *, observed: BaseException | None = None) -> None:
+    """Retrieve terminal outcomes before dropping ownership, preserving native diagnostics.
+
+    Awaited failures have already cleared asyncio's unobserved flag. A child
+    SystemExit/KeyboardInterrupt that escaped run_until_complete is also observed
+    by the owning request, but asyncio has not retrieved that task's exception.
+    Other unobserved failures must still be reported, exactly once in this cell.
+    """
+    _STATE.cell_tasks.pop(task, None)
+    if task.cancelled():
+        return
+    unobserved = getattr(task, "_log_traceback", False)
+    error = task.exception()
+    if unobserved and error is not None and error is not observed:
+        task.get_loop().call_exception_handler({
+            "message": "Task exception was never retrieved",
+            "exception": error,
+            "future": task,
+        })
+
+
 def _task_finished(task: asyncio.Task) -> None:
     if task in _STATE.retained or _STATE.cell_tasks.get(task) != _STATE.active_request_id:
         _STATE.cell_tasks.pop(task, None)
@@ -2669,14 +1194,11 @@ def _start_user_thread(thread, *args, **kwargs):
         raise
 
 
-def _next_completion_invocation_id() -> str:
-    counter = _CURRENT_COMPLETION_COUNT.get()
-    if counter is None:
-        counter = [0]
-        _CURRENT_COMPLETION_COUNT.set(counter)
-    value = counter[0]
-    counter[0] += 1
-    return str(value)
+def _next_completion_invocation() -> str:
+    invocations = _CURRENT_COMPLETION_INVOCATIONS.get()
+    if invocations is None:
+        raise RuntimeError("completion requires a kernel execution context")
+    return str(next(invocations))
 
 
 def _runner_exports() -> dict[str, Any]:
@@ -2685,67 +1207,22 @@ def _runner_exports() -> dict[str, Any]:
         "defs": __proto_defs_view,
         "kernel_state": __proto_kernel_state,
         "retain_task": __proto_retain_task,
-        "declare_state": __proto_declare_state,
-        "save_state": __proto_save_state,
-        "load_state": __proto_load_state,
+        "next_completion_invocation": _next_completion_invocation,
     }
 
 
 def _install_builtins(ns: dict) -> None:
-    """(Re)install runner + prelude helpers into a user namespace.
-
-    Helpers are bound twice: as globals (visible to ``dir()``/``%who``) and
-    in a private copy of ``builtins`` that backs the namespace, so a cell
-    that rebinds ``output = ...`` can ``del output`` to get the helper back
-    instead of losing it for the life of the kernel.
-    """
-    ns["__proto_display"] = __proto_display
-    ns["__proto_display_result"] = _display_result
-    ns["__proto_magic"] = __proto_magic
-    ns["__proto_magic_cell"] = __proto_magic_cell
-    ns["__proto_shell"] = __proto_shell
-    ns["__proto_current_run_id__"] = _current_run_id
-    exports = {**_runner_exports(), **_STATE.prelude_exports}
-    ns.update(exports)
-    ns["__builtins__"] = {**vars(builtins), **exports}
+    """Keep Python's native builtins without harness globals."""
+    ns["__builtins__"] = vars(builtins)
 
 
-def _load_prelude(source: str) -> None:
-    """Execute the host prelude in an isolated module namespace and export its API.
-
-    Only ``__all__`` (or, failing that, public non-module names) is copied
-    into ``user_ns``; the helpers' own globals (``json``, ``os``, private
-    ``_bridge_call``…) stay out of reach of user rebindings.
-    """
-    ns: dict[str, Any] = {
-        "__name__": "__proto_prelude__",
-        "__builtins__": builtins,
-        "__proto_display": __proto_display,
-        "__proto_kernel_note": _emit_kernel_note,
-        "__proto_sources_may_have_changed": _mark_sources_dirty,
-        "__proto_current_run_id__": _current_run_id,
-        "__proto_next_completion_invocation__": _next_completion_invocation_id,
-    }
+def _bind_runtime() -> None:
+    """Bind runtime-local APIs to the explicit package, never user globals."""
+    import proto_harness._client as client
+    client._runtime = _runner_exports()
     if os.environ.get("PI_KERNEL_STDIO_BRIDGE") == "1":
-        ns["__proto_bridge_call__"] = __proto_bridge_call__
-    exec(compile(source, "<prelude>", "exec"), ns)
-    declared = ns.get("__all__")
-    if isinstance(declared, (list, tuple)):
-        names = [n for n in declared if isinstance(n, str) and n in ns]
-    else:
-        names = [
-            n
-            for n, v in ns.items()
-            if not n.startswith("_") and not isinstance(v, types.ModuleType)
-        ]
-    _STATE.prelude_ns = ns
-    _STATE.prelude_exports = {n: ns[n] for n in names}
+        client._transport = __proto_bridge_call__
     _install_builtins(_STATE.user_ns)
-    _STATE.prelude_names = set(_runner_exports()) | {
-        n for n, v in _STATE.prelude_exports.items() if not isinstance(v, (types.ModuleType, type))
-    }
-    _STATE.defs.clear()
-    _STATE.shadow_warned.clear()
 
 
 _TLA_FLAG = getattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT", 0x2000)
@@ -2775,9 +1252,14 @@ def _await_sync(coro) -> Any:
     _STATE.request_tasks.add(task)
     try:
         ok, value = loop.run_until_complete(task)
-    except BaseException:
+    except BaseException as exc:
         # SIGINT or SystemExit raised by a child task/callback can escape
-        # Task._step. Settle the suspended request before admitting a new cell.
+        # Task._step. Retrieve the already-observed child failure before its
+        # traceback cycle is collected under a later cell's output capture.
+        for child in _owned_tasks(_current_run_id()):
+            if child.done():
+                _retire_cell_task(child, observed=exc)
+        # Settle the suspended request before admitting a new cell.
         task.cancel()
         loop.run_until_complete(task)
         raise
@@ -2789,37 +1271,43 @@ def _await_sync(coro) -> Any:
     return value
 
 
-def _run_compiled_sync(code, ns: dict) -> None:
-    """Ordinary code runs on the main thread with no running host loop.
-
-    A whole compiled coroutine cell runs on the explicit persistent loop;
-    asyncio.run in ordinary code is untouched and owns its own native loop.
-    """
-    if code.co_flags & inspect.CO_COROUTINE:
-        _await_sync(eval(code, ns))
-    else:
-        exec(code, ns)
-
-
-def _display_result(value) -> None:
-    if value is not None:
-        __proto_display(value, kind="result")
+async def _evaluate_cell_parts(statements, expression, ns: dict) -> None:
+    value = eval(statements, ns)
+    if statements.co_flags & inspect.CO_COROUTINE:
+        await value
+    if expression is not None:
+        value = eval(expression, ns)
+        if expression.co_flags & inspect.CO_COROUTINE:
+            value = await value
+        if value is not None:
+            __proto_display(value, kind="result")
 
 
 def _compile_source(source: str):
     module = ast.parse(source, _STATE.filename, "exec")
+    expression = None
     if module.body and isinstance(module.body[-1], ast.Expr):
-        last = module.body[-1]
-        last.value = ast.copy_location(ast.Call(
-            func=ast.Name(id="__proto_display_result", ctx=ast.Load()),
-            args=[last.value], keywords=[],
-        ), last.value)
-        ast.fix_missing_locations(module)
-    return compile(module, _STATE.filename, "exec", flags=_TLA_FLAG, dont_inherit=True)
+        expression = ast.Expression(module.body.pop().value)
+    # Compile both parts before mutating user state. No injected function names,
+    # altered expressions, or implicit globals are needed for a warm final value.
+    statement_code = compile(module, _STATE.filename, "exec", flags=_TLA_FLAG, dont_inherit=True)
+    expression_code = None if expression is None else compile(expression, _STATE.filename, "eval", flags=_TLA_FLAG, dont_inherit=True)
+    return statement_code, expression_code
 
 
 def _exec_source(source: str, ns: dict) -> None:
-    _run_compiled_sync(_compile_source(source), ns)
+    statements, expression = _compile_source(source)
+    flags = statements.co_flags | (expression.co_flags if expression is not None else 0)
+    if flags & inspect.CO_COROUTINE:
+        # One await scope for the whole cell, including synchronous statements
+        # before a final await; child task ordering stays native and deterministic.
+        _await_sync(_evaluate_cell_parts(statements, expression, ns))
+        return
+    eval(statements, ns)
+    if expression is not None:
+        value = eval(expression, ns)
+        if value is not None:
+            __proto_display(value, kind="result")
 
 
 def _owned_tasks(rid: str) -> list[asyncio.Task]:
@@ -2834,14 +1322,14 @@ def _drain_cell_work(rid: str, *, cancel: bool = False) -> None:
 
     This is not interpreter teardown: native threads/executors, atexit and
     module finalizers keep process lifetime and are never shut down per cell.
-    Waiting does not consume task exceptions: already handled errors stay
-    handled, and unobserved errors keep asyncio's native diagnostics.
+    Retire terminal outcomes while this cell still owns output: awaited errors
+    stay handled, and unobserved failures retain asyncio's native diagnostics.
     """
     while True:
         tasks = _owned_tasks(rid)
         for task in tasks:
             if task.done():
-                _STATE.cell_tasks.pop(task, None)
+                _retire_cell_task(task)
         pending = [task for task in tasks if not task.done()]
         if not pending:
             return
@@ -2898,11 +1386,8 @@ def _end_exec_sigint() -> None:
 
 
 _MANAGED_ENV_KEYS = (
-    "PI_SESSION_FILE",
-    "PI_ARTIFACTS_DIR",
-    "PI_TOOL_BRIDGE_URL",
-    "PI_TOOL_BRIDGE_TOKEN",
-    "PI_TOOL_BRIDGE_SESSION",
+    "PI_PYTHON_HARNESS_URL",
+    "PI_PYTHON_HARNESS_TOKEN",
 )
 
 
@@ -2946,11 +1431,6 @@ def _apply_request_runtime(req: dict) -> None:
             elif value is None:
                 os.environ.pop(key, None)
 
-    observations = req.get("fsObservations")
-    if isinstance(observations, list) and observations:
-        note_observed = _prelude_fn("_fs_note_observed")
-        if note_observed is not None:
-            note_observed(observations)
 
 
 def _start_parent_watchdog() -> None:
@@ -3032,36 +1512,19 @@ def _cell_bound_names(source: str) -> tuple[list[str], list[str]]:
 
 
 def _track_cell_defs(source: str, execution_count: int) -> None:
-    if _STATE.prelude_names is None and _STATE.user_ns.get("__proto_prelude_loaded__"):
-        _STATE.prelude_names = set(_STATE.user_ns)
-        _STATE.defs.clear()
-        return
-    live_names = _STATE.user_ns.keys()
     for name in tuple(_STATE.defs):
-        if name not in live_names:
+        if name not in _STATE.user_ns:
             del _STATE.defs[name]
-    _STATE.shadow_warned.intersection_update(live_names)
-    defs, bound = _cell_bound_names(source)
-    for name in (*defs, *bound):
+    definitions, bindings = _cell_bound_names(source)
+    for name in (*definitions, *bindings):
         if name in _STATE.user_ns:
             _STATE.defs[name] = execution_count
-    if _STATE.prelude_names is None:
-        return
-    for name in bound:
-        if name not in _STATE.prelude_names or name in _STATE.shadow_warned:
-            continue
-        _STATE.shadow_warned.add(name)
-        _emit_kernel_note(
-            f"{name!r} now shadows the kernel helper of the same name; "
-            f"later cells see your value. `del {name}` restores the helper.",
-            level="warning",
-        )
 
 
 def _handle_request(req: dict) -> dict:
     rid = str(req.get("id"))
     token = _CURRENT_RID.set(rid)
-    completion_token = _CURRENT_COMPLETION_COUNT.set([0])
+    completion_token = _CURRENT_COMPLETION_INVOCATIONS.set(itertools.count())
     displayed_matplotlib_token = _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.set(set())
     saved_matplotlib_token = _SAVED_MATPLOTLIB_FIGURES.set([])
     closed_matplotlib_token = _CLOSED_MATPLOTLIB_FIGURES.set([])
@@ -3080,31 +1543,21 @@ def _handle_request(req: dict) -> dict:
     sys.stdin = sys.__stdin__ = program_input.stream
     program_input.start()
     capture = _begin_fd_capture(rid)
-    _STATE.user_ns["__proto_run_id__"] = rid
     _STATE.cancel_requested = False
     _STATE.execution_count += 1
-    try:
-        _reset_fs_status()
-    except Exception:
-        pass
     execution_count = _STATE.execution_count
     bindings_before = dict(_STATE.user_ns)
 
     status: str = "ok"
     cancelled = False
     exit_code: int | None = None
-    is_prelude = bool(req.get("prelude"))
 
     try:
         try:
             _apply_request_runtime(req)
-            code = req.get("code", "")
-            if is_prelude:
-                transformed = code
-            else:
-                prepared = prepare_cell(code)
-                transformed = prepared.source
-                _emit_cell_prep(prepared)
+            transformed = req.get("code", "")
+            if not isinstance(transformed, str):
+                raise TypeError("code must be a string")
         except asyncio.CancelledError:
             raise
         except BaseException as exc:
@@ -3123,17 +1576,11 @@ def _handle_request(req: dict) -> dict:
         _begin_exec_sigint()
         try:
             _emit({"type": "started", "id": rid})
-            if not is_prelude:
-                _emit_status("kernel-state", generation=_KERNEL_GENERATION, language="python", executionCount=execution_count)
-            if is_prelude:
-                _load_prelude(transformed)
-            else:
-                _STATE.cell_bindings = frozenset(_cell_bound_names(transformed)[1])
-                _refresh_project_modules()
-                _exec_source(transformed, _STATE.user_ns)
-                _drain_cell_work(rid)
-                if program_input.error:
-                    raise OSError(program_input.error)
+            _emit_status("kernel-state", generation=_KERNEL_GENERATION, language="python", executionCount=execution_count)
+            _exec_source(transformed, _STATE.user_ns)
+            _drain_cell_work(rid)
+            if program_input.error:
+                raise OSError(program_input.error)
         except KeyboardInterrupt:
             cancelled = True
             status = "error"
@@ -3166,20 +1613,15 @@ def _handle_request(req: dict) -> dict:
                 _drain_cell_work(rid, cancel=True)
             _end_exec_sigint()
             try:
-                _flush_fs_status()
-            except Exception:
-                pass
-            try:
                 _flush_matplotlib_figures()
             except Exception:
                 pass
 
         try:
-            if not is_prelude:
-                for name, value in _STATE.user_ns.items():
-                    if type(name) is str and not name.startswith("__") and (name not in bindings_before or bindings_before[name] is not value):
-                        _STATE.defs[name] = execution_count
-                _track_cell_defs(transformed, execution_count)
+            for name, value in _STATE.user_ns.items():
+                if type(name) is str and not name.startswith("__") and (name not in bindings_before or bindings_before[name] is not value):
+                    _STATE.defs[name] = execution_count
+            _track_cell_defs(transformed, execution_count)
             _flush_stream_proxies(rid)
         except BaseException as exc:
             status = "error"
@@ -3203,7 +1645,7 @@ def _handle_request(req: dict) -> dict:
         _end_fd_capture()
         _flush_stream_proxies(rid)
         _CURRENT_RID.reset(token)
-        _CURRENT_COMPLETION_COUNT.reset(completion_token)
+        _CURRENT_COMPLETION_INVOCATIONS.reset(completion_token)
         _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
         _SAVED_MATPLOTLIB_FIGURES.reset(saved_matplotlib_token)
         _CLOSED_MATPLOTLIB_FIGURES.reset(closed_matplotlib_token)
@@ -3344,6 +1786,10 @@ def _read_control(queue: _BoundedRequestQueue, control) -> None:
     queue.close()
 
 def _emit_queue_limit_error(req: dict) -> None:
+    if req.get("type") == "state":
+        _emit({"type": "state", "id": str(req.get("id", "")),
+               "stateError": "Python graph state queue limit exceeded"})
+        return
     _emit_error(str(req.get("id", "")), ValueError(
         f"Request queue limit exceeded (max {_REQUEST_QUEUE_MAX_COUNT} queued requests "
         f"and {_REQUEST_QUEUE_MAX_BYTES} bytes)"
@@ -3384,9 +1830,9 @@ def main() -> None:
     sys.stderr = _StreamProxy("stderr")
     sys.modules["__main__"] = _STATE.user_module
     _install_builtins(_STATE.user_ns)
+    _bind_runtime()
     _install_idle_sigint()
     _install_runner_audit()
-    _install_import_freshness()
     _start_parent_watchdog()
     threading.Thread.start = _start_user_thread
 

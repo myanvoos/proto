@@ -260,6 +260,8 @@ export async function atomicWriteFileWith(
 	write: (tempPath: string) => Promise<void>,
 	options: AtomicWriteOptions & {
 		fsyncTempFile?: boolean;
+		/** Validate caller-owned CAS/authority immediately before publication. */
+		beforeCommit?: () => Promise<void>;
 	} = {},
 ): Promise<void> {
 	await atomicWriteFileWithImpl(filePath, { kind: "path", write }, options);
@@ -271,6 +273,7 @@ type AtomicTempWriter =
 
 interface AtomicWriteInternalOptions extends AtomicWriteOptions {
 	fsyncTempFile?: boolean;
+	beforeCommit?: () => Promise<void>;
 }
 
 async function atomicWriteFileWithImpl(
@@ -323,6 +326,7 @@ async function atomicWriteFileWithImpl(
 
 		assertRegularFileTarget(await fsp.lstat(tmpPath), tmpPath);
 		await assertReplaceableTarget(target);
+		await options.beforeCommit?.();
 		await renameTempOverTarget(tmpPath, target);
 	} catch (error) {
 		await fsp.rm(tmpPath, { force: true, recursive: true }).catch(() => {});

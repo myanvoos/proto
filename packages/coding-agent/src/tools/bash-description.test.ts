@@ -20,17 +20,6 @@ function describeBash(options: { launch: boolean; jobsActive: boolean; jobsMount
 	return new BashTool(session).description;
 }
 
-test("bash docs explain additive semantics without byte-stream workarounds", () => {
-	const description = describeBash({ launch: true, jobsActive: false, jobsMounted: true });
-	expect(description).toContain("Ordinary interpreter code, retained state, additive tools.");
-	expect(description).toContain("presentation sidebands");
-	expect(description).toContain("no `_ =` / `void` suppression is needed");
-	expect(description).toContain("Ordinary synchronous Python cells support `asyncio.run()`");
-	expect(description).toContain("Program arguments stay in the kernel");
-	expect(description).toContain("Persistence is not a fresh OS process");
-	expect(description).not.toContain("Byte-only producers:");
-});
-
 test("bash docs route services to jobs through whichever surface exposes it", () => {
 	// Demoted to a protolens device, jobs is no longer an active top-level tool but still supervises processes.
 	const viaDevice = describeBash({ launch: true, jobsActive: false, jobsMounted: true });

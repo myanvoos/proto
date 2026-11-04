@@ -470,7 +470,7 @@ tools:
 | `tools.artifactTailBytes`      | number  | `20`    | KB of tail kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `tools.artifactTailLines`      | number  | `500`   | Max tail lines kept inline on spill.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
-Built-in capabilities are toggled by their own keys, e.g. `bash.enabled`, `browser.enabled`, `computer.enabled`, and `web_search.enabled`; `fetch.enabled` controls remote fetching through `read`, while process supervision is exposed by `jobs` and gated by `launch.enabled`. The persistent Python and JavaScript kernel backends are controlled separately by `eval.py` and `eval.js`. `read` is always available and handles images, audio, and video natively; it can send images inline to vision-capable models, while audio/video are sent when the active model accepts them.
+Built-in capabilities are toggled by their own keys, e.g. `bash.enabled`, `browser.enabled`, `computer.enabled`, and `web_search.enabled`; `fetch.enabled` controls remote fetching through `read`, while process supervision is exposed by `jobs` and gated by `launch.enabled`. Explicit Python harness/named-kernel access and JavaScript cell backends are controlled separately by `eval.py` and `eval.js`; ordinary shell Python is always a native process. `read` is always available and handles images, audio, and video natively; it can send images inline to vision-capable models, while audio/video are sent when the active model accepts them.
 
 ### Window-scoped computer use
 
@@ -513,8 +513,9 @@ kernel:
     enabled: true
 
 python:
-  kernelMode: session # session, per-call
-  interpreter: ""
+  interpreter: "" # default for explicit Python execution APIs, not shell command lookup
+  # kernelMemoryBudgetBytes: 4294967296 # default: min(25% physical RAM, 4 GiB)
+  kernelMaxResidentCount: 64
 ```
 
 | Key                               | Type    | Default   | Notes                                                                                                                                                       |
@@ -523,13 +524,16 @@ python:
 | `launch.enabled`                  | boolean | `true`    | Enable process supervision through the `jobs` tool for shared long-running project processes.                                                                                           |
 | `bash.autoBackground.enabled`     | boolean | `false`   | Auto-background long-running commands.                                                                                                                      |
 | `bash.autoBackground.thresholdMs` | number  | `60000`   | Threshold before auto-backgrounding.                                                                                                                        |
-| `eval.py`                         | boolean | `true`    | Python kernel backend used by Bash cells. `PI_PY=0` disables it for the process.                                                                            |
+| `eval.py`                         | boolean | `true`    | Enable explicit Python harness APIs and named kernels. Ordinary shell Python remains native and fresh. `PI_PY=0` disables the backend.                                                                            |
 | `eval.js`                         | boolean | `true`    | JavaScript kernel backends used by Bash `node`/`nodejs` (Node.js) and `bun` (Bun) cells. `PI_JS=0` disables them for the process.                          |
 | `kernel.speculation.enabled`      | boolean | `true`   | Permit early completion requests from streamed kernel-in-bash code. Requests can be sent and billed before final approval, even if the call is later blocked or cancelled. |
 | `kernel.assertPreflight.enabled`  | boolean | `true`   | Permit bounded local file reads before final tool approval to check supported assertions and interrupt generation early on failure. |
-| `python.kernelMode`               | enum    | `session` | `session` (persistent kernel) or `per-call`.                                                                                                                |
-| `python.interpreter`              | string  | `""`      | Path to a Python interpreter; empty = auto-detect.                                                                                                          |
+| `python.kernelMemoryBudgetBytes` | number | min(25% RAM, 4 GiB) | Private-memory residency budget for explicit named Python kernels; safely captured idle kernels park LRU-first. Not a global RSS cap. |
+| `python.kernelMaxResidentCount` | number | `64` | Resident-kernel process-count safety limit, separate from execution concurrency and the memory budget. |
+| `python.interpreter`              | string  | `""`      | Default interpreter for explicit Python execution APIs; empty = auto-detect. Does not replace the interpreter selected by shell commands.                                                                                                          |
 | `shellPath`                       | string  | _(unset)_ | Override the shell binary used by bash.                                                                                                                     |
+
+Every ordinary Python command is a fresh process, including user `$`/`$$` Python submissions (`$$` excludes the result from model context); `!`/`!!` execute shell commands. Opt into helpers with `import proto_harness as harness` and persistence with `harness.store` or `harness.kernel(name)`. `python.kernelMode` has been removed with no alias; remove it from existing configuration. Residency controls apply only to named warm kernels: running, unsafe, or unmeasurable kernels are not silently evicted, and unsupported snapshots refuse parking. Supported local POSIX interpreters use a per-interpreter sterile forkserver; other supported targets report their actual launch mode.
 
 The kernel streaming options are independent and enabled by default; set either to `false` to disable it. They apply to model-generated bash tool calls, not user bang commands. See [streamed kernel preflight and speculation](bash-tool-runtime.md#streamed-kernel-preflight-and-speculation) for the supported syntax, cancellation behavior, and safety boundaries.
 

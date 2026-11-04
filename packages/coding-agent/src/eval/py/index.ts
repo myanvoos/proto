@@ -1,7 +1,6 @@
 import type { ToolSession } from "../../tools";
 import type { ExecutorBackend, ExecutorBackendExecOptions, ExecutorBackendResult } from "../backend";
 import {
-	readSetting,
 	namespaceSessionId as sharedNamespace,
 	readInterpreterSetting as sharedReadInterpreterSetting,
 	toExecutorBackendResult,
@@ -31,21 +30,16 @@ export default {
 	},
 
 	async execute(code: string, opts: ExecutorBackendExecOptions): Promise<ExecutorBackendResult> {
-		const kernelMode = readSetting<PythonExecutorOptions["kernelMode"]>(opts.session, "python.kernelMode");
 		const target = parseKernelTarget(opts.target);
 		const remote = target.kind !== "local";
 		const executorOptions: PythonExecutorOptions = {
 			target,
 			cwd: remote ? kernelTargetCwd(target, opts.cwd) : opts.cwd,
 			runCwd: remote ? kernelTargetCwd(target, opts.runCwd ?? opts.cwd) : opts.runCwd,
-			bridgeCwd: remote ? undefined : (opts.runCwd ?? opts.cwd),
 			idleTimeoutMs: opts.idleTimeoutMs,
 			signal: opts.signal,
 			sessionId: namespaceSessionId(opts.sessionId),
-			kernelMode,
 			interpreter: opts.interpreter ?? (remote ? target.interpreter : readInterpreterSetting(opts.session)),
-			sessionFile: opts.sessionFile,
-			artifactsDir: opts.session.getArtifactsDir?.() ?? undefined,
 			kernelOwnerId: opts.kernelOwnerId,
 			reset: opts.reset,
 			onChunk: opts.onChunk,

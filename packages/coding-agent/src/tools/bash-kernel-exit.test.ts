@@ -1,9 +1,11 @@
 import { afterAll, expect, test } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
 
@@ -11,11 +13,26 @@ import { BashTool } from "./bash";
 // files must not keep growing one owner's count.
 const KERNEL_OWNER = `bash-kernel-exit-test:${process.pid}`;
 
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+
 function stubSession(cwd: string): ToolSession {
+	if (!python.pythonPath) throw new Error("Python interpreter unavailable");
+	const bin = path.join(cwd, "test-bin");
+	fsSync.mkdirSync(bin, { recursive: true });
+	for (const name of ["python", "python3"]) {
+		try {
+			fsSync.symlinkSync(python.pythonPath, path.join(bin, name));
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+		}
+	}
 	const settings = new Map<string, unknown>();
 	return {
 		cwd,
-		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
+		settings: {
+			get: (key: string) => settings.get(key),
+			getShellConfig: () => ({ env: { PATH: `${bin}:${process.env.PATH ?? ""}` } }),
+		},
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
 		getEvalSessionId: () => `bash-kernel-exit-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
@@ -33,10 +50,13 @@ afterAll(async () => {
 	await Promise.all([disposeKernelSessionsByOwner(KERNEL_OWNER), disposeVmContextsByOwner(KERNEL_OWNER)]);
 });
 
-test("sys.exit ends a python cell with the interpreter's exit status and keeps kernel state", async () => {
+test("sys.exit ends fresh Python with native status and does not retain globals", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-exit-"));
 	try {
 		const bash = new BashTool(stubSession(dir));
+		await bash.execute("select-native-python", {
+			command: `export PATH=${JSON.stringify(path.join(dir, "test-bin"))}:$PATH`,
+		});
 		const clean = await bash.execute("zero", {
 			command: 'python -c \'import sys; exit_state = 41; print("before"); sys.exit(0); print("after")\'',
 		});
@@ -58,8 +78,10 @@ test("sys.exit ends a python cell with the interpreter's exit status and keeps k
 		expect(textOf(message)).toContain("fatal: bad input");
 		expect(textOf(message)).not.toContain("Traceback");
 
-		const survived = await bash.execute("state", { command: "python -c 'print(\"state\", exit_state + 1)'" });
-		expect(textOf(survived)).toContain("state 42");
+		const survived = await bash.execute("state", {
+			command: 'python -c \'print("fresh", "exit_state" not in globals())\'',
+		});
+		expect(textOf(survived)).toContain("fresh True");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -70,6 +92,9 @@ for (const lang of ["node", "bun"] as const) {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `${lang}sh-exit-`));
 		try {
 			const bash = new BashTool(stubSession(dir));
+			await bash.execute("select-native-python", {
+				command: `export PATH=${JSON.stringify(path.join(dir, "test-bin"))}:$PATH`,
+			});
 			const clean = await bash.execute("zero", {
 				command: `${lang} -e 'globalThis.exitState = 41; console.log("before-exit"); process.exit(0); console.log("after-exit")'`,
 			});

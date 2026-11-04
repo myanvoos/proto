@@ -37,14 +37,18 @@ test.skipIf(!$which("docker"))("container commands preserve opaque argv and cann
 
 test("remote environment cannot expose loopback bridge credentials or host filesystem roots", () => {
 	const env = remoteKernelEnv({
-		PI_TOOL_BRIDGE_URL: "http://127.0.0.1:1234",
-		PI_TOOL_BRIDGE_TOKEN: "secret",
+		PI_PYTHON_HARNESS_URL: "http://127.0.0.1:4321/request",
+		PI_PYTHON_HARNESS_TOKEN: "ephemeral-run-capability",
+		PI_PYTHON_HARNESS_PATH: "/private/python-runtime",
+		PYTHONPATH: "/remote/project:/remote/vendor",
 		PI_SESSION_FILE: "/private/session",
 		PI_ARTIFACTS_DIR: "/private/artifacts",
-		PI_TOOL_BRIDGE_SESSION: "owned",
 		CUSTOM: "explicit",
 	});
-	expect(env).toEqual({ PI_TOOL_BRIDGE_SESSION: "owned", CUSTOM: "explicit" });
+	expect(env).toEqual({
+		PYTHONPATH: "/remote/project:/remote/vendor",
+		CUSTOM: "explicit",
+	});
 });
 
 test("stdio transport preserves binary values and rejects incompatible hosts before dispatch", () => {

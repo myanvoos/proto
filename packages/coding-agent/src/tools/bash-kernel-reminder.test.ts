@@ -30,7 +30,7 @@ async function remind(command: string, toolName = "bash") {
 		repeatMode: "once",
 		repeatGap: 10,
 	});
-	expect(manager.addRule(rule)).toBe(true);
+	manager.addRule(rule);
 	const bash = new BashTool({ settings: { get: () => false } } as unknown as ToolSession);
 	const events: string[][] = [];
 	const persisted: string[][] = [];
@@ -86,54 +86,13 @@ async function remind(command: string, toolName = "bash") {
 }
 
 test.each([
-	["uv inline code", "uv run python -c 'print(42)'"],
-	["pixi heredoc", "pixi run python <<'PY'\nprint(42)\nPY"],
-	["runner options", "uv --directory project run --with pandas python -c 'import pandas'"],
-	["named environment and version", "pixi run -e dev python3.12 - <<'PY'\nprint(42)\nPY"],
-	["absolute executables", "/opt/uv run /repo/.venv/bin/python -c 'print(42)'"],
-	["shell list", "printf before && poetry run python3 -c 'print(42)'"],
-	["pipeline", "printf data | pipenv run python -c 'import sys; print(sys.stdin.read())'"],
-	["conda environment", "conda run -n analysis python -c 'print(42)'"],
-	["quoted environment", "pixi run -e 'my env' python -c 'print(42)'"],
-	["env wrapper", "env FOO=1 python -c 'print(42)'"],
-	["sudo wrapper", "sudo -E python3 -c 'print(42)'"],
-])("%s queues one reminder on the tool result without interrupting", async (_label, command) => {
+	["ordinary native Python", "python3 -c 'print(42)'"],
+	["environment-selected Python", "uv run python -c 'print(42)'"],
+])("%s is not warned about fresh-process execution", async (_label, command) => {
 	const observed = await remind(command);
 	expect(observed.interrupted).toBe(false);
 	expect(observed.aborts).toBe(0);
-	expect(observed.events).toEqual([[RULE_NAME]]);
-	expect(observed.persisted).toEqual([[RULE_NAME]]);
-	expect(observed.result?.content).toHaveLength(2);
-	const reminder = observed.result?.content?.[0];
-	expect(reminder?.type === "text" ? reminder.text : "").toContain(`rule="${RULE_NAME}"`);
-	expect(observed.result?.content?.[1]).toEqual({ type: "text", text: "42" });
-});
-
-test.each([
-	["bare kernel", "python -c 'print(42)'"],
-	["direct project interpreter", ".venv/bin/python <<'PY'\nprint(42)\nPY"],
-	["kernel-dispatched wrapper", "timeout 5 python3 -c 'print(42)'"],
-	["unrelated runner command", "uv run pytest"],
-	["script execution", "uv run python script.py"],
-	["module execution", "pixi run python -m pytest"],
-	["Python selection for another command", "uv run --python python3 pytest"],
-	["Python-looking executable", "uv run python-lsp-server"],
-	["quoted documentation", "printf '%s' 'uv run python -c example'"],
-	["unquoted echo", "echo uv run python -c 'print(42)'"],
-	["shell comment", "# uv run python -c example\nprintf ok"],
-	["Python string", "python -c 'print(\"uv run python\")'"],
-	["Python heredoc", "python <<'PY'\n# uv run python\nprint(42)\nPY"],
-	["written documentation", "cat > README.md <<'DOC'\nuv run python -c example\nDOC"],
-	["another command's argument", "uv run echo python"],
-])("%s does not warn about kernel bypass", async (_label, command) => {
-	const observed = await remind(command);
 	expect(observed.events).toEqual([]);
 	expect(observed.persisted).toEqual([]);
-	expect(observed.result).toBeUndefined();
-});
-
-test("the built-in launcher rule only observes bash calls", async () => {
-	const observed = await remind("uv run python -c 'print(42)'", "read");
-	expect(observed.events).toEqual([]);
 	expect(observed.result).toBeUndefined();
 });

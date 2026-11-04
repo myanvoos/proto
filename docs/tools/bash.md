@@ -24,7 +24,7 @@
 | `env` | `Record<string, string>` | No | Extra environment variables. Keys must match `^[A-Za-z_][A-Za-z0-9_]*$` or the tool throws. Values go through internal-URL expansion and are passed as environment values, not shell text. |
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Non-zero values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory. Absolute paths, including `/`, remain absolute; relative paths resolve against `session.cwd`, and `~` expands to the home directory. Must exist and be a directory. |
-| `lane` | `string` | No | Persistent non-PTY Brush state lane (1–128 characters). Omitted/`main` share state and queue; other names isolate shell and both language kernels. Managed background jobs default to their own lane. |
+| `lane` | `string` | No | Persistent non-PTY Brush state lane (1–128 characters). Omitted/`main` share state and queue; other names isolate shell and JavaScript kernels. Python names are selected explicitly with `harness.kernel(name)`, not by ordinary command routing. Managed background jobs default to their own lane. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true (default `true`) for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
 
@@ -53,17 +53,34 @@ The tool returns a text content block, optional media content blocks, and option
 
 Stdout and stderr remain distinct for shell redirection and stage records; uncaptured terminal output is merged for the model. Non-zero exits append `Command exited with code <n>`; plain-shell exit `1` may still be a successful (soft) result.
 
-## Kernel compatibility
+## Python execution and JavaScript cells
 
-Supported interpreter commands are a strict-upgrade interface: native language semantics within a cell, persistent state between cells, and harness presentation outside program I/O. Program arguments remain available through native `sys.argv` / `process.argv`. Ordinary synchronous Python supports `asyncio.run()`; JavaScript retains the selected interpreter's native declaration behavior instead of replacing lexical declarations with assignments.
+Every ordinary Python invocation is a fresh native process: `python`/`python3`, `-c`, stdin, scripts, `-m`, aliases, `env`, and shebangs. The shell's selected executable, `argv`, byte streams, exit status, signals, and `atexit` remain native. No implicit globals, routing, magics, or automatic replay. User `$`/`$$` Python submissions and `AgentSession.executePython()` are fresh as well; `$$` excludes the result from model context. `!`/`!!` are shell shortcuts.
 
-Final-expression values, `display(...)`, and harness notes remain visible even when stdout/stderr are redirected, but never enter pipes, files, or command substitutions. Unassigned byte writes need no `_ =` or `void` workaround. Explicitly retained work and process-lifetime resources are the intentional boundary from a fresh process; see [the full compatibility contract](../bash-tool-runtime.md#compatibility-philosophy).
+Agent-shell CPython startup uses a small `PYTHONPATH` detection hook that chains existing `sitecustomize`; `-I`/`-E`/`-S` opt out. Import capabilities explicitly:
 
-## Kernel inspection and orchestration
+```bash
+python <<'PYTHON'
+import proto_harness as harness
 
-Kernel cells inherit the shell environment, including `env` overrides and inline assignments. `printf 41 | python -c 'import sys; print(int(sys.stdin.read()) + 1)'` stays in the retained Python kernel; `node`/`bun -e` similarly expose program input through `process.stdin`. Source-on-stdin still supplies code, not program input.
+result = harness.tool.read({"path": "README.md"})
+print(result)
+PYTHON
+```
 
-Use `kernel_state()` / `kernelState()` for bounded, side-effect-avoiding binding previews, provenance, tasks, and runtime generation. A runtime restart emits a state-loss notice once; prior variables are not restored. JavaScript reports `queued: null` and explicitly limits its task inventory to active cells/tool calls.
+Use `harness.fs` for atomic permission-checked host-file edits and stale-read protection; ordinary `Path`/`open`/`os` remain unpatched. Helper calls retain normal session authority, extension/tool/schema policies, cancellation, and budgets. Run access is revoked on completion/abort.
+
+Fresh locals do not persist. `harness.store` retains a session-owned rich graph; `harness.kernel("analysis").run(code)` or `python -m proto_harness.kernel analysis -c 'code'` explicitly selects a warm namespace. Handles also expose `exec(file)`, `status()`, `stop()`, and `restart()`. No helpers are injected even in warm namespaces. Automatic warm snapshots preserve rich graph identity within a 64 MiB encoded limit; unsupported live resources refuse capture. Python needs no `declare_state` opt-in. `context` Python lane controls address that explicit name under `python:` with matching interpreter/target; they never reroute bare Python.
+
+JavaScript `node`/`nodejs` and `bun` stdin/`-e` forms retain cells, prelude helpers, native binding semantics, `process.argv`, and byte-preserving `process.stdin`/stdout/stderr. Inline code reads stdin as program input; stdin-source forms consume it as code. Node and Bun have separate heaps. `retainTask` and data-only `declareState` remain unchanged.
+
+`harness.display(...)` in Python and `display(...)` in JavaScript are presentation sidebands, never pipe/file/substitution payloads. Final-expression presentation applies to JavaScript and explicit warm Python, not fresh Python. Unassigned byte writes need no suppression workaround. See the [runtime contract](../bash-tool-runtime.md#native-python-processes).
+
+## Inspection and orchestration
+
+Shell environment overrides reach fresh Python processes and JavaScript cells. For example, `printf 41 | python -c 'import sys; print(int(sys.stdin.read()) + 1)'` starts a fresh Python process and prints `42`.
+
+Explicit warm Python uses `harness.kernel_state()` and `harness.defs()`; JavaScript uses `kernelState()`/`defs()`. These provide bounded binding previews, provenance, tasks, and runtime generation. JavaScript reports `queued: null` and limits task inventory to active cells/tool calls. Use `harness.executions(...)` in Python or the JavaScript form below for captured command results.
 
 `executions(id?, limit=20)` (JS: `await executions(id, {limit:20})`) returns `{records, evicted}`. Each record identifies the command, lane, timestamps and result/error. Results include:
 
@@ -150,7 +167,7 @@ An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commi
    - Supports interactive input; `Esc` kills the session from the overlay.
 4. Explicit background job
    - Requires `async: true` and `async.enabled`.
-   - Without an explicit `lane`, shell state is isolated per job but Python, Node and Bun cells reuse the main lane's kernels. With an explicit lane, both shell and kernel state belong to that lane.
+   - Without an explicit `lane`, shell state is isolated per job but Node/Bun cells reuse the main lane's kernels. An explicit lane selects its shell and JavaScript kernel state. Ordinary Python is fresh in either case; named Python requires explicit package/CLI access.
    - Registers a job with `session.asyncJobManager` and returns `{ state: "running", jobId }` immediately. `timeout: 0` leaves the job without a tool-imposed deadline.
 5. Auto-backgrounded non-PTY job
    - Requires `bash.autoBackground.enabled` (default `false`), no PTY/client-terminal bridge, and an async job manager below its running-job cap.
@@ -210,7 +227,7 @@ An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commi
 - Artifact allocation / artifact save failures are swallowed in `saveBashOriginalArtifact()` and `OutputSink.#createFileSink()`; execution continues without that artifact.
 
 ## Notes
-- `strict = true` is set on `BashTool`; `concurrency` is resolved per call: `pty: true` is `"exclusive"` (it takes over the terminal UI), everything else is `"shared"`, so multiple non-PTY Bash calls can be issued in parallel. `reserveBashLane()` then serializes calls FIFO within a session/lane; different lane names isolate shell and kernel state.
+- `strict = true` is set on `BashTool`; `concurrency` is resolved per call: `pty: true` is `"exclusive"` (it takes over the terminal UI), everything else is `"shared"`, so multiple non-PTY Bash calls can be issued in parallel. `reserveBashLane()` then serializes calls FIFO within a session/lane; different lane names isolate shell and JavaScript kernel state. Named Python state is explicitly selected, never inferred from an ordinary Python command.
 - `command` URL expansions shell-escape replacements; `env` and `cwd` expansion use `noEscape: true` because they become environment values / filesystem paths, not shell text.
 - `checkBashInterception()` blocks only when the matching rule's `tool` name is present in `ctx.toolNames`; missing tools disable their corresponding rule.
 - Interceptor configuration syntax is unchanged. It handles common flat command lists, not full shell parsing: heredocs, parameter expansion, command substitution, backticks, grouping, and malformed quoting only receive the existing whole-input check. This is best-effort routing toward dedicated tools, not a security boundary.

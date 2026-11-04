@@ -8,226 +8,192 @@ import {
 
 const codes = (command: string) => findBashCodeCells(command).map(cell => cell.code);
 
-test("quoted heredoc python", () => {
-	const c = detectBashKernelCell("python <<'EOF'\nedit('a.py','x','y')\nprint('ok')\nEOF");
-	expect(c?.language).toBe("python");
-	expect(c?.code).toBe("edit('a.py','x','y')\nprint('ok')");
-});
-test("python3 - heredoc with cd prefix", () => {
-	const c = detectBashKernelCell("cd sub && python3 - <<EOF\nx = 1\nEOF");
-	expect(c).toEqual({ language: "python", code: "x = 1" });
-});
-test("node heredoc", () => {
-	expect(detectBashKernelCell("node <<'JS'\nconsole.log(1)\nJS")?.code).toBe("console.log(1)");
+test("Python heredocs expose source without kernel rendering", () => {
+	const command = "python <<'EOF'\nprint('ok')\nEOF";
+	expect(codes(command)).toEqual(["print('ok')"]);
+	expect(findBashCodeCells(command)[0]?.kernel).toBe(false);
+	expect(detectBashKernelCell(command)).toBeUndefined();
+	expect(codes("cd sub && python3 - <<EOF\nx = 1\nEOF")).toEqual(["x = 1"]);
 });
 
-test("bun heredoc and -e use the JavaScript kernel cell shape", () => {
-	expect(detectBashKernelCell("bun <<'JS'\nfunction f() {}\nJS")).toEqual({
-		language: "js",
-		code: "function f() {}",
-	});
-	expect(detectBashKernelCell("bun -e 'console.log(1)'")).toEqual({
-		language: "js",
-		code: "console.log(1)",
-	});
+test("node and bun heredocs and code words retain JavaScript kernel routing", () => {
+	for (const command of [
+		"node <<'JS'\nconsole.log(1)\nJS",
+		"bun - <<'JS'\nconsole.log(1)\nJS",
+		'node -e "console.log(1)"',
+		"bun -e 'console.log(1)'",
+	]) {
+		expect(detectBashKernelCell(command)).toEqual({ language: "js", code: "console.log(1)" });
+	}
 });
-test("python -c single quoted, node -e double quoted", () => {
-	expect(detectBashKernelCell('python -c \'edit("a","b","c")\'')?.code).toBe('edit("a","b","c")');
-	expect(detectBashKernelCell('node -e "console.log(1)"')?.code).toBe("console.log(1)");
+
+test("native Python invocation forms never acquire implicit kernel affordances", () => {
+	for (const command of [
+		"python script.py",
+		"python -m http.server",
+		"python -c 'print(1)' extra",
+		"python -u -c 'print(1)'",
+		"python -i -c 'print(1)'",
+		"python3 -u - <<'PY'\nprint(1)\nPY",
+		".venv/bin/python -c 'print(1)'",
+		"/usr/bin/python3.12 -c 'print(1)'",
+		"python3.13 -c 'print(1)'",
+		"python2.7 -c 'print(1)'",
+		"pypy3 - <<EOF\nprint(1)\nEOF",
+		"FOO=1 python -c 'print(1)'",
+		"env python -c 'print(1)'",
+		"\\python -c 'print(1)'",
+		"timeout 5 python -c 'print(1)'",
+		"time -p python -c 'print(1)'",
+		"nohup python -c 'print(1)'",
+		"command python -c 'print(1)'",
+		"builtin python -c 'print(1)'",
+	]) {
+		expect(detectBashKernelCell(command), command).toBeUndefined();
+		expect(isBashKernelCellMixed(command), command).toBe(false);
+		expect(
+			findBashCodeCells(command).some(cell => cell.kernel),
+			command,
+		).toBe(false);
+	}
 });
-test("real-interpreter invocations are not kernel cells", () => {
-	expect(detectBashKernelCell("python foo.py")).toBeUndefined();
-	expect(detectBashKernelCell("python3 foo.py <<EOF\nx\nEOF")).toBeUndefined();
-	expect(detectBashKernelCell("python -c 'print(1)' extra")?.code).toBe("print(1)");
-	expect(detectBashKernelCell("python -m http.server")).toBeUndefined();
-	expect(detectBashKernelCell("python -e 'x'")).toBeUndefined();
+
+test("kernel rendering skips preceding native Python and selects the JavaScript cell", () => {
+	const command = "python -c 'print(1)' && node -e 'console.log(2)'";
+	expect(detectBashKernelCell(command)).toEqual({ language: "js", code: "console.log(2)" });
+	expect(isBashKernelCellMixed(command)).toBe(true);
+	expect(findBashCodeCells(command).map(cell => [cell.language, cell.kernel])).toEqual([
+		["python", false],
+		["js", true],
+	]);
+});
+
+test("unsupported JavaScript interpreter options do not claim kernel routing", () => {
 	expect(detectBashKernelCell("node -c 'x'")).toBeUndefined();
-	expect(detectBashKernelCell("python -i -c 'x'")).toBeUndefined();
 	expect(detectBashKernelCell("node --input-type=module <<'JS'\nconsole.log(1)\nJS")).toBeUndefined();
 	expect(detectBashKernelCell("node -u <<'JS'\nconsole.log(1)\nJS")).toBeUndefined();
 });
-test("program input stays independent of kernel source and retains the mixed shell surface", () => {
+
+test("program input redirections are not confused with inline interpreter source", () => {
 	for (const command of ["curl -s x | python -c 'import json'", "python -c 'import json' < in.txt"]) {
-		expect(detectBashKernelCell(command)).toEqual({ language: "python", code: "import json" });
-		expect(isBashKernelCellMixed(command)).toBe(true);
-		expect(findBashCodeCells(command).map(cell => cell.kernel)).toEqual([true]);
+		expect(codes(command)).toEqual(["import json"]);
+		expect(detectBashKernelCell(command)).toBeUndefined();
 	}
 	const js = 'cat input.bin | node -e "process.stdin.resume()"';
 	expect(detectBashKernelCell(js)).toEqual({ language: "js", code: "process.stdin.resume()" });
 	expect(isBashKernelCellMixed(js)).toBe(true);
 });
-test("interpreter options the bridge passes through still route to a cell", () => {
-	expect(detectBashKernelCell("python -u -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("python3 -u - <<'PY'\nprint(2)\nPY")).toEqual({ language: "python", code: "print(2)" });
-	expect(detectBashKernelCell("bun - <<'JS'\nconsole.log(3)\nJS")).toEqual({ language: "js", code: "console.log(3)" });
-});
 
-test("a Python 3 named by path or version is a kernel cell; other interpreters only expose code", () => {
-	for (const command of [
-		".venv/bin/python <<'EOF'\nprint(1)\nEOF",
-		"/usr/bin/python3.12 -c 'print(1)'",
-		"python3.13 -c 'print(1)'",
-	]) {
-		expect(findBashCodeCells(command).map(cell => [cell.language, cell.code, cell.kernel])).toEqual([
-			["python", "print(1)", true],
-		]);
+test("interpreter paths and versions expose source for AST checks", () => {
+	for (const executable of [".venv/bin/python", "/usr/bin/python3.12", "python3.13", "pypy3", "python2.7"]) {
+		expect(
+			findBashCodeCells(`${executable} -c 'print(1)'`).map(cell => [cell.language, cell.code, cell.kernel]),
+		).toEqual([["python", "print(1)", false]]);
 	}
-	for (const command of ["pypy3 - <<EOF\nprint(1)\nEOF", "python -i -c 'print(1)'", "python2.7 -c 'print(1)'"]) {
-		expect(findBashCodeCells(command).map(cell => [cell.language, cell.code, cell.kernel])).toEqual([
-			["python", "print(1)", false],
-		]);
-	}
-	expect(findBashCodeCells("./node_modules/.bin/node -e 'f()'").map(cell => [cell.language, cell.code])).toEqual([
-		["js", "f()"],
-	]);
+	expect(codes("./node_modules/.bin/node -e 'f()'")).toEqual(["f()"]);
 	expect(codes("python3-config --includes")).toEqual([]);
 });
 
-test("a stdin program with argv is code, while a script's heredoc is its data", () => {
+test("stdin programs with argv expose code while script and module heredocs remain data", () => {
 	expect(codes("python3 - \"$f\" <<'PY'\nimport sys\nPY")).toEqual(["import sys"]);
 	expect(codes("python \"$f\" <<'EOF'\nrow,1\nEOF")).toEqual([]);
 	expect(codes("python -m json.tool <<EOF\n{}\nEOF")).toEqual([]);
+	expect(codes("python <<'PY' script.py\nprint(1)\nPY")).toEqual([]);
 	expect(codes("python3 <<< 'print(1)'")).toEqual(["print(1)"]);
+	expect(codes("python -e 'x'")).toEqual([]);
 });
 
-test("runners reach the interpreter named in their argv", () => {
+test("runner argv exposes the nested interpreter but ordinary arguments do not", () => {
 	expect(codes("uv run --with pandas python - <<'PY'\nimport pandas\nPY")).toEqual(["import pandas"]);
 	expect(codes("sudo -E env FOO=1 python3 -c 'print(1)'")).toEqual(["print(1)"]);
 	expect(codes("ssh host python3 - <<'PY'\nprint(2)\nPY")).toEqual(["print(2)"]);
 	expect(codes("find . -name '*.py' -exec python3 -c 'import sys' {} \\;")).toEqual(["import sys"]);
-	// A command that is itself an interpreter owns its argv.
 	expect(codes("python script.py python -c 'x'")).toEqual([]);
-});
-
-test("ordinary command arguments are not executable interpreter programs", () => {
 	expect(codes("echo uv run python -c 'print(1)' ")).toEqual([]);
 });
 
-test("mixed heredocs retain the kernel payload and report surrounding shell", () => {
-	const command = "printf before\npython <<'PY'\nprint(1)\nPY\nprintf after";
-	expect(detectBashKernelCell(command)).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed(command)).toBe(true);
-	expect(isBashKernelCellMixed("python <<'PY'\nprint(1)\nPY")).toBe(false);
-
-	const pending = "printf before\npython <<'PY'\nprint(1)";
-	expect(detectBashKernelCell(pending)).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed(pending)).toBe(true);
-});
-
-test("partial commands yield the code streamed so far", () => {
-	expect(detectBashKernelCell("python <<'PY'\nprint(1)\nx = 2")?.code).toBe("print(1)\nx = 2");
-	expect(detectBashKernelCell("python <<'PY'\nprint(1)\n")?.code).toBe("print(1)");
-	expect(detectBashKernelCell("python -c 'print(1")?.code).toBe("print(1");
+test("mixed and unfinished heredocs retain only their displayed source", () => {
+	expect(codes("printf before\npython <<'PY'\nprint(1)\nPY\nprintf after")).toEqual(["print(1)"]);
+	expect(codes("printf before\npython <<'PY'\nprint(1)")).toEqual(["print(1)"]);
+	expect(codes("python <<'PY'\nprint(1)\nx = 2")).toEqual(["print(1)\nx = 2"]);
+	expect(codes("python <<'PY'\nprint(1)\n")).toEqual(["print(1)"]);
+	expect(codes("python -c 'print(1")).toEqual(["print(1"]);
 	expect(codes("echo \"$(python -c 'import os")).toEqual(["import os"]);
 });
 
-test("shell operators are mixed while program arguments preserve cells", () => {
-	const pyPipeline = "python -c 'print(1)' | sed -n 1p";
-	expect(detectBashKernelCell(pyPipeline)).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed(pyPipeline)).toBe(true);
-
-	const jsRedirect = "node -e 'console.log(1)' > output.txt";
-	expect(detectBashKernelCell(jsRedirect)).toEqual({ language: "js", code: "console.log(1)" });
-	expect(isBashKernelCellMixed(jsRedirect)).toBe(true);
-
-	expect(detectBashKernelCell("python -c 'print(1)' extra")?.code).toBe("print(1)");
-	expect(detectBashKernelCell("python <<'PY' script.py\nprint(1)\nPY")).toBeUndefined();
-	expect(isBashKernelCellMixed("python -c 'print(1)' # note")).toBe(true);
-});
-test("plain shell is not a cell", () => {
-	expect(findBashCodeCells("rg -n foo src")).toEqual([]);
-	expect(findBashCodeCells("sed -i 's/a/b/' f.py")).toEqual([]);
-});
-test("<<- strips leading tabs on terminator", () => {
-	expect(detectBashKernelCell("\tpython <<-EOF\n\ty = 2\n\tEOF")?.language).toBe("python");
-});
-
-test("env-assignment prefixes stay cells because the shell builtin dispatches them", () => {
-	// The embedded shell runs `VAR=… python …` through the python builtin, so the
-	// renderer must keep kernel affordances; the assignment makes it mixed.
-	expect(detectBashKernelCell("FOO=1 python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed("FOO=1 python -c 'print(1)'")).toBe(true);
-	expect(detectBashKernelCell("P=$HOME python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("FOO='a b' python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("FOO=1\\ 2 python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("A=1 B+=2 python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("FOO=1 python <<'PY'\nprint(1)\nPY")).toEqual({ language: "python", code: "print(1)" });
-	// `env` execs a real interpreter — no cell.
-	expect(detectBashKernelCell("env python -c 'print(1)'")).toBeUndefined();
+test("shell operators and wrappers keep JavaScript mixed rendering", () => {
+	for (const command of [
+		"node -e 'console.log(1)' | sed -n 1p",
+		"node -e 'console.log(1)' > output.txt",
+		"FOO=1 node -e 'console.log(1)'",
+		"timeout 5 node -e 'console.log(1)'",
+		"(node -e 'console.log(1)')",
+		"x=$(node -e 'console.log(1)')",
+		"{ node -e 'console.log(1)'; }",
+		"if true; then\n  node -e 'console.log(1)'\nfi",
+	]) {
+		expect(detectBashKernelCell(command)).toEqual({ language: "js", code: "console.log(1)" });
+		expect(isBashKernelCellMixed(command)).toBe(true);
+	}
+	expect(detectBashKernelCell("env node -e 'console.log(1)'")).toBeUndefined();
+	expect(detectBashKernelCell("sudo node -e 'console.log(1)'")).toBeUndefined();
+	expect(detectBashKernelCell("\\node -e 'console.log(1)'")).toEqual({ language: "js", code: "console.log(1)" });
+	expect(isBashKernelCellMixed("\\node -e 'console.log(1)'")).toBe(false);
 });
 
-test("kernel-dispatching wrapper prefixes keep the cell rendering", () => {
-	expect(detectBashKernelCell("timeout 5 python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("timeout --preserve-status 5 python -c 'print(1)'")).toEqual({
-		language: "python",
-		code: "print(1)",
-	});
-	expect(detectBashKernelCell("time -p python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("nohup python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("command python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("builtin python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed("timeout 5 python -c 'print(1)'")).toBe(true);
-	// Non-dispatching prefixes must not render as cells: they exec a real interpreter.
-	expect(detectBashKernelCell("sudo python -c 'print(1)'")).toBeUndefined();
-	expect(detectBashKernelCell("env python -c 'print(1)'")).toBeUndefined();
-	expect(detectBashKernelCell("timeout 5 sudo python -c 'print(1)'")).toBeUndefined();
+test("environment assignment words do not swallow Python source", () => {
+	for (const prefix of [
+		"FOO=1",
+		"P=$HOME",
+		"FOO='a b'",
+		"FOO=1\\ 2",
+		"A=1 B+=2",
+		"timeout --preserve-status 5",
+		"time -p",
+		"nohup",
+		"command",
+		"builtin",
+	]) {
+		expect(codes(`${prefix} python -c 'print(1)'`)).toEqual(["print(1)"]);
+	}
+	expect(codes("FOO=1 python <<'PY'\nprint(1)\nPY")).toEqual(["print(1)"]);
 });
 
-test("subshell, command substitution and brace groups wrapping a cell are detected as mixed", () => {
-	expect(detectBashKernelCell("(python -c 'print(1)')")).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed("(python -c 'print(1)')")).toBe(true);
-	expect(detectBashKernelCell("x=$(python -c 'print(1)')")).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed("x=$(python -c 'print(1)')")).toBe(true);
-	expect(detectBashKernelCell("{ python -c 'print(1)'; }")).toEqual({ language: "python", code: "print(1)" });
-	expect(detectBashKernelCell("(python -c 'print(1)') && python -c 'print(2)'")).toEqual({
-		language: "python",
-		code: "print(1)",
-	});
-	expect(detectBashKernelCell("if true; then\n  python -c 'print(1)'\nfi")?.code).toBe("print(1)");
+test("subshell and compound command boundaries retain every Python program", () => {
+	expect(codes("(python -c 'print(1)') && python -c 'print(2)'")).toEqual(["print(1)", "print(2)"]);
+	expect(codes("x=$(python -c 'print(1)')")).toEqual(["print(1)"]);
+	expect(codes("{ python -c 'print(1)'; }")).toEqual(["print(1)"]);
+	expect(codes("if true; then\n  python -c 'print(1)'\nfi")).toEqual(["print(1)"]);
 });
 
-test("backslash-escaped interpreter name is a pure cell", () => {
-	expect(detectBashKernelCell("\\python -c 'print(1)'")).toEqual({ language: "python", code: "print(1)" });
-	expect(isBashKernelCellMixed("\\python -c 'print(1)'")).toBe(false);
+test("plain shell and empty interpreter heredocs expose no source region", () => {
+	for (const command of [
+		"rg -n foo src",
+		"sed -i 's/a/b/' f.py",
+		"python <<'PY'\nPY",
+		"python <<'PY'\nPY\n",
+		"\tpython <<-EOF\n\tEOF",
+	]) {
+		expect(findBashCodeCells(command)).toEqual([]);
+	}
 });
 
-test("empty heredoc bodies are not cells", () => {
-	// The heredoc closes on the delimiter line; the kernel receives empty code.
-	expect(detectBashKernelCell("python <<'PY'\nPY")).toBeUndefined();
-	expect(detectBashKernelCell("python <<'PY'\nPY\n")).toBeUndefined();
-	expect(detectBashKernelCell("\tpython <<-EOF\n\tEOF")).toBeUndefined();
+test("tab-stripping heredocs expose the program the interpreter receives", () => {
+	expect(codes("\tpython <<-EOF\n\ty = 2\n\tEOF")).toEqual(["y = 2"]);
+	expect(codes("python <<-EOF\n\tprint(1)\n\t\tx = 2\n\tEOF")).toEqual(["print(1)\nx = 2"]);
 });
 
-test("<<- strips leading tabs from the displayed body like the shell does", () => {
-	expect(detectBashKernelCell("python <<-EOF\n\tprint(1)\n\t\tx = 2\n\tEOF")).toEqual({
-		language: "python",
-		code: "print(1)\nx = 2",
-	});
+test("CRLF heredoc delimiters are not displayed as Python source", () => {
+	expect(codes("python <<'PY'\r\nprint(1)\r\nPY\r\n")).toEqual(["print(1)\r"]);
 });
 
-test("CRLF heredoc terminators close the cell", () => {
-	// The embedded shell accepts a delimiter line ending in \r; rendering the
-	// delimiter as code would disagree with what the kernel executes.
-	const cell = detectBashKernelCell("python <<'PY'\r\nprint(1)\r\nPY\r\n");
-	expect(cell).toEqual({ language: "python", code: "print(1)\r" });
-});
-
-test("shell word extraction matches the argv the interpreter receives", () => {
-	// $'...' ANSI-C escapes are stripped by the shell before dispatch.
-	expect(detectBashKernelCell("python -c $'print(\\'a\\')\\n\\tB\\x41\\101\\u00e9'")).toEqual({
-		language: "python",
-		code: "print('a')\n\tBAAé",
-	});
-	// Backslash-escaped words unescape.
-	expect(detectBashKernelCell("python -c print\\(1\\)")).toEqual({ language: "python", code: "print(1)" });
-	// Quoted segments concatenate into one argv word.
-	expect(detectBashKernelCell("python -c 'a'\\''b'")).toEqual({ language: "python", code: "a'b" });
-	// Escaped quotes inside double quotes keep existing behavior.
-	expect(detectBashKernelCell('python -c "a\\"b"')).toEqual({ language: "python", code: 'a"b' });
-	// Unquoted parens are bash syntax errors, not cells.
-	expect(detectBashKernelCell("python -c print(1)")).toBeUndefined();
-	// Backtick command substitution is not statically knowable.
-	expect(detectBashKernelCell("python -c `echo x`")).toBeUndefined();
+test("shell word extraction matches the code argument after quote removal", () => {
+	expect(codes("python -c $'print(\\'a\\')\\n\\tB\\x41\\101\\u00e9'")).toEqual(["print('a')\n\tBAAé"]);
+	expect(codes("python -c print\\(1\\)")).toEqual(["print(1)"]);
+	expect(codes("python -c 'a'\\''b'")).toEqual(["a'b"]);
+	expect(codes('python -c "a\\"b"')).toEqual(['a"b']);
+	expect(codes("python -c print(1)")).toEqual([]);
+	expect(codes("python -c `echo x`")).toEqual([]);
 });
 
 test("findBashCodeCells reports every cell with its raw code span in source order", () => {

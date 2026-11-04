@@ -12,6 +12,7 @@ import { AuthStorage } from "../../session/auth-storage";
 import { captureSessionCommandTarget } from "../../session/command-target";
 import { detachedSessionHolder } from "../../session/detached-session-holder";
 import { SessionManager } from "../../session/session-manager";
+import { TranscriptContainer } from "../components/transcript-container";
 import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { CommandController } from "./command-controller";
@@ -73,12 +74,17 @@ async function fixture(rootManager: SessionManager = SessionManager.inMemory()) 
 			focusedAgentId = undefined;
 		},
 		settings,
+		chatContainer: new TranscriptContainer(),
+		pendingShellContainer: new Container(),
+		pendingPythonComponents: [],
+		renderInitialMessages: async () => {},
 		statusContainer: new Container(),
 		statusLine: { invalidate: noop },
 		ui: { terminal: { columns: 120 }, requestRender: noop, requestComponentRender: noop },
 		presentCommandOutput: (components: Component | Component[]) =>
 			output.push(...(Array.isArray(components) ? components : [components])),
-		present: (components: Component[]) => output.push(...components),
+		present: (components: Component | readonly Component[]) =>
+			output.push(...(Array.isArray(components) ? components : [components as Component])),
 		showWarning: (message: string) => notices.push(message),
 		showError: (message: string) => notices.push(message),
 		showStatus: (message: string) => notices.push(message),
@@ -363,3 +369,80 @@ test("an adoption refuses a changed source generation even when its head entry s
 	expect(f.ctx.viewSession).toBe(f.child);
 	expect(release).toHaveBeenCalledWith({ disposition: "runtime-release" });
 });
+
+test("focused Python submissions persist only in the selected child even while the root is busy", async () => {
+	const f = await fixture();
+	f.root.agent.state.isStreaming = true;
+	const rootEntries = f.root.sessionManager.getEntries();
+	await f.controller.handlePythonCommand("print('selected-python', 6 * 7)");
+	expect(f.notices).toEqual([]);
+	expect(f.text()).toContain("selected-python 42");
+	expect(
+		f.child.sessionManager
+			.getEntries()
+			.some(
+				entry =>
+					entry.type === "message" &&
+					entry.message.role === "pythonExecution" &&
+					entry.message.output.includes("selected-python 42"),
+			),
+	).toBe(true);
+	expect(f.root.sessionManager.getEntries()).toEqual(rootEntries);
+});
+
+test("leaving a Python view keeps its result but cannot stream it into the new view", async () => {
+	const f = await fixture();
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "python-view-race-"));
+	directories.push(directory);
+	const gate = path.join(directory, "release");
+	const started = Promise.withResolvers<void>();
+	const execute = f.child.executePython.bind(f.child);
+	let output = "";
+	vi.spyOn(f.child, "executePython").mockImplementation((code, onChunk, options) =>
+		execute(
+			code,
+			chunk => {
+				output += chunk;
+				if (output.includes("gate-ready")) started.resolve();
+				onChunk?.(chunk);
+			},
+			options,
+		),
+	);
+	const running = f.controller.handlePythonCommand(
+		[
+			"from pathlib import Path",
+			"import time",
+			"print('gate' + '-ready', flush=True)",
+			`while not Path(${JSON.stringify(gate)}).exists(): time.sleep(0.01)`,
+			"print('late' + '-child-only')",
+		].join("\n"),
+	);
+	try {
+		await started.promise;
+		f.focus(f.root);
+		f.ctx.pythonComponent = undefined;
+		f.output.length = 0;
+		await Bun.write(gate, "release");
+		await running;
+		expect(f.text()).not.toContain("late-child-only");
+		expect(
+			f.child.sessionManager
+				.getEntries()
+				.some(
+					entry =>
+						entry.type === "message" &&
+						entry.message.role === "pythonExecution" &&
+						entry.message.output.includes("late-child-only"),
+				),
+		).toBe(true);
+		expect(
+			f.root.sessionManager
+				.getEntries()
+				.some(entry => entry.type === "message" && entry.message.role === "pythonExecution"),
+		).toBe(false);
+	} finally {
+		await Bun.write(gate, "release");
+		await running;
+	}
+}, 20_000);

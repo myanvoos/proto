@@ -1,259 +1,163 @@
-# Bash Tool Python Kernel
+# Python: fresh processes, explicit library and named kernels
 
-This document describes the Python execution stack in `packages/coding-agent`.
-It covers Bash kernel-cell behavior, runner lifecycle, environment handling, execution semantics, output rendering, supported magics, and operational failure modes. The cross-language cell contract lives in [Bash tool runtime](bash-tool-runtime.md#kernel-cell-reference); this page focuses on Python internals.
+The Python execution overhaul is **unreleased**, following the v20/P5 selected-data continuity work. Ordinary Python now runs as real fresh processes. The explicit `proto_harness` library provides host integration; optional named kernels provide warm namespaces. This page describes those current contracts, not the former implicit Bash-to-kernel routing.
 
-The model reaches this runtime through supported `python`/`python3` Bash invocations with code on stdin or through bare `python -c` code. The persistent Python runtime itself remains an internal `eval` backend; it is not a separate model-facing tool.
+## Choose execution and persistence independently
 
-## Scope and Key Files
+| Need | Surface |
+|---|---|
+| Native Python process | `python script.py`, `python -c '...'`, `python -`, heredocs, modules, aliases, shebangs or subprocesses |
+| Host tools, models, artifacts, safe edits | `import proto_harness as harness` in a managed agent-shell process |
+| Durable session-owned Python values | `harness.store` |
+| Optional warm namespace | `harness.kernel("analysis")` or `python -m proto_harness.kernel analysis` |
 
-- Bash kernel-cell bridge: `src/eval/shell-bridge.ts`
-- Kernel-cell detection and source spans: `src/tools/bash-embedded-code.ts`
-- Session/per-call kernel orchestration: `src/eval/py/executor.ts`
-- Subprocess kernel client: `src/eval/py/kernel.ts`
-- Python wrapper / NDJSON server: `src/eval/py/runner.py`
-- Prelude helpers loaded into every kernel: `src/eval/py/prelude.py`
-- Host-side subagent helper bridge: `src/eval/agent-bridge.ts`
-- MIME bundle renderer (text + structured outputs): `src/eval/py/display.ts`
-- Shared kernel-cell renderer: `src/tools/eval-render.ts`
-- Interactive-mode renderer for user-triggered Python runs: `src/modes/components/eval-execution.ts`
-- Runtime/env filtering and Python resolution: `src/eval/py/runtime.ts`
+Ordinary commands, interactive `$` / `$$` Python submissions and fresh `executePython` API calls do not reuse a hidden namespace. Native argv, binary stdin/stdout/stderr, exit codes, signals, `atexit`, `asyncio.run()` and import semantics remain native. No automatic source transformation, injected `tool`/`Path`/helper globals, IPython magics or project-module reload hooks are part of this API. Use ordinary Python (`os.chdir`, `os.environ`, `subprocess`, `time`, `runpy`) or explicit harness calls rather than `%reset`, `%pip` or shell-escape syntax.
 
-## What Bash's Python kernel is
+Interactive Python uses `$ code` (included in model context) or `$$ code` (excluded). `! command` / `!! command` are **shell** shortcuts; `!!` is excluded shell execution, not Python.
 
-A supported Bash invocation executes one Python cell inside the Python runner subprocess (retained in `session` mode, fresh in `per-call` mode). NDJSON control uses private descriptors, separate from program stdin/stdout/stderr. No Jupyter gateway and no extra pip dependencies are required. The bundled runner uses Python 3.10 syntax (`str | None`), so the effective requirement is Python 3.10+; the local availability probe checks the version unless `PI_PYTHON_SKIP_CHECK` bypasses it, and an older interpreter selected by a Bash command runs that command as a plain process instead. Rich `display()` output (PIL, pandas, Plotly, and Matplotlib figures) works because the wrapper implements MIME-bundle dispatch.
-
-Supported forms include:
+For example, two ordinary commands are independent:
 
 ```bash
-python <<'PY'
-from pathlib import Path
-print(Path("package.json").read_text())
-PY
-
-python -c 'print("one persistent Python cell")'
+python -c 'value = 10; print(value)'
+python -c 'print("value" in globals())'  # False
 ```
 
-A pipeline can provide the source on stdin, and `python fleet://<name>.py` runs a supported internal fleet script in the kernel. Ordinary script paths, `-m`, unsupported interpreter flags, and calls made without the Bash kernel bridge use a normal external interpreter instead. Supported `-c`, `-`, and fleet-script invocations accept program arguments and expose the native `sys.argv` shape. Bash supplies the language and source through the command; there is no separate `language`, `code`, `title`, `timeout`, or `reset` cell object. The enclosing Bash `timeout` controls the cell's deadline.
+Managed agent-shell integration stages a tiny `sitecustomize` bootstrap and the public package without modifying the user's installed Python. The bootstrap detects actual CPython invocation and authenticates the run; it chains an existing `sitecustomize`. `-I`, `-E` and `-S` remain ordinary explicit opt-outs from that environment integration. Plain startup does not eagerly load cloudpickle or the host helper stack. The public package is **`proto_harness`**, not a shadow of the external `proto` CLI or a third-party `proto` package.
 
-Each retained Python runtime executes cells in order; state persists across later Bash kernel-cell invocations in session mode. Ordinary cells run on the main thread without an active event loop, so `asyncio.run()` retains its native meaning. Top-level-await cells drive a retained loop; cell-owned asyncio tasks settle before completion unless explicitly retained with `retain_task(task)`. Python threads/executors and interpreter-shutdown hooks have kernel-process lifetime, not cell lifetime. Put dependent cells in one ordered Bash command rather than relying on parallel Bash-call ordering. The session's enabled backend settings determine whether Python can be routed into the kernel.
+## Explicit host library
 
-## Kernel lifecycle
+```python
+import proto_harness as harness
 
-For a local target, each Python kernel is a single subprocess: `<resolved-python> -u <runner.py>`; container and SSH targets run `<resolved-python> -u -c <embedded runner>` on the target. The runner is bundled with the host binary (Bun text import); local launches stage it in a `proto-python-runner` cache under the OS temp directory once per script hash and reuse it within the host process.
-
-Kernel startup sequence:
-
-1. Local availability check (`checkPythonKernelAvailability`) — verifies that a local Python interpreter resolves and runs; remote targets defer interpreter selection/checking to target startup.
-2. Spawn the runner with filtered local or target-safe env and `cwd` (`python -u runner.py` locally; an embedded `python -u -c` bootstrap on container/SSH targets).
-3. Send an init request that runs `os.chdir(cwd)`, injects env entries, and puts `cwd` first on `sys.path` (see [Imports](#imports)).
-4. Execute `PYTHON_PRELUDE` (idempotent — only initializes once per process). User globals live in a real registered `__main__` module, separate from runner internals, so imports of `__main__` and top-level function/class pickling resolve correctly.
-
-Kernel shutdown:
-
-- Send `{"type": "exit"}` over stdin.
-- Wait for process exit with `SHUTDOWN_GRACE_MS` budget.
-- Escalate to `SIGTERM` and finally `SIGKILL` if the process does not exit in time.
-
-### Idle reap (Python and JavaScript)
-
-Retained kernels are released after `DEFAULT_KERNEL_IDLE_REAP_MS` (15 minutes) without activity, in `session` mode. Reap candidates are skipped while a cell is executing, while a reset is in flight, and — decisive — while the kernel reports in-flight work:
-
-- Python: the host sends a `{"type": "status"}` control request over stdin; the runner answers with a `done` frame whose `busy` field counts pending request IDs (queued or executing). Backgrounded cells and awaited tool/subagent bridges keep a request pending, so they block the reap. A missing or late answer counts as busy.
-- JavaScript: any pending run (including awaited tool/agent bridges) blocks the reap.
-
-Reaping shuts the subprocess/worker down; the next call for that session key starts a fresh kernel and the call's status events include a `kernel-idle-reap` event whose `idleMs` is the configured reap interval. Retained state from before the reap is discarded. Subagents dispose their kernels earlier by design: an idle orchestration worker is parked after `orchestrator.agentIdleTtlMs` (default 60s), and park, kill, and eviction all run `AgentSession.dispose()`, which releases that agent's Python kernel and JS context by owner. The 15-minute reap remains the net for sessions that stay adopted with TTL disabled and for detached main-TUI sessions. Ordinary cell-owned asyncio tasks now settle before completion. Explicit `retain_task` work and runtime-lifetime Python threads do not pin the kernel against idle reap; use the kernel keepalive control when needed. Reset, close, and reap still end retained work.
-
-## Wire protocol (NDJSON, host ↔ runner)
-
-One JSON object per line, UTF-8, `\n` terminated.
-
-Host → runner:
-
-```jsonc
-{"id": "<reqId>", "code": "<source>", "silent": false, "storeHistory": true, "cwd": "<optional>", "env": {"<managed-key>": "<value>"}, "shellEnv": {"KEY": "VAL"}, "stdin": true, "invocation": {"argv": ["-c", "arg"], "filename": "<optional>"}}
-{"type": "stdin", "id": "<reqId>", "data": "<base64>", "eof": false}
-{"type": "tool_response", "requestId": "<requestId>", "reply": {}}
-{"type": "cancel", "id": "<reqId>"}
-{"type": "status", "id": "<statusId>"}
-{"type": "exit"}
+result = harness.tool.read({"path": "package.json"})
+print(result)
 ```
 
-Runner → host:
+Helpers are run/session/owner authenticated and use the existing canonical host bridges. Calling them does not bypass tool availability, extension `tool_call` policy/schema validation, spawn authority, execution admission, cancellation or turn budget. Run capabilities are revoked when the owning shell invocation completes or aborts. There is no peer-supplied session-ID authority.
 
-```jsonc
-{"type": "stdin_request", "id": "<reqId>"}
-{"type": "tool_request", "id": "<reqId>", "requestId": "<requestId>", "payload": {}}
-{"type": "started",     "id": "<reqId>"}
-{"type": "stdout",      "id": "<reqId>", "data": "..."}
-{"type": "stdout",      "id": "<reqId>", "encoding": "base64", "data": "...", "text": "..."}
-{"type": "stderr",      "id": "<reqId>", "data": "..."}
-{"type": "display",     "id": "<reqId>", "bundle": {<mime>: <value>}}
-{"type": "result",      "id": "<reqId>", "bundle": {<mime>: <value>}}
-{"type": "error",       "id": "<reqId>", "ename": "...", "evalue": "...", "traceback": ["..."]}
-{"type": "done",        "id": "<reqId>", "status": "ok"|"error", "executionCount": N, "cancelled": false|true, "exitCode": N?}
+### Tools, completions and agents
+
+- `harness.tool.<name>(args)` calls an enabled host tool; keyword arguments are also supported. A blocked or unavailable tool raises a visible error.
+- `harness.completion(prompt, *, model="default", system=None, schema=None)` performs a stateless, tool-free completion. Model roles/IDs use the configured session pool; ambiguous IDs need `provider/id`. With a JSON schema it returns parsed data, otherwise text.
+- `harness.agent(prompt, *, agent=None, model=None, label=None, schema=None, schema_mode=None, isolated=None, apply=None, merge=None, handle=False)` blocks for a subagent result. With no explicit agent, the host selects the effective permitted role. `model` accepts a role alias or concrete model ID and is validated against the effective role's configured bank. `schema` overrides agent/session schemas; `schema_mode` is `"permissive"` or `"strict"`. Isolation/apply/merge preserve the existing worktree policy.
+- `agent()` returns final text or parsed structured data. `handle=True` returns a result-node mapping with `text`, `output`, `handle`, `id` and `agent`; `handle` is a recoverable `agent://<id>` URI when a child reference exists. Parsed output is under `data` when available. Isolation metadata can include `patch_path`, `branch_name`, nested patch fields, `changes_applied` and `isolation_summary`.
+- `harness.output(*ids, format="raw"|"json"|"stripped", query=None, offset=None, limit=None)` reads agent/task output. It does not read Bash output artifacts; use `harness.tool.read({"path": "artifact://..."})` for those.
+
+### Workflows and cancellation
+
+`harness.parallel(thunks, **options)` runs zero-argument callables concurrently and preserves input order. `harness.pipeline(items, *stages, streaming=False, **options)` maps values through stages: each stage normally waits for all items; streaming advances each item independently.
+
+Shared options include `concurrency=N`, `settled=True`, `timeout` (seconds per item), `cancel` (a threading event), `on_result(row)`, `checkpoint=dir`, `key=str`, `keys=[...]` and `resume=True`. Failure normally raises `harness.BatchError`, with every row in `.results`; settled mode returns `{status, index, stage, value|error}` rows. Long-running loops call `harness.task_signal().check()` for cooperative deadlines/cancellation. Running callbacks drain before the workflow returns. Checkpoints persist successful JSON-compatible results, require stable unique item keys for parallel calls, and resume completed work without automatic retries; change the checkpoint key when code changes.
+
+```python
+import proto_harness as harness
+
+results = harness.parallel([
+    lambda: harness.completion("Summarize the first approach"),
+    lambda: harness.completion("Summarize the second approach"),
+], concurrency=2)
 ```
 
-`env` carries managed kernel variables; `shellEnv` carries per-cell shell variables. `stdin` and `invocation` are optional. `exitCode` is present when the cell raised `SystemExit`, mapped the way CPython maps it at process exit: `None` → 0, an integer → its low byte, anything else → printed to stderr and 1. The cell ends with that status (`status` is `"error"` for a non-zero one) and the kernel keeps its state.
+Use the enclosing Bash command's timeout for ordinary process lifetime. Helper item deadlines do not turn arbitrary Python threads or native code into forcibly cancellable computations.
 
-Status events the prelude emits (e.g. `_emit_status("env", count=…)`) ship inside display bundles under `application/x-proto-status` so the existing TUI status renderer keeps working.
+### Safe filesystem operations and source inspection
 
-## Magics
+`harness.fs.read_text(path)`, `read_bytes(path)`, `write_text(path, content)`, `write_bytes(path, content)` and `replace(path, old, new, count=1)` use permission-checked host filesystem operations. Writes are atomic and honor the shared stale-observation guard across tools/processes. `harness.StaleWriteError` means re-read, reconstruct the edit and retry deliberately; do not blindly overwrite.
 
-The runner's source transformer rewrites IPython-style magics to plain Python calls before parsing. Supported set:
+```python
+import proto_harness as harness
 
-| Magic                             | Effect                                                                                                                                                      |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `%pip <args>`                     | `sys.executable -m pip <args>` with live streaming output. Newly installed packages are evicted from `sys.modules` so the next `import` picks up the fresh install. |
-| `%cd <path>`                      | `os.chdir(path)` (with `~` expansion); emits status event.                                                                                                  |
-| `%pwd`                            | Returns `os.getcwd()`.                                                                                                                                      |
-| `%ls [path]`                      | Returns `sorted(os.listdir(path))`.                                                                                                                         |
-| `%env [KEY[=VAL]]`                | List, read, or set env vars (matches prelude `env()` semantics).                                                                                            |
-| `%set_env KEY VALUE`              | Set `os.environ[KEY]`.                                                                                                                                      |
-| `%time <expr>` / `%timeit <expr>` | Time the expression; emits status event with elapsed ms.                                                                                                    |
-| `%who` / `%whos`                  | List user-namespace names.                                                                                                                                  |
-| `%reset`                          | Clear user globals and re-inject prelude.                                                                                                                   |
-| `%load <path>`                    | Read a file, display its source, and execute it in the current namespace.                                                                                   |
-| `%run <path>`                     | `runpy.run_path` and merge globals back.                                                                                                                    |
-| `%%bash`                           | Run the cell body via `bash`.                                                                                                                               |
-| `%%capture [name]`                | Run body with stdout/stderr captured into `name`.                                                                                                           |
-| `%%timeit`                        | Time the cell body.                                                                                                                                         |
-| `%%writefile <path>`              | Write body to file.                                                                                                                                         |
-| `!cmd` / `var = !cmd`             | Run command via a subprocess shell; returns a `_ShellResult` with `.n` / `.s` helpers.                                                                      |
-| `var = %name args`                | Assignment forms work for line magics and `!cmd`.                                                                                                           |
+text = harness.fs.read_text("src/config.py")
+old = "DEBUG = True"
+assert text.count(old) == 1
+harness.fs.write_text("src/config.py", text.replace(old, "DEBUG = False"))
+```
 
-Unknown magic names raise `NameError: UsageError: ...` inside the cell.
+`harness.symbols(path=None, *, code=None, lang=None)` returns a structural outline; `harness.block_range(path, line)` returns inclusive 1-based syntactic block bounds. Path-taking harness filesystem/source helpers address the **host filesystem**, including from remote kernels. Native Python `Path`/`open` address the executing interpreter's filesystem and keep native semantics; they are not monkey-patched. For internal resources such as `skill://` or `artifact://`, call `harness.tool.read` rather than treating the URI as a filesystem path.
 
-## Session persistence semantics
+### Displays, artifacts, status and owned tools
 
-`python.kernelMode` controls retained kernel reuse:
+- `harness.display(value)` publishes rich displays explicitly. Text/JSON, images and supported MIME representations follow existing bounded rendering/output admission; display sidebands do not become stdout bytes.
+- `harness.publish_artifact(value, kind="json", path=None, ...)` publishes immutable data and returns a reference. `read_artifact(ref, offset=0, length=None, encoding=None)` pages artifacts published through this API; `resolve_artifact(ref)` validates a reference. These are distinct from tool-output artifact reads.
+- `harness.executions(id=None, limit=20)` returns recent owned Bash execution captures, including bounded/truncated capture metadata. It is not permission to rerun uncertain effects.
+- `harness.log(message)`, `phase(title)` and `env(key=None, value=None)` expose explicit status/environment helpers. `harness.budget.total`, `.spent()` and `.remaining()` read the live host goal budget.
+- `start_tool(name, args)` starts owned execution; `tool_events(handle, cursor=0, limit=128, wait_ms=30000)` streams retained events. Leaving the iterator does not cancel the tool: call `cancel_tool`, then `dispose_tool` after settlement.
+- `delegate(grants, ttl_ms=..., max_concurrent=..., max_requests=...)`, `launch_delegated(...)`, `delegations()` and `revoke_delegation(...)` retain bounded scoped external-tool leases. They are capabilities, not a sandbox; never print capability tokens/files.
 
-- `session` (default)
-  - Local sessions are keyed by a namespaced session id and normalized cwd; an explicitly selected interpreter contributes its environment identity (resolved binary plus virtual environment). Remote sessions also include the parsed target. Bash picks the interpreter per command as described in [Bash tool runtime](bash-tool-runtime.md#cell-forms-and-api), so one lane can hold a kernel per interpreter.
-  - Bash kernel-cell invocations in one session reuse that retained Python kernel; independent orchestrator workers receive distinct session ids and do not share the parent or sibling kernel.
-  - Explicit callers may intentionally pass the same kernel session id to preserve shared-state delegation.
-  - Parallel Bash calls must not be used for dependent cells; their execution order is not guaranteed.
-  - A dead retained subprocess is replaced before execution.
-  - If the subprocess dies during execution, completion is uncertain and the cell is not replayed. The next cell starts a new generation and reports state loss; inspect partial effects before retrying.
-  - A quiescent kernel is released after 15 idle minutes (see "Idle reap" under Kernel lifecycle); the next cell starts fresh and reports a `kernel-idle-reap` status event.
-- `per-call`
-  - Spawns a fresh subprocess for each cell.
-  - Shuts the subprocess down after the cell.
-  - No cross-cell state persistence.
+All helpers in this section are attributes of `harness`, not implicitly installed globals.
 
-### State across Bash kernel cells
+## Durable session store
 
-Each recognized interpreter invocation is one cell; a Bash command may contain multiple cells. Later cells reuse the selected retained kernel in `session` mode, while separate Python and JavaScript runtimes never share state. Put dependent cells in one ordered Bash command rather than relying on parallel Bash calls.
+```python
+import proto_harness as harness
 
-If a cell fails, definitions and mutations completed before the error can remain in kernel memory. Python `%reset` clears the user namespace and re-injects the prelude. Bash has no structured per-cell `reset` field; runtime disposal, idle reap, or forced shutdown starts a fresh kernel.
+shared = []
+shared.append(shared)
+with harness.store.transaction() as store:
+    store["left"] = shared
+    store["right"] = shared
+```
 
-## Imports
+A later compatible fresh process in the same session can read `harness.store["left"] is harness.store["right"]` and the self-cycle. The store serializes its **entire mapping as one graph**, not independent per-key pickle files. Assignment/deletion commits automatically; in-place nested mutations need `commit()` or a successful transaction batch. `refresh()` loads the current durable graph; `revision` identifies its CAS revision. A stale writer fails without automatic retry or overwriting a competing writer. Transactions batch one commit; they are not cross-process locks or rollback of external effects.
 
-A cell stands in for a fresh `python` process, so its imports resolve the way that process would, while variables persist:
+The graph uses lazy vendored cloudpickle **3.1.2**, preserving supported aliases/cycles, closures, functions, classes and module metadata. Native-store validation uses its captured interpreter, including the virtualenv launcher and prefix, independently of the named-kernel Python 3.10 minimum. A compatible native Python 3.9 store does not require a Python 3.9 warm kernel. Its **64 MiB encoded payload** limit is base64 text, not 64 MiB of raw heap/pickle. Trusted session-local graphs must not be treated as safe untrusted pickle uploads. Interpreter/format/module environment compatibility is validated before restore; unsupported live resources are refused rather than silently converted or discarded.
 
-- **Search path.** Every cell starts `sys.path` with its invocation working directory, then the `PYTHONPATH` of its own shell environment. The previous cell's entries are replaced, not accumulated; a later cell with a different Bash cwd therefore stops resolving modules from the old directory. An in-cell `%cd`/`os.chdir()` changes the process cwd but does not retroactively rewrite that cell's `sys.path`.
-- **Changed source.** Project modules (source loaded from outside the interpreter's stdlib and site-packages) are stamped as their loader executes them. Before each cell, and before the first import after the cell writes a `.py` file, spawns a process, or calls a host tool, the kernel checks those stamps and re-resolves top-level names found on `sys.path`. If any project module changed, was deleted, or now resolves to another file, every reloadable project module is evicted from `sys.modules` (dependents may hold objects from the changed one), and the next `import` re-executes the source.
-- **Earlier bindings.** Names bound in earlier cells keep the objects they hold. When an eviction leaves such names pointing at old code, the cell prints `<kernel> note: … names from earlier cells still hold the old code: …`; names the cell rebinds itself are not listed. `importlib.reload(module)` on an evicted module re-executes it in place.
-- **Libraries** are never evicted. A rebuilt project C extension cannot be reloaded by CPython; the kernel reports it once and keeps the old build until the kernel is reset.
-- Tracebacks omit the runner's own frames, so a failed import reads like plain-interpreter output.
+## Optional named warm kernels
 
-## Environment filtering and runtime resolution
+```python
+import proto_harness as harness
 
-For local launches, the environment is filtered before launching the runner:
+kernel = harness.kernel("analysis")
+first = kernel.run("values = [1, 2, 3]")
+second = kernel.run("print(sum(values))")
+print(kernel.status())
+```
 
-- Allowlist includes core vars like `PATH`, `HOME`, locale vars, `VIRTUAL_ENV`, `PYTHONPATH`, etc.
-- Allow-prefixes: `LC_`, `XDG_`, `PI_`
-- Denylist strips common API keys (OpenAI/Anthropic/Gemini/etc.)
+`harness.kernel(name="main", *, interpreter=None, cwd=None, target=None)` returns a handle. `run(code)` submits code; `exec(file)` executes a script in that warm namespace; `status()` reports lifecycle/environment/residency; `stop()` closes and forgets its configuration; `restart()` intentionally discards its namespace and starts a new generation. Explicit reset/close is not a request to restore old state.
 
-Local runtime selection order (remote targets use their configured target interpreter or `python3` on the target; local discovery is skipped when the `python.interpreter` setting names an explicit executable):
+Named kernels belong to their authenticated owner/name/interpreter/environment, not the calling fresh process's globals. Separate workers own separate namespaces/store state; copied ancestor history is not live ownership. Compatible same-name calls reuse the warm namespace; change cwd/target deliberately with restart, and disambiguate an interpreter when a name has multiple environments. Nested named kernels are supported, but a kernel cannot synchronously depend on itself or a waiting ancestor.
 
-1. Active/located venv (`VIRTUAL_ENV`, then `CONDA_PREFIX`, then `<cwd>/.venv`, `<cwd>/venv`)
-2. Managed venv from `getPythonEnvDir()` (normally `~/.proto/python-env`; config/profile/XDG directory settings can change it)
-3. `python` or `python3` on PATH
+The CLI streams code output and maps execution status to process exit status:
 
-When a venv is selected, its `bin` directory is prepended to `PATH`.
+```bash
+python -m proto_harness.kernel analysis -c 'values = [1, 2, 3]'
+python -m proto_harness.kernel analysis -c 'print(sum(values))'
+python -m proto_harness.kernel analysis --file analyze.py
+python -m proto_harness.kernel analysis <<'PYCODE'
+import proto_harness as harness
+harness.display({"sum": sum(values)})
+PYCODE
+```
 
-The runner additionally receives `PYTHONUNBUFFERED=1` and `PYTHONIOENCODING=utf-8` so streamed output reaches the host promptly.
+CLI options include `--interpreter` and `--cwd`. Omitted options preserve the named environment configuration instead of selecting the caller's interpreter; remote runs use the configured target cwd. Explicit interpreter selectors are resolved by the selected runtime: local bare names follow the invocation PATH, relative paths follow cwd, and remote-only paths are not checked against the host filesystem. With `-c` or `--file`, piped stdin is program input; otherwise stdin supplies code. No notebook gateway is involved.
 
-## Tool availability and mode selection
+### Execution, imports and failure
 
-The backend settings `eval.py` / `eval.js` default to `true`. Optional boolean environment flags `PI_PY` and `PI_JS` override their corresponding setting independently.
+Warm cells execute in order on the main thread. Ordinary synchronous cells have no active event loop, so `asyncio.run()` remains native. Explicit top-level await is supported; cell-owned tasks settle before completion. Warm-only `harness.retain_task(task)` transfers a task on the top-level-await loop to kernel lifetime; such live work prevents safe durable capture. User threads/executors likewise have process lifetime, not cell lifetime.
 
-The Bash kernel bridge routes only enabled backends. If Python preflight fails, the invocation follows Bash's normal external-process fallback (with a one-time older-version note when applicable); Bash never substitutes another language. When the bridge is unavailable, the interpreter invocation likewise follows the normal external-process path.
+Warm imports remain native **persistent** imports: editing a file does not evict its old module or rebind earlier objects. Use explicit `importlib.reload` where appropriate or restart deliberately. A failed cell can retain definitions/mutations completed before failure. Errored or interrupted cells are never silently replayed; inspect partial effects before retrying. Uncaptured/dirty state after process loss refuses an older or fresh substitute rather than claiming continuity.
 
-Python prelude helpers include `agent(prompt, *, agent=None, model=None, label=None, schema=None, schema_mode=None, isolated=None, apply=None, merge=None, handle=False)`; the host chooses the effective role when `agent` is omitted. `model` overrides the worker's model and is bank-validated when the effective role has a `modelRoleBank`. It synchronously calls the host bridge and returns final text, or parsed data when `schema` is supplied. `schema_mode` selects permissive or strict structured-output handling; the isolation/apply/merge flags control task worktree behavior. With `handle=True`, it returns a result node dict (`{"text", "output", "handle", "id", "agent"}`) whose handle is the recoverable `agent://<id>` URI; parsed output is also stored under `"data"` when available.
+Warm-only `harness.defs()` and `harness.kernel_state(limit=200)` inspect current bindings/generation. Persistence uses `harness.store` or automatic whole-namespace history graphs. The old Python selected-file codec and manual save/load helpers are removed, not retained as aliases.
 
-## Execution flow and cancellation/timeout
+### Exact continuity and resource limits
 
-### Bash cell timeout
+Warm Python automatically captures the whole supported namespace as one graph at exact history/continuity boundaries. There is no `declare_state` opt-in and no per-binding serialization that breaks aliases. Immutable manifests commit durably under the existing owner/kernel gate before boundary-dependent teardown, temporal navigation or fork. Historical snapshots survive with their branches: no twenty-turn cutoff, nearest-earlier restore or silent fresh fallback. Lazy restore validates the selected interpreter, working directory, target and declared module environment. Open files, sockets, generators, live tasks/threads and unsupported OS resources refuse capture **before destruction**, leaving the source usable.
 
-The enclosing Bash `timeout` is the only model-facing deadline for a routed Python cell. It defaults to 300 seconds, `timeout: 0` disables the command deadline, and positive values follow Bash's `1..3600` clamp and positive `tools.maxTimeout` ceiling. There is no separate cell timeout field. Agent/completion bridges and ordinary computation remain inside that enclosing command deadline.
+Interactive fork creates a destination-owned independent root/graph/store copy and leaves the source unchanged. Parking and host restart preserve exact durable computation; explicit handle restart discards it. None restores workspace files, installed packages or external process state. Model context-only `checkpoint`/`rewind(report)` preserves current computation instead of applying temporal restoration. See [session operations](./session-operations.md#declared-state-at-temporal-boundaries).
 
-### Kernel execution cancellation
+State transport has **96 MiB** envelope framing; ordinary HTTP requests remain **8 MiB**, and the ordinary warm request queue remains **16 MiB**. Python residency defaults to `python.kernelMemoryBudgetBytes = min(25% physical RAM, 4 GiB)` and `python.kernelMaxResidentCount = 64`, separate from runnable concurrency and JavaScript's **256 total / 16 owner** admission pool. Under measured pressure only idle, durably restorable LRU kernels park; busy, dirty, frozen or unknown state is not evicted. Unknown pressure refuses unsafe admission, not a made-up memory guarantee.
 
-On a Bash abort or deadline:
+Supported local POSIX CPython uses a real per-interpreter sterile, single-threaded `-I -S` forkserver, with child threads/user imports only after fork and buffered `node:net` transport. Other supported targets report explicit spawn/remote launch mode. Memory accounts for parent and children using macOS physical footprint/Linux private mappings, not summed RSS. Capacity releases only after actual process settlement. See [memory policy and scoped measurements](./interactive-memory.md#interpreters-subprocesses-and-provider-state); local samples establish neither cross-platform performance nor a whole-application RSS ceiling.
 
-- The bridge aborts the active runner request and the host sends `SIGINT` to the Python subprocess.
-- The runner's exec-time signal handler raises `KeyboardInterrupt` inside user code.
-- The cell result is marked cancelled; when the interrupt settles, the Python kernel remains reusable. Use Python `%reset` if the namespace or user state appears corrupted.
-- Between requests the runner installs `SIG_IGN` for `SIGINT` so a stray cancel does not tear down the kernel.
+## Troubleshooting
 
-If the runner does not emit `done` within 5s of the interrupt (`INTERRUPT_ESCALATION_MS` — e.g. stuck in C code holding the GIL), the host shuts the subprocess down (escalating `exit` → `SIGTERM` → `SIGKILL`), the cell is annotated as kernel-killed, and the kernel is recreated on the next call.
+- **A later command cannot see a variable:** ordinary commands are fresh. Persist a value in `harness.store` or explicitly submit both computations to the same named kernel.
+- **`proto_harness` unavailable:** run in the managed agent-shell environment with its staged package; `-I`, `-E`, `-S` deliberately opt out. Ordinary external Python still runs natively; no alternate interpreter/kernel is silently substituted.
+- **Host helper refused:** inspect enabled tools, extension policy, authority, cancellation and budget. Importing the package does not grant tools the owning agent lacks.
+- **Store conflict:** `refresh()`, reconcile the competing state and commit deliberately. Do not blindly retry a stale whole-graph overwrite.
+- **Transition or admission refused:** remove/finish unsupported live resources or commit at a valid boundary; inspect status/reasons. Do not delete state or reset the kernel to hide a dirty/unknown failure.
+- **Imports appear old in a warm kernel:** persistent `sys.modules` is native behavior; reload deliberately or explicitly restart. Fresh processes use normal fresh imports.
 
-### stdin behavior
+## Implementation owners
 
-Program stdin is a real fd 0 connected to the invocation input stream. `sys.stdin.fileno()`, `os.read(0, ...)`, `input()`, and inherited child stdin use that descriptor; source-on-stdin is consumed as code, not reused as program input. The runner control reader uses its own duplicated descriptor. Input is streamed and backpressured, with EOF when the producer closes. Interactive terminal input is not supported.
-
-## Output capture and rendering
-
-### Captured output classes
-
-From runner frames:
-
-- `stdout` / `stderr` → text chunks, or `encoding: "base64"` frames with a text preview for binary writes
-- `display` / `result` → rich display handling (MIME bundle)
-- `error` → traceback text
-- `application/x-proto-status` MIME inside `display` → structured status events
-
-Display MIME handling:
-
-- `application/x-proto-status` → status events; this is control-plane output.
-- `application/json` → JSON tree data; when present, it suppresses the text fallback.
-- `image/png` is preferred over `image/jpeg` when both image alternatives are present.
-- Otherwise, `text/markdown` is preferred over `text/plain`, followed by `text/html` converted to basic markdown.
-
-Structured image outputs are `image/png` / `image/jpeg`; status events are not persisted as display text.
-
-### Matplotlib
-
-The runner sets `MPLBACKEND=Agg` as an environ default so figures render off-screen. After every cell, `pyplot.get_fignums()` is iterated; each figure is saved to PNG, emitted as an `image/png` display, and closed.
-
-### Storage and truncation
-
-Output is streamed through `OutputSink` and may be persisted to artifact storage. Tool results can include truncation metadata and `artifact://<id>` for full output recovery.
-
-### Renderer behavior
-
-- Bash kernel-cell renderer (`eval-render.ts`, shared with the Bash tool):
-  - shows code-cell blocks with per-cell status inside the Bash result
-  - collapsed preview defaults to 10 lines
-  - supports expanded mode for all output retained in the Bash result
-- Interactive renderer (`eval-execution.ts`):
-  - used for user-triggered Python execution in TUI
-  - collapsed preview defaults to 20 lines
-  - clamps very long individual lines to 4000 chars for display safety
-  - shows cancellation/error/truncation notices
-
-## Operational troubleshooting
-
-- **Python backend not available** — Check `eval.py`, `PI_PY`, and that `python`/`python3` is on PATH. A failed Python preflight falls back to the shell's normal external interpreter path; it does not select another language.
-- **No Python on the local PATH** — Install a system Python 3.10+ or place a compatible venv at the managed path from `getPythonEnvDir()` (normally `~/.proto/python-env`). `proto setup python --check` reports the resolved interpreter.
-- **Execution hangs then times out** — Increase `timeout` for legitimate work or set it to `0` to disable the watchdog. For stuck native code, cancellation sends `SIGINT` first and then escalates; session mode recreates the kernel on the next request if it had to be killed.
-- **stdin/input prompts in Python code** — Interactive `input()` prompts are not supported; for inline cells, pipe or redirect program input, or pass data programmatically.
-- **Working directory errors** — Python starts in the Bash invocation/session cwd. Use Bash `cwd`, `%cd`, or `os.chdir()` for the current cell; each new request reapplies its invocation cwd.
-
-## Relevant environment variables
-
-- `PI_PY` / `PI_JS` — per-backend exposure overrides
-- `PI_PYTHON_SKIP_CHECK=1` — bypass Python interpreter availability probes (the runner still starts on demand)
-- `PI_PYTHON_IPC_TRACE=1` — debug-log send/receive summaries for NDJSON frames exchanged with the runner subprocess
+Paths are under `packages/coding-agent/src/`: `eval/py/proto_harness/` (public library and vendored codec), `eval/py/harness-bridge.ts` (authenticated runs), `eval/py/harness-dispatch.ts` (canonical host dispatch), `eval/py/python-store.ts` (durable graph CAS), `eval/py/executor.ts` (fresh/explicit warm execution), `eval/py/kernel.ts` and `runner.py` (warm runtime), `eval/declared-state.ts` (exact manifests), and `eval/kernel-memory.ts` / `eval/py/forkserver.*` (residency/launch). JavaScript's prelude/routing and data-only `declareState` are unchanged by this Python cutover.

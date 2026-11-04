@@ -3,23 +3,31 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import type { ToolSession } from ".";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
 import { handleContextControl } from "./context";
 
-// A `python` command runs its kernel cell on the interpreter the shell would
-// run for it: a named interpreter, or whatever the cell's PATH selects.
+const pythonInterpreter = (await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true }))
+	.pythonPath!;
+const pythonCommand = `'${pythonInterpreter.replaceAll("'", "'\\''")}'`;
+
+// Ordinary Python follows shell interpreter resolution without creating persistent globals.
 
 const KERNEL_OWNER = `bash-python-interpreter-test:${process.pid}`;
 
 function stubSession(cwd: string): ToolSession {
-	return {
+	const session = {
 		cwd,
 		settings: { get: () => undefined, getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
+		getSessionId: () => `bash-python-interpreter-test:${cwd}`,
 		getEvalSessionId: () => `bash-python-interpreter-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
 	} as unknown as ToolSession;
+	const bash = new BashTool(session);
+	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
+	return session;
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -31,7 +39,7 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 
 /** A virtual environment on this host's Python, named so session discovery does not pick it up. */
 async function makeVenv(dir: string): Promise<string> {
-	const base = await fs.realpath(Bun.which("python3") ?? "python3");
+	const base = await fs.realpath(pythonInterpreter);
 	const venv = path.join(dir, "env313");
 	await fs.mkdir(path.join(venv, "bin"), { recursive: true });
 	await Bun.write(
@@ -56,19 +64,21 @@ afterAll(async () => {
 	await disposeKernelSessionsByOwner(KERNEL_OWNER);
 });
 
-test("a python named by path runs kernel cells on it, apart from the default kernel", async () => {
+test("a python named by path runs fresh on that interpreter without injected globals", async () => {
 	await withDir("pyinterp-path-", async (dir, bash) => {
 		const venv = await makeVenv(dir);
 		await bash.execute("seed", { command: "env313/bin/python -c 'import sys; held = sys.prefix'" });
-		const same = await bash.execute("same", { command: "env313/bin/python -c 'print(held, \"tool\" in globals())'" });
-		expect(textOf(same)).toContain(`${venv} True`);
+		const same = await bash.execute("same", {
+			command: 'env313/bin/python -c \'import sys; print(sys.prefix, "held" in globals(), "tool" in globals())\'',
+		});
+		expect(textOf(same)).toContain(`${venv} False False`);
 
 		const bare = await bash.execute("bare", { command: "python3 -c 'print(\"held\" in globals())'" });
 		expect(textOf(bare)).toContain("False");
 	});
 }, 60_000);
 
-test("bare python follows the cell's PATH when it selects another interpreter", async () => {
+test("bare python follows the command's PATH when it selects another interpreter", async () => {
 	await withDir("pyinterp-shell-", async (dir, bash) => {
 		const venv = await makeVenv(dir);
 		const activated = await bash.execute("activated", {
@@ -77,14 +87,14 @@ test("bare python follows the cell's PATH when it selects another interpreter", 
 		expect(textOf(activated)).toContain(`prefix ${venv}`);
 
 		const untouched = await bash.execute("untouched", {
-			command: "python -c 'import sys; print(\"prefix\", sys.prefix)'",
+			command: "python3 -c 'import sys; print(\"prefix\", sys.prefix)'",
 		});
 		expect(textOf(untouched)).toContain("prefix ");
 		expect(textOf(untouched)).not.toContain(venv);
 	});
 }, 60_000);
 
-test("an interpreter too old for kernel cells runs as a plain process, noting why once", async () => {
+test("ordinary interpreter commands execute directly without a version probe or fallback note", async () => {
 	await withDir("pyinterp-old-", async (dir, bash) => {
 		const fake = path.join(dir, "oldbin", "python3.9");
 		// Fails the kernel's version probe; otherwise behaves like a plain interpreter process.
@@ -93,7 +103,7 @@ test("an interpreter too old for kernel cells runs as a plain process, noting wh
 		const command = `PATH="$PWD/oldbin:$PATH" python3.9 -c 'print(1)'`;
 
 		const first = textOf(await bash.execute("old-1", { command }));
-		expect(first).toContain(`${fake} is older than Python 3.10`);
+		expect(first).not.toContain("older than Python");
 		expect(first).toContain("plain process: -c print(1)");
 
 		const second = textOf(await bash.execute("old-2", { command }));
@@ -106,7 +116,7 @@ test("a named interpreter that does not exist fails as the shell reports it", as
 	await withDir("pyinterp-missing-", async (_dir, bash) => {
 		const result = await bash.execute("missing", { command: "./nowhere/python -c 'print(1)'" });
 		expect(result.details?.execution?.exitCode).toBe(127);
-		expect(textOf(result)).toContain("./nowhere/python: No such file or directory");
+		expect(textOf(result)).toContain("command not found: ./nowhere/python");
 	});
 }, 60_000);
 
@@ -114,8 +124,12 @@ test("context kernel control picks one of a lane's interpreter kernels by interp
 	await withDir("pyinterp-control-", async (dir, bash) => {
 		const venv = await makeVenv(dir);
 		const session = stubSession(dir);
-		await bash.execute("default", { command: "python3 -c 'x = 1'" });
-		await bash.execute("named", { command: "env313/bin/python -c 'x = 2'" });
+		await bash.execute("default", {
+			command: `${pythonCommand} -m proto_harness.kernel main --interpreter ${pythonCommand} -c 'x = 1'`,
+		});
+		await bash.execute("named", {
+			command: "env313/bin/python -m proto_harness.kernel main --interpreter env313/bin/python -c 'x = 2'",
+		});
 
 		await expect(
 			handleContextControl(session, { resource: "kernel", op: "inspect", language: "python" }),

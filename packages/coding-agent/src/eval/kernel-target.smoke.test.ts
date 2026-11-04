@@ -3,14 +3,20 @@ import { readLines, TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { disposeBashSessions } from "../exec/bash-executor";
 import { ArtifactManager } from "../session/artifacts";
+import { SessionManager } from "../session/session-manager";
 import { createTools, type ToolSession } from "../tools";
 import { disposeEvalArtifacts } from "./artifact-values";
 import { disposeVmContextsByOwner, executeInVmContext } from "./js/context-manager";
 import type { KernelControlResult } from "./kernel-control";
 import { buildKernelTargetCommand, type KernelTarget, kernelTransportEnv, spawnKernelTarget } from "./kernel-target";
 import { disposeKernelSessionsByOwner } from "./py/executor";
-import { PythonKernel } from "./py/kernel";
-import { registerPyToolBridge } from "./py/tool-bridge";
+import { registerPythonHarnessRun } from "./py/harness-bridge";
+import { checkPythonKernelAvailability, PythonKernel } from "./py/kernel";
+import { releasePythonStore } from "./py/python-store";
+
+const pythonInterpreter = (await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true }))
+	.pythonPath!;
+const pythonCommand = `'${pythonInterpreter.replaceAll("'", "'\\''")}'`;
 
 const hostEntry = process.env.PROTO_KERNEL_TARGET_TEST_CLI ?? `${import.meta.dir}/../cli.ts`;
 const targets: KernelTarget[] = [];
@@ -62,10 +68,13 @@ async function sessionFixture(cwd: string): Promise<{ session: ToolSession; call
 
 for (const target of targets) {
 	for (const language of ["python", "bun"] as const) {
-		test(`${target.kind} ${language} kernel reset preserves the configured target through Bash save and restore`, async () => {
+		test(`${target.kind} ${language} reset preserves target configuration and restores explicitly persisted values`, async () => {
 			if (target.kind === "local") throw new Error("This fixture must be remote");
 			using tmp = TempDir.createSync("@kernel-target-tools-");
 			const { session } = await sessionFixture(tmp.path());
+			const manager = SessionManager.create(tmp.path(), tmp.join("sessions"));
+			session.sessionManager = manager;
+			session.getSessionFile = () => manager.getSessionFile() ?? null;
 			const owner = crypto.randomUUID();
 			const checkpoint = `${target.cwd}/proto-target-state-${owner}.json`;
 			session.getSessionId = () => owner;
@@ -91,20 +100,30 @@ for (const target of targets) {
 				});
 				expect(started.isError).not.toBe(true);
 				const initial = (started.details as KernelControlResult).kernel!;
-				const command = language;
+				const command = language === "python" ? `${pythonCommand} -m proto_harness.kernel ${lane}` : language;
 				const seed =
 					language === "python"
-						? `remote_lane_value = 41\nsave_state(${JSON.stringify(checkpoint)}, ["remote_lane_value"])`
+						? `remote_lane_value = 41\nharness.store["remote_lane_value"] = remote_lane_value`
 						: `globalThis.remote_lane_value = 41; await saveState(${JSON.stringify(checkpoint)}, ["remote_lane_value"]);`;
 				expect(
-					(await bash.execute("target-seed", { lane, command: `${command} <<'CELL'\n${seed}\nCELL` })).isError,
+					(
+						await bash.execute("target-seed", {
+							lane,
+							command: `${command} <<'CELL'\n${language === "python" ? "import proto_harness as harness\n" : ""}${seed}\nCELL`,
+						})
+					).isError,
 				).not.toBe(true);
 				const read =
 					language === "python"
-						? 'print(str(remote_lane_value + 1) + ":" + kernel_state()["target"]["kind"])'
+						? 'print(str(remote_lane_value + 1) + ":" + harness.kernel_state()["target"]["kind"])'
 						: 'console.log(String(remote_lane_value + 1) + ":" + kernelState().target.kind)';
 				expect(
-					(await bash.execute("target-read", { lane, command: `${command} <<'CELL'\n${read}\nCELL` })).content,
+					(
+						await bash.execute("target-read", {
+							lane,
+							command: `${command} <<'CELL'\n${language === "python" ? "import proto_harness as harness\n" : ""}${read}\nCELL`,
+						})
+					).content,
 				).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({ type: "text", text: expect.stringContaining(`42:${target.kind}`) }),
@@ -124,8 +143,8 @@ for (const target of targets) {
 						language === "python"
 							? `
 assert "remote_lane_value" not in globals()
-assert kernel_state()["generation"] == ${JSON.stringify(restarted.generation)}
-load_state(${JSON.stringify(checkpoint)})
+assert harness.kernel_state()["generation"] == ${JSON.stringify(restarted.generation)}
+remote_lane_value = harness.store["remote_lane_value"]
 ${read}
 `
 							: `
@@ -136,7 +155,7 @@ ${read}
 `;
 					const restored = await bash.execute("target-restore", {
 						lane,
-						command: `${command} <<'CELL'\n${restore}\nCELL`,
+						command: `${command} <<'CELL'\n${language === "python" ? "import proto_harness as harness\n" : ""}${restore}\nCELL`,
 					});
 					if (restored.isError) throw new Error(JSON.stringify(restored.content));
 					expect(restored.content).toEqual(
@@ -159,6 +178,8 @@ ${read}
 					disposeVmContextsByOwner(owner),
 				]);
 				disposeEvalArtifacts(session);
+				releasePythonStore(owner);
+				await manager.close();
 				const cleanup = await buildKernelTargetCommand(target, ["rm", "-f", checkpoint], { cwd: target.cwd! });
 				const removed = Bun.spawn(cleanup, {
 					env: kernelTransportEnv(),
@@ -228,40 +249,38 @@ ${read}
 	test(`${target.kind} Python preserves state, streams bytes, proxies parent tools, identifies target, and cancels`, async () => {
 		using tmp = TempDir.createSync("@kernel-target-smoke-");
 		const { session, calls } = await sessionFixture(tmp.path());
-		const bridge = `target:${crypto.randomUUID()}`;
 		const kernel = await PythonKernel.start({
 			cwd: import.meta.dir,
 			target,
-			env: {
-				PI_TOOL_BRIDGE_SESSION: bridge,
-				PI_TOOL_BRIDGE_TOKEN: "must-not-leak",
-				PI_TOOL_BRIDGE_URL: "http://127.0.0.1:1",
-			},
 		});
 		try {
 			expect((await kernel.execute("target_value = 41")).status).toBe("ok");
 			let output = "";
-			const runId = crypto.randomUUID();
-			const unregister = registerPyToolBridge(bridge, runId, { toolSession: session });
+			const run = await registerPythonHarnessRun(session, {
+				transport: "stdio",
+				lane: "target-smoke",
+				cwd: target.kind === "local" ? import.meta.dir : target.cwd,
+			});
 			try {
 				const result = await kernel.execute(
-					`import os,json
-assert 'PI_TOOL_BRIDGE_TOKEN' not in os.environ
+					`import proto_harness as harness
+import os,json
+assert 'PI_PYTHON_HARNESS_TOKEN' not in os.environ
 print(target_value + 1)
-print(tool.target_probe(value="python"))
+print(harness.tool.target_probe(value="python"))
 from pathlib import Path
 import base64
 remote_file = Path("proto-target-artifact-" + __import__("uuid").uuid4().hex)
 try:
     remote_file.write_bytes(bytes([0,255,65]))
-    remote_ref = publish_artifact(remote_file.read_bytes(), kind="binary")
-    remote_file.write_bytes(base64.b64decode(read_artifact(remote_ref, encoding="base64")["data"]))
+    remote_ref = harness.publish_artifact(remote_file.read_bytes(), kind="binary")
+    remote_file.write_bytes(base64.b64decode(harness.read_artifact(remote_ref, encoding="base64")["data"]))
     assert remote_file.read_bytes() == bytes([0,255,65])
 finally:
     remote_file.unlink(missing_ok=True)
-print(json.dumps(kernel_state()))`,
+print(json.dumps(harness.kernel_state()))`,
 					{
-						id: runId,
+						onToolRequest: run.request,
 						onChunk: text => {
 							output += text;
 						},
@@ -270,7 +289,7 @@ print(json.dumps(kernel_state()))`,
 				);
 				expect(result.status).toBe("ok");
 			} finally {
-				unregister();
+				await run.dispose();
 			}
 			expect(calls).toEqual(["python"]);
 			expect(output).toContain("42");

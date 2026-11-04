@@ -28,7 +28,13 @@ test.skipIf(!python3)("interpreter fallback searches the shell cwd for empty PAT
 	if (!python3) throw new Error("python3 is required");
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "shell-interpreter-path-"));
 	try {
-		await fs.symlink(python3, path.join(dir, "python3"));
+		const probe = Bun.spawn([python3, "-c", "import sys; print(sys.executable)"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const actualPython = (await new Response(probe.stdout).text()).trim();
+		expect(await probe.exited).toBe(0);
+		await fs.symlink(actualPython, path.join(dir, "python3"));
 		await Bun.write(path.join(dir, "script.py"), "print('cwd-interpreter')\n");
 		let output = "";
 		const result = await executeShell(

@@ -26,6 +26,27 @@ const MAX_REAP_SHUTDOWN_RETRIES = 3;
  */
 const cellTerminations = new LRUCache<string, string>({ max: 64 });
 
+const observedGenerations = new WeakMap<object, LRUCache<string, string>>();
+
+/** Presentation-only loss tracking shared by every explicit/implicit kernel transport. */
+export function observeKernelGeneration(
+	owner: object,
+	identity: string,
+	generation: string,
+	label = identity,
+): string | undefined {
+	let known = observedGenerations.get(owner);
+	if (!known) {
+		known = new LRUCache({ max: 32 });
+		observedGenerations.set(owner, known);
+	}
+	const previous = known.get(identity);
+	known.set(identity, generation);
+	return previous && previous !== generation
+		? `<kernel> state lost: ${label} restarted; generation ${previous} → ${generation}. Earlier variables are gone.`
+		: undefined;
+}
+
 export function takeKernelCellTermination(sessionId: string): string | undefined {
 	const reason = cellTerminations.get(sessionId);
 	cellTerminations.delete(sessionId);
@@ -54,8 +75,6 @@ export interface KernelSessionRegistryOptions {
 	reset?: boolean;
 	signal?: AbortSignal;
 	deadlineMs?: number;
-	bridge?: unknown;
-	bridgeSessionId?: string;
 }
 
 interface RegistryKernelShutdownResult {
@@ -88,6 +107,15 @@ export interface KernelSessionInfo {
 	startedAt: number;
 	lastActivityAt: number;
 	keepAliveUntil?: number;
+	pid?: number;
+	launchMode?: "forkserver" | "spawn" | "remote-stdio";
+	launchReason?: string;
+	forkserverPid?: number;
+	startupMs?: number;
+	residency?: "resident" | "parked" | "unmeasured";
+	privateBytes?: number | null;
+	memoryMetric?: "phys_footprint" | "smaps_private" | "unsupported";
+	residencyReason?: string;
 }
 
 interface StartingKernelSession<TSession> extends SessionOwners {
@@ -114,7 +142,10 @@ interface KernelSessionRegistryDescriptor<
 > {
 	/** Release a quiescent kernel after this much inactivity; 0 disables. Defaults to DEFAULT_KERNEL_IDLE_REAP_MS. */
 	idleReapMs?: number;
-	admission?: KernelAdmission;
+	/** Residency-managed runtimes own their physical-process safety reservation. */
+	admission?: KernelAdmission | "residency";
+	kernelResidency?: (kernel: TKernel) => Partial<KernelSessionInfo> | undefined;
+	kernelActivity?: (kernel: TKernel, delta: 1 | -1) => void;
 	/** Busy probe for the reap check. Undefined/true/unknown = not idle, keep the kernel. */
 	kernelBusy?: (kernel: TKernel) => Promise<boolean | undefined>;
 	/** Residency can end only when the declared state of this generation is safe to restore. */
@@ -226,6 +257,7 @@ export function createKernelSessionRegistry<
 		}
 		return {
 			...info,
+			...descriptor.kernelResidency?.(session.kernel),
 			generation,
 			interpreter: session.kernel.interpreter ?? info.interpreter,
 			state: resettingSessions.has(session.sessionKey)
@@ -396,7 +428,7 @@ export function createKernelSessionRegistry<
 			attachSessionOwner(starting, sessionId, options.kernelOwnerId);
 			return await waitForStartup(starting.promise, options);
 		}
-		const release = admission.reserve(options.kernelOwnerId ?? sessionId);
+		const release = admission === "residency" ? () => {} : admission.reserve(options.kernelOwnerId ?? sessionId);
 		const abort = new AbortController();
 		const startupOptions = {
 			...options,
@@ -671,9 +703,6 @@ export function createKernelSessionRegistry<
 			hasSession: key => sessions.has(key) || startingSessions.has(key),
 			getOwners: key => sessions.get(key) ?? startingSessions.get(key),
 		});
-		if (options.bridge && !options.bridgeSessionId) {
-			options.bridgeSessionId = sessionId;
-		}
 		if (options.reset) {
 			const inFlight = resettingSessions.get(sessionKey);
 			if (inFlight) await inFlight.catch(() => undefined);
@@ -725,6 +754,7 @@ export function createKernelSessionRegistry<
 		if (!isCurrent(session, kernel)) throw new descriptor.cancelledErrorClass(false);
 		const runOptions = { ...options, cwd };
 		executingDepth.set(sessionKey, (executingDepth.get(sessionKey) ?? 0) + 1);
+		descriptor.kernelActivity?.(kernel, 1);
 		try {
 			return await descriptor.executeWithKernel(kernel, code, runOptions);
 		} catch (err) {
@@ -740,6 +770,7 @@ export function createKernelSessionRegistry<
 				{ cause: err },
 			);
 		} finally {
+			descriptor.kernelActivity?.(kernel, -1);
 			if (sessions.get(sessionKey) === session) {
 				const depth = (executingDepth.get(sessionKey) ?? 1) - 1;
 				if (depth <= 0) executingDepth.delete(sessionKey);

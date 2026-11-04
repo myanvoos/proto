@@ -108,6 +108,10 @@ function getTool(session: ToolSession, name: string): AgentTool {
 	throw unknownToolError(session, name);
 }
 
+export function assertSessionBridgeToolAvailable(session: ToolSession, name: string): void {
+	getTool(session, name);
+}
+
 function schemaDeclaresIntent(tool: AgentTool): boolean {
 	const properties = toolWireSchema(tool as AiTool).properties;
 	return !!properties && typeof properties === "object" && Object.hasOwn(properties, INTENT_FIELD);
@@ -201,7 +205,40 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	return await (options.executionOrigin ? withExecutionOrigin(options.executionOrigin, run) : run());
 }
 
+/** All bridge entrypoints share the session's real authority and extension policy. */
+export async function authorizeSessionBridgeCall(
+	name: string,
+	args: Record<string, unknown>,
+	options: ToolBridgeOptions,
+	tool?: AgentTool,
+): Promise<Record<string, unknown>> {
+	options.signal?.throwIfAborted();
+	options.session.assertEvalExecutionAllowed?.();
+	const policyTool: AgentTool = tool ?? {
+		name,
+		label: name,
+		description: name,
+		parameters: { type: "object", additionalProperties: true },
+		execute: async () => {
+			throw new Error("Internal bridge policy descriptor cannot execute");
+		},
+	};
+	const result = await options.session.beforeEvalToolCall?.(
+		policyTool,
+		options.toolCallId ?? `bridge-${crypto.randomUUID()}`,
+		args,
+		options.signal,
+	);
+	if (result?.block) throw new ToolError(result.reason ?? "Tool execution was blocked by session policy");
+	options.signal?.throwIfAborted();
+	return result?.args ?? args;
+}
+
 async function dispatchSessionTool(name: string, args: unknown, options: ToolBridgeOptions): Promise<ToolValue> {
+	if (name.startsWith("__") && name.endsWith("__")) {
+		if (!isRecord(args)) throw new ToolError("Bridge helper arguments must be an object");
+		args = await authorizeSessionBridgeCall(name, args, options);
+	}
 	if (name === EVAL_COMPLETION_BRIDGE_NAME) {
 		return await runEvalCompletion(args, options);
 	}
@@ -228,6 +265,10 @@ async function dispatchSessionTool(name: string, args: unknown, options: ToolBri
 	}
 	const toolCallId = options.toolCallId ?? `js-${name}-${crypto.randomUUID()}`;
 	let normalizedArgs = validateArgs(tool, toolCallId, normalizeArgs(tool, args), options);
+	if (!isRecord(normalizedArgs)) throw new ToolError("Tool arguments must be an object");
+	const admittedArgs = await authorizeSessionBridgeCall(name, normalizedArgs, { ...options, toolCallId }, tool);
+	normalizedArgs = validateArgs(tool, toolCallId, admittedArgs, options);
+
 	let lease: { lane: string; release(): void } | undefined;
 	// Nested shell calls cannot wait for the lane held by their calling cell.
 	if (name === "bash" && normalizedArgs && typeof normalizedArgs === "object" && !Array.isArray(normalizedArgs)) {

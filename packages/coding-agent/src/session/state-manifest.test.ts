@@ -5,10 +5,16 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import { isDeclaredStateKernelSafeToRelease } from "../eval/declared-state";
+import { type DeclaredKernelState, isDeclaredStateKernelSafeToRelease } from "../eval/declared-state";
 import { disposeVmContextsByOwner, executeInVmContext } from "../eval/js/context-manager";
 import { getKernelLaneConfiguration, setKernelLaneConfiguration } from "../eval/kernel-environment";
-import { disposeKernelSessionsByOwner, executePython, listPythonKernelSessions } from "../eval/py/executor";
+import {
+	closePythonKernelSession,
+	disposeKernelSessionsByOwner,
+	executePython,
+	listPythonKernelSessions,
+} from "../eval/py/executor";
+import { checkPythonKernelAvailability, PythonKernel } from "../eval/py/kernel";
 import type { ToolSession } from "../tools";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
@@ -21,9 +27,12 @@ import {
 	captureSessionState,
 	DECLARED_STATE_CUSTOM_TYPE,
 	prepareSessionStateRestore,
+	stageSessionStateOnResume,
 } from "./state-manifest";
 
 async function kernels(cwd: string, owner: string) {
+	const availability = await checkPythonKernelAvailability(cwd, undefined, { forceProbe: true });
+	if (!availability.ok) throw new Error(availability.reason);
 	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
 	const session: ToolSession = {
 		cwd,
@@ -36,6 +45,7 @@ async function kernels(cwd: string, owner: string) {
 		async python(code: string, reset = false, stdin?: ReadableStream<Uint8Array>) {
 			const result = await executePython(code, {
 				cwd,
+				interpreter: availability.pythonPath,
 				sessionId: `python:${owner}`,
 				kernelOwnerId: owner,
 				timeoutMs: 20_000,
@@ -81,7 +91,22 @@ test("historical declared Python and JavaScript state restores independently aft
 	const source = await kernels(directory.path(), owner);
 	const target = await kernels(directory.path(), destination);
 	try {
-		await source.python('value = {"answer": 41, "bytes": b"ok"}\ndeclare_state(["value"])');
+		await source.python(`value = {"answer": 41, "bytes": b"ok"}
+alias = value
+__proto_user_binding = value
+cycle = []
+cycle.append(cycle)
+f = lambda: value["answer"]
+def outer():
+    items = []
+    return (lambda: items), items
+closure, closed = outer()
+class Counter:
+    def get(self): return value["answer"]
+instance = Counter()
+def even(n): return n == 0 or odd(n - 1)
+def odd(n): return n != 0 and even(n - 1)
+`);
 		await source.js('var value = {answer: 41, bytes: Buffer.from("ok")}; declareState(["value"]);');
 		const first = manager.appendMessage({ role: "user", content: "first boundary", timestamp: 0 });
 		await captureSessionState(manager, owner);
@@ -99,6 +124,15 @@ test("historical declared Python and JavaScript state restores independently aft
 			const prepared = await prepareSessionStateRestore(reopened, destination, first);
 			activateSessionStateRestore(prepared, destination, destination);
 			expect(await target.python('print(value["answer"] + 1, value["bytes"].decode())')).toContain("42 ok");
+			expect(
+				await target.python(`assert alias is value and __proto_user_binding is value
+assert cycle[0] is cycle
+assert closure() is closed
+assert even(12)
+value["answer"] = 42
+assert f() == 42 and instance.get() == 42
+print("rich graph restored")`),
+			).toContain("rich graph restored");
 			expect(await target.js("console.log(value.answer + 1, value.bytes.toString());")).toContain("42 ok");
 			const latest = await prepareSessionStateRestore(
 				reopened,
@@ -119,13 +153,13 @@ test("historical declared Python and JavaScript state restores independently aft
 	}
 }, 60_000);
 
-test("declared alias and resource failures refuse history transitions before changing live computation", async () => {
+test("Python aliases survive boundaries while JavaScript aliases and live resources refuse destructive transitions", async () => {
 	using directory = TempDir.createSync("@state-alias-");
 	const owner = `manifest:${crypto.randomUUID()}`;
 	const manager = SessionManager.inMemory();
 	const source = await kernels(directory.path(), owner);
 	try {
-		await source.python('first = []\nsecond = []\ndeclare_state(["first", "second"])');
+		await source.python("first = []\nsecond = []");
 		await source.js('var first = [], second = []; declareState(["first", "second"]);');
 		await source.js(`var selectorTraps = 0, selectorRejected = false;
 try { declareState(new Proxy([], { get() { selectorTraps++; return 0; }, ownKeys() { selectorTraps++; return []; } })); } catch { selectorRejected = true; }
@@ -133,7 +167,7 @@ if (!selectorRejected || selectorTraps) throw Error("unsafe declaration selector
 		const first = manager.appendMessage({ role: "user", content: "safe", timestamp: 0 });
 		await captureSessionState(manager, owner);
 		await source.python("second = first");
-		await expect(prepareSessionStateRestore(manager, owner, first)).rejects.toThrow("aliases");
+		await prepareSessionStateRestore(manager, owner, first);
 		expect(await source.python("print(first is second)")).toContain("True");
 		await source.python("second = []");
 		await source.js("second = first;");
@@ -159,7 +193,7 @@ test("corrupt and uncaptured state boundaries reject before source teardown rath
 	const manager = SessionManager.inMemory();
 	const source = await kernels(directory.path(), owner);
 	try {
-		await source.python('value = 41\ndeclare_state(["value"])');
+		await source.python("value = 41");
 		const first = manager.appendMessage({ role: "user", content: "safe", timestamp: 0 });
 		await captureSessionState(manager, owner);
 		const missing = manager.appendMessage({ role: "user", content: "no capture", timestamp: 1 });
@@ -178,6 +212,11 @@ test("corrupt and uncaptured state boundaries reject before source teardown rath
 		expect(await source.python("print(value + 1)")).toContain("42");
 		const prepared = await prepareSessionStateRestore(manager, owner, first);
 		expect(prepared.kernels.length).toBe(1);
+		const corruptEntry = manager.appendCustomEntry(DECLARED_STATE_CUSTOM_TYPE, undefined);
+		manager.trimHydratedEntryCache();
+		expect(() => stageSessionStateOnResume(manager, owner, owner)).toThrow(corruptEntry);
+		await expect(prepareSessionStateRestore(manager, owner, corruptEntry)).rejects.toThrow("expected an object");
+		expect(await source.python("print(value + 2)")).toContain("43");
 	} finally {
 		await source.close();
 		await manager.close();
@@ -191,7 +230,7 @@ test("a resumed EvalRunner lazily restores only its own durable state and reject
 	const source = await kernels(directory.path(), owner);
 	let resumed: EvalRunner | undefined;
 	try {
-		await source.python('value = 40\ndeclare_state(["value"])');
+		await source.python("value = 40");
 		await source.js('var value = 40; declareState(["value"]);');
 		manager.appendMessage({ role: "user", content: "persist", timestamp: 0 });
 		await captureSessionState(manager, owner);
@@ -205,6 +244,7 @@ test("a resumed EvalRunner lazily restores only its own durable state and reject
 		resumed = new EvalRunner(
 			{
 				agent: new Agent(),
+				toolSession: () => undefined,
 				sessionManager: manager,
 				settings,
 				extensionRunner: () => undefined,
@@ -215,9 +255,8 @@ test("a resumed EvalRunner lazily restores only its own durable state and reject
 			},
 			{ kernelOwnerId: restoredOwner, parentSessionId: undefined },
 		);
-		const result = await resumed.executePython("print(value + 2)");
-		expect(result.output).toContain("42");
-		expect(result.exitCode).toBe(0);
+		const restored = await kernels(directory.path(), restoredOwner);
+		expect(await restored.python("print(value + 2)")).toContain("42");
 		const boundary = manager.appendMessage({ role: "user", content: "incompatible", timestamp: 1 });
 		const data = manager.getCustomEntries(DECLARED_STATE_CUSTOM_TYPE)[0].data as {
 			kernels: { language: string; snapshot: { interpreter: { version: string } } }[];
@@ -226,7 +265,8 @@ test("a resumed EvalRunner lazily restores only its own durable state and reject
 		data.kernels[0].snapshot.interpreter.version = "incompatible";
 		manager.appendCustomEntry(DECLARED_STATE_CUSTOM_TYPE, { ...data, boundaryEntryId: boundary });
 		await expect(prepareSessionStateRestore(manager, restoredOwner, boundary)).rejects.toThrow("incompatible");
-		expect((await resumed.executePython("print(value + 3)")).output).toContain("43");
+		expect(await restored.python("print(value + 3)")).toContain("43");
+		await restored.close();
 	} finally {
 		if (resumed) await resumed.disposeKernels();
 		await source.close();
@@ -243,7 +283,7 @@ test("large declared namespaces remain byte-exact through persisted blobs and in
 	const target = await kernels(directory.path(), destination);
 	let fork: SessionManager | undefined;
 	try {
-		await source.python('large = "雪" * 600000\ndeclare_state(["large"])');
+		await source.python('large = "雪" * 600000');
 		await source.js('var large = "雪".repeat(600000); declareState(["large"]);');
 		manager.appendMessage({ role: "user", content: "large state", timestamp: 0 });
 		await captureSessionState(manager, owner);
@@ -275,13 +315,15 @@ test("model checkpoint rewind drops exploratory context without undoing declared
 	using directory = TempDir.createSync("@state-context-rewind-");
 	const auth = await AuthStorage.create(":memory:");
 	let session: AgentSession | undefined;
+	const owner = `rewind:${crypto.randomUUID()}`;
+	const warm = await kernels(directory.path(), owner);
 	const tools: AgentTool[] = ["checkpoint", "compute", "rewind"].map(name => ({
 		name,
 		label: name,
 		description: name,
 		parameters: type({ text: "string" }),
 		async execute() {
-			if (name === "compute") await session!.executePython("value += 2");
+			if (name === "compute") await warm.python("value += 2");
 			return {
 				content: [{ type: "text", text: name }],
 				details:
@@ -322,6 +364,7 @@ test("model checkpoint rewind drops exploratory context without undoing declared
 		session = new AgentSession({
 			agent,
 			sessionManager: manager,
+			evalKernelOwnerId: owner,
 			settings: Settings.isolated({
 				"compaction.enabled": false,
 				"retry.enabled": false,
@@ -330,11 +373,11 @@ test("model checkpoint rewind drops exploratory context without undoing declared
 			modelRegistry: new ModelRegistry(auth),
 			toolRegistry: new Map(tools.map(tool => [tool.name, tool])),
 		});
-		expect((await session.executePython('value = 40\ndeclare_state(["value"])')).exitCode).toBe(0);
+		await warm.python("value = 40");
 		await session.prompt("Investigate then retain computation");
 		await session.waitForIdle();
 		expect(session.getLastCompletedRewind()?.report).toBe("retained computation");
-		expect((await session.executePython("print(value)")).output).toContain("42");
+		expect(await warm.python("print(value)")).toContain("42");
 		expect(
 			manager
 				.buildSessionContext()
@@ -342,6 +385,7 @@ test("model checkpoint rewind drops exploratory context without undoing declared
 		).toBe(false);
 	} finally {
 		await session?.dispose();
+		await warm.close();
 		auth.close();
 		await manager.close();
 	}
@@ -376,15 +420,15 @@ test("an explicit kernel reset still discards declared bindings rather than sile
 	const manager = SessionManager.inMemory();
 	const source = await kernels(directory.path(), owner);
 	try {
-		await source.python('value = 41\ndeclare_state(["value"])');
+		await source.python("value = 41");
 		await source.js('var value = 41; declareState(["value"]);');
 		manager.appendMessage({ role: "user", content: "before explicit reset", timestamp: 0 });
 		await captureSessionState(manager, owner);
 		expect(await source.python('print("value" in globals())', true)).toContain("False");
 		expect(await source.js("console.log(typeof value);", "bun", true)).toContain("undefined");
-		await source.python('value = 41\ndeclare_state(["value"])');
+		await source.python("value = 41");
 		await captureSessionState(manager, owner);
-		await source.python("%reset");
+		await source.python("pass", true);
 		await captureSessionState(manager, owner);
 		expect(await source.python('print("value" in globals())')).toContain("False");
 	} finally {
@@ -416,7 +460,7 @@ test.each(["python", "bun"] as const)(
 			{ highWaterMark: 0 },
 		);
 		try {
-			if (language === "python") await source.python('value = 41\ndeclare_state(["value"])');
+			if (language === "python") await source.python("value = 41");
 			else await source.js('var value = 41; declareState(["value"]);');
 			const boundary = manager.appendMessage({ role: "user", content: "cell boundary", timestamp: 0 });
 			const running =
@@ -447,7 +491,7 @@ test.each(["python", "bun"] as const)(
 	60_000,
 );
 
-test("concurrent direct Python submissions commit separate exact boundaries before the next cell mutates state", async () => {
+test("concurrent direct Python submissions do not acquire hidden persisted globals", async () => {
 	using directory = TempDir.createSync("@state-direct-boundaries-");
 	const owner = `direct:${crypto.randomUUID()}`;
 	const destination = `direct:${crypto.randomUUID()}`;
@@ -456,6 +500,7 @@ test("concurrent direct Python submissions commit separate exact boundaries befo
 	const runner = new EvalRunner(
 		{
 			agent: new Agent(),
+			toolSession: () => undefined,
 			sessionManager: manager,
 			settings,
 			extensionRunner: () => undefined,
@@ -468,15 +513,15 @@ test("concurrent direct Python submissions commit separate exact boundaries befo
 	);
 	const target = await kernels(directory.path(), destination);
 	try {
-		const first = runner.executePython('value = 41\ndeclare_state(["value"])');
-		const second = runner.executePython("value += 1");
+		const first = runner.executePython("value = 41");
+		const second = runner.executePython('print("value" in globals())');
 		expect((await first).exitCode).toBe(0);
-		expect((await second).exitCode).toBe(0);
+		expect((await second).output).toContain("False");
 		const firstBoundary = manager.getCustomEntries(DECLARED_STATE_CUSTOM_TYPE)[0].id;
 		const prepared = await prepareSessionStateRestore(manager, destination, firstBoundary);
 		activateSessionStateRestore(prepared, destination, destination);
-		expect(await target.python("print(value)")).toContain("41");
-		expect((await runner.executePython("print(value)")).output).toContain("42");
+		expect(await target.python('print("value" in globals())')).toContain("False");
+		expect((await runner.executePython('print("value" in globals())')).output).toContain("False");
 	} finally {
 		await runner.disposeKernels();
 		await target.close();
@@ -492,7 +537,7 @@ test("a parked parent receives durable child receipts without losing its exact l
 	const source = await kernels(directory.path(), owner);
 	const target = await kernels(directory.path(), destination);
 	try {
-		await source.python('value = 41\ndeclare_state(["value"])');
+		await source.python("value = 41");
 		manager.appendMessage({ role: "user", content: "park", timestamp: 0 });
 		await captureSessionState(manager, owner);
 		await source.close();
@@ -527,13 +572,8 @@ test("kernel death before the first declared capture refuses a fresh namespace u
 	const owner = `manifest:${crypto.randomUUID()}`;
 	const source = await kernels(directory.path(), owner);
 	try {
-		await source.python('value = 41\ndeclare_state(["value"])');
-		await executePython("os._exit(9)", {
-			cwd: directory.path(),
-			sessionId: `python:${owner}`,
-			kernelOwnerId: owner,
-			timeoutMs: 20_000,
-		}).catch(() => undefined);
+		await source.python("value = 41");
+		await source.python("import os; os._exit(9)").catch(() => undefined);
 		await expect(source.python('print("must not execute")')).rejects.toThrow("older or fresh namespace");
 		expect(await source.python('print("value" in globals())', true)).toContain("False");
 	} finally {
@@ -555,7 +595,7 @@ test("restoration preserves the selected lane environment instead of choosing th
 			[firstCwd, 41],
 			[lastCwd, 73],
 		] as const) {
-			const result = await executePython(`value = ${value}\ndeclare_state(["value"])`, {
+			const result = await executePython(`value = ${value}`, {
 				cwd,
 				sessionId: `python:${owner}`,
 				kernelOwnerId: owner,
@@ -590,7 +630,7 @@ test("a failed durable manifest commit cannot make dirty declared state eligible
 	const manager = SessionManager.inMemory(directory.path());
 	const source = await kernels(directory.path(), owner);
 	try {
-		await source.python('value = 41\ndeclare_state(["value"])');
+		await source.python("value = 41");
 		manager.appendMessage({ role: "user", content: "uncommitted", timestamp: 0 });
 		const generation = listPythonKernelSessions(owner)[0].generation!;
 		const failCommit = spyOn(manager, "appendEntriesAtomically").mockRejectedValueOnce(new Error("disk unavailable"));
@@ -621,12 +661,14 @@ test("independent explicit live namespaces remain usable but ambiguous declared 
 		timeoutMs: 20_000,
 	};
 	try {
-		await source.python('value = 41\ndeclare_state(["value"])');
-		expect((await executePython('value = 73\ndeclare_state(["value"])', otherOptions)).exitCode).toBe(0);
+		await source.python("value = 41");
+		expect((await executePython("value = 73", otherOptions)).exitCode).toBe(0);
 		manager.appendMessage({ role: "user", content: "ambiguous namespace", timestamp: 0 });
 		await expect(captureSessionState(manager, owner)).rejects.toThrow("namespace aliases");
 		expect(await source.python("print(value)")).toContain("41");
-		expect((await executePython("print(value)\ndeclare_state([])", otherOptions)).output).toContain("73");
+		expect((await executePython("print(value)", otherOptions)).output).toContain("73");
+		const other = listPythonKernelSessions(owner).find(kernel => kernel.sessionId === otherOptions.sessionId)!;
+		await closePythonKernelSession(other.sessionKey, false, owner);
 		await captureSessionState(manager, owner);
 		const prepared = await prepareSessionStateRestore(manager, `fresh:${crypto.randomUUID()}`, manager.getLeafId());
 		expect(prepared.kernels.length).toBe(1);
@@ -635,3 +677,78 @@ test("independent explicit live namespaces remain usable but ambiguous declared 
 		await manager.close();
 	}
 }, 60_000);
+
+test("parked metadata carries full declared payloads through disk reopen, cache eviction and a dormant manager clone", async () => {
+	using directory = TempDir.createSync("@state-dormant-hydration-");
+	const owner = `manifest:${crypto.randomUUID()}`;
+	const destination = `manifest:${crypto.randomUUID()}`;
+	const manager = SessionManager.create(directory.path(), directory.join("sessions"));
+	const source = await kernels(directory.path(), owner);
+	const target = await kernels(directory.path(), destination);
+	let reopened: SessionManager | undefined;
+	let dormant: SessionManager | undefined;
+	try {
+		await source.js('var value = {answer: 41, bytes: Buffer.from("ok")}; declareState(["value"]);');
+		manager.appendMessage({ role: "user", content: "durable boundary", timestamp: 0 });
+		await captureSessionState(manager, owner);
+		manager.trimHydratedEntryCache();
+		await appendSessionMetadataWithState(manager, () => manager.appendCustomEntry("lifecycle", { state: "parked" }));
+		const file = manager.getSessionFile()!;
+		await manager.close();
+		reopened = await SessionManager.openReadOnly(file);
+		reopened.trimHydratedEntryCache();
+		dormant = reopened.cloneCurrentSession({ persist: false });
+		await reopened.close();
+		dormant.trimHydratedEntryCache();
+		stageSessionStateOnResume(dormant, destination, destination);
+		expect(await target.js("console.log(value.answer + 1, value.bytes.toString());")).toContain("42 ok");
+	} finally {
+		await source.close();
+		await target.close();
+		await dormant?.close();
+		await reopened?.close();
+		await manager.close();
+	}
+}, 30_000);
+
+test("old Python selected-data checkpoints leave history and JavaScript usable but refuse namespace restore before mutation", async () => {
+	using directory = TempDir.createSync("@state-old-python-");
+	const owner = `manifest:${crypto.randomUUID()}`;
+	const destination = `manifest:${crypto.randomUUID()}`;
+	const manager = SessionManager.inMemory(directory.path());
+	const source = await kernels(directory.path(), owner);
+	const target = await kernels(directory.path(), destination);
+	const kernel = await PythonKernel.start({ cwd: directory.path() });
+	try {
+		await source.js('var value = 41; declareState(["value"]);');
+		manager.appendMessage({ role: "user", content: "old checkpoint", timestamp: 0 });
+		await captureSessionState(manager, owner);
+		const manifest = manager.getCustomEntries(DECLARED_STATE_CUSTOM_TYPE)[0].data as {
+			kernels: DeclaredKernelState[];
+			boundaryEntryId: string | null;
+		};
+		const snapshot = { format: "proto.kernel-state", version: 1, language: "python", bindings: {} };
+		manifest.kernels.push({
+			language: "python",
+			lane: "old",
+			cwd: directory.path(),
+			target: { kind: "local" },
+			snapshot,
+		});
+		manifest.boundaryEntryId = manager.getLeafId();
+		manager.appendCustomEntry(DECLARED_STATE_CUSTOM_TYPE, manifest);
+		manager.trimHydratedEntryCache();
+		stageSessionStateOnResume(manager, destination, destination);
+		expect(manager.buildSessionContext().messages).toContainEqual(expect.objectContaining({ role: "user" }));
+		expect(await target.js("console.log(value + 1);")).toContain("42");
+		await expect(prepareSessionStateRestore(manager, owner, manager.getLeafId())).rejects.toThrow("reset or close");
+		expect((await kernel.execute("value = 73")).status).toBe("ok");
+		await expect(kernel.declaredState("restore", snapshot)).rejects.toThrow("reset or close");
+		expect((await kernel.execute("assert value == 73")).status).toBe("ok");
+	} finally {
+		await kernel.shutdown();
+		await source.close();
+		await target.close();
+		await manager.close();
+	}
+}, 30_000);

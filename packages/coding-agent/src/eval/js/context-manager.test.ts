@@ -45,8 +45,8 @@ test("reports uncertain completion without replaying a cell after the JS worker 
 		).rejects.toThrow("completion is uncertain");
 		expect(await Bun.file(effectsPath).text()).toBe("once\n");
 
-		await executeInVmContext({
-			runtime: "bun",
+		const nextCell = {
+			runtime: "bun" as const,
 			sessionKey: sessionId,
 			sessionId,
 			ownerId,
@@ -55,7 +55,10 @@ test("reports uncertain completion without replaying a cell after the JS worker 
 			code: `await Bun.write(${JSON.stringify(effectsPath)}, (await Bun.file(${JSON.stringify(effectsPath)}).text()) + "next\\n");`,
 			filename: "next-cell.js",
 			runState: {},
-		});
+		};
+		await expect(executeInVmContext(nextCell)).rejects.toThrow("refusing an older or fresh namespace");
+		expect(await Bun.file(effectsPath).text()).toBe("once\n");
+		await executeInVmContext({ ...nextCell, reset: true });
 		expect(await Bun.file(effectsPath).text()).toBe("once\nnext\n");
 	} finally {
 		await disposeVmContextsByOwner(ownerId);
@@ -341,7 +344,7 @@ test("fails closed rather than falling back when the isolated JS subprocess cann
 	}
 });
 
-test("interrupts an active JS cell and starts a clean worker for the next cell", async () => {
+test("interrupted JS cells refuse an automatic replacement namespace until an explicit reset", async () => {
 	using tempDir = TempDir.createSync("@js-worker-cancel-");
 	const cwd = tempDir.path();
 	const settings = await Settings.loadReadOnly({ cwd, agentDir: cwd, inMemory: true });
@@ -379,19 +382,23 @@ test("interrupts an active JS cell and starts a clean worker for the next cell",
 		controller.abort(new Error("cancel active JS cell"));
 		await expect(active).rejects.toThrow("cancel active JS cell");
 
-		await expect(
-			executeInVmContext({
-				runtime: "bun",
-				sessionKey: sessionId,
-				sessionId,
-				ownerId,
-				cwd,
-				session: toolSession,
-				code: `await Bun.write(${JSON.stringify(nextCellPath)}, "healthy");`,
-				filename: "healthy-cell.js",
-				runState: {},
-			}),
-		).resolves.toEqual({ value: undefined, exitCode: 0 });
+		const nextCell = {
+			runtime: "bun" as const,
+			sessionKey: sessionId,
+			sessionId,
+			ownerId,
+			cwd,
+			session: toolSession,
+			code: `await Bun.write(${JSON.stringify(nextCellPath)}, "healthy");`,
+			filename: "healthy-cell.js",
+			runState: {},
+		};
+		await expect(executeInVmContext(nextCell)).rejects.toThrow("refusing an older or fresh namespace");
+		expect(await Bun.file(nextCellPath).exists()).toBe(false);
+		await expect(executeInVmContext({ ...nextCell, reset: true })).resolves.toEqual({
+			value: undefined,
+			exitCode: 0,
+		});
 		expect(await Bun.file(nextCellPath).text()).toBe("healthy");
 	} finally {
 		controller.abort();

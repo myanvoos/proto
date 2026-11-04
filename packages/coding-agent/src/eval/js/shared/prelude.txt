@@ -118,7 +118,7 @@ if (!globalThis.__proto_js_prelude_loaded__) {
 		if (lines.at(-1) === "") lines.pop();
 		return lines;
 	};
-	// One output's selection; options, results and errors match Python `output()` in `eval/py/prelude.py`.
+	// Select one output; pagination applies only when query is absent.
 	const selectOutput = async (id, { format = "raw", query, offset, limit }) => {
 		const { path, content, published } = await outputSource(id);
 		let selected = content;

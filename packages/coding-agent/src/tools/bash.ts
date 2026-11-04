@@ -20,8 +20,17 @@ import {
 	cancelEvalCompletionSpeculation,
 	startEvalCompletionSpeculation,
 } from "../eval/completion-bridge";
+import { formatDisplayOutputForText } from "../eval/display-text";
 import { fsObservationLedgerFor } from "../eval/fs-observations";
-import { LatestValueScheduler, parseStreamedInputForCompletion, type StreamedKernelFailure } from "../eval/speculation";
+import { PythonDisplayBudget } from "../eval/py/display";
+import { registerPythonHarnessRun } from "../eval/py/harness-bridge";
+import type { PythonHarnessRun } from "../eval/py/harness-types";
+import {
+	findHeredocCompletionCalls,
+	LatestValueScheduler,
+	parseStreamedInputForCompletion,
+	type StreamedKernelFailure,
+} from "../eval/speculation";
 import { upsertStatusEvent } from "../eval/status-events";
 import {
 	type ExecutionMetadata,
@@ -84,6 +93,7 @@ import {
 	EVAL_DEFAULT_PREVIEW_LINES,
 	type EvalDisplayCell,
 	highlightShellWithEmbeddedCode,
+	renderJsonDisplayLines,
 	renderKernelCellLines,
 	renderShellWithCellOutlines,
 	renderStatusEvents,
@@ -161,7 +171,7 @@ export function rgReplaceFlagNotice(command: string): string | undefined {
 export function kernelBridgeAvailable(session: ToolSession): boolean {
 	if (shellBuiltinsDisabled(session.settings)) return false;
 	const backends = resolveEvalBackends(session);
-	return backends.python || backends.js;
+	return backends.js;
 }
 
 async function saveBashOriginalArtifact(
@@ -526,7 +536,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			hasShellBuiltins: !shellBuiltinsDisabled(this.session.settings),
 			hasKernelBridge: bridge,
 			hasXdev: xdev !== undefined,
-			py: bridge && evalBackends.python,
+			py: evalBackends.python,
 			js: bridge && evalBackends.js,
 			spawns: spawnPolicy.enabled,
 			spawnDefaultAgent: spawnPolicy.defaultAgent,
@@ -1040,7 +1050,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		};
 	}
 
-	#kernelShellBridge(
+	async #kernelShellBridge(
 		toolCallId: string,
 		finalInput: {
 			command: string;
@@ -1053,32 +1063,130 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		onStatusEvent?: (event: EvalStatusEvent) => void,
 		onDisplayText?: (text: string) => void,
 		streamedCompletionContext?: StreamedCompletionContext,
-	): KernelShellBridgeHandle | undefined {
-		if (!kernelBridgeAvailable(this.session)) return undefined;
+		signal?: AbortSignal,
+	): Promise<KernelShellBridgeHandle | undefined> {
+		const pythonEnabled = resolveEvalBackends(this.session).python;
+		const jsEnabled = !finalInput.pty && kernelBridgeAvailable(this.session);
+		if (!pythonEnabled && !jsEnabled) return undefined;
 		const streamed = streamedCompletionContext ?? this.#streamedCompletionContext(toolCallId, finalInput);
 		// Only a final input that matches its streamed prefix may claim that prefix's completion.
 		// Anything else has no claimant, so its speculation is cancelled now rather than held.
 		const context = streamed?.claimable ? streamed : undefined;
 		if (streamed && !context) cancelEvalCompletionSpeculation(toolCallId, streamed.generation, this.session);
-		const bridge = registerKernelShellRun(
-			this.session,
-			onStatusEvent,
-			{
-				lane: finalInput.lane,
-				toolCallId: context ? toolCallId : undefined,
-				generation: context?.generation,
-			},
-			onDisplayText,
-		);
-		if (!bridge || !context) return bridge;
-		this.#streamedBridgeCalls.add(toolCallId);
+		const bridge = jsEnabled
+			? registerKernelShellRun(
+					this.session,
+					onStatusEvent,
+					{
+						lane: finalInput.lane,
+						toolCallId: context ? toolCallId : undefined,
+						generation: context?.generation,
+					},
+					onDisplayText,
+				)
+			: undefined;
+		const displayBudget = new PythonDisplayBudget();
+		const images: ImageContent[] = [];
+		const statusEvents: EvalStatusEvent[] = [];
+		const jsonOutputs: unknown[] = [];
+		const displayText: string[] = [];
+		let queriedExecutions = false;
+		let pythonFailure: string | undefined;
+		let harness: PythonHarnessRun | undefined;
+		// The accepted call owns its futures before asynchronous capability staging.
+		if (context) this.#streamedBridgeCalls.add(toolCallId);
+		try {
+			harness = pythonEnabled
+				? await registerPythonHarnessRun(this.session, {
+						cwd: finalInput.cwd,
+						lane: finalInput.lane,
+						toolCallId,
+						completionContext: context
+							? {
+									toolCallId,
+									generation: context.generation,
+									language: "python",
+									candidateFingerprints: findHeredocCompletionCalls(finalInput.command)
+										.filter(call => call.language === "python")
+										.map(call => call.fingerprint),
+								}
+							: undefined,
+						signal,
+						env: finalInput.env,
+						shell: !finalInput.pty,
+						emit: event => {
+							if (event.type === "status") {
+								if (event.event.op === "execution-query") {
+									queriedExecutions = true;
+									return;
+								}
+								if (event.event.op === "kernel-cell-termination" && typeof event.event.failure === "string") {
+									pythonFailure = event.event.failure;
+								}
+								if (
+									["note", "kernel-cell-termination"].includes(event.event.op) &&
+									typeof event.event.text === "string"
+								) {
+									for (const output of displayBudget.addKernelOutput({
+										type: "notice",
+										text: event.event.text,
+									})) {
+										const text = formatDisplayOutputForText(output, jsonOutputs.length);
+										if (text) {
+											displayText.push(text.trimEnd());
+											onDisplayText?.(text);
+										}
+									}
+									return;
+								}
+								const admitted = displayBudget.admitMetadata(event.event, `status:${statusEvents.length}`);
+								if (admitted) {
+									upsertStatusEvent(statusEvents, admitted);
+									onStatusEvent?.(admitted);
+								}
+							} else if (event.type === "display") {
+								for (const output of displayBudget.addKernelOutput(event.output)) {
+									if (output.type === "image") images.push(output);
+									if (output.type === "json") jsonOutputs.push(output.data);
+									const text = formatDisplayOutputForText(output, jsonOutputs.length);
+									if (text) {
+										displayText.push(text.trimEnd());
+										onDisplayText?.(text);
+									}
+								}
+							}
+						},
+					})
+				: undefined;
+		} catch (error) {
+			try {
+				await bridge?.dispose();
+			} finally {
+				displayBudget.release();
+				this.#streamedBridgeCalls.delete(toolCallId);
+				if (context && !bridge) cancelEvalCompletionSpeculation(toolCallId, context.generation, this.session);
+			}
+			throw error;
+		}
 		return {
-			...bridge,
-			dispose: () => {
+			env: { ...bridge?.env, ...harness?.env },
+			drainImages: () => [...(bridge?.drainImages() ?? []), ...images.splice(0)],
+			drainStatusEvents: () => [...(bridge?.drainStatusEvents() ?? []), ...statusEvents.splice(0)],
+			drainJsonOutputs: () => [...(bridge?.drainJsonOutputs() ?? []), ...jsonOutputs.splice(0)],
+			drainDisplayText: () => [...(bridge?.drainDisplayText() ?? []), ...displayText.splice(0)],
+			queriedExecutions: () => queriedExecutions || (bridge?.queriedExecutions() ?? false),
+			cellFailure: () => pythonFailure ?? bridge?.cellFailure(),
+			dispose: async () => {
 				try {
-					bridge.dispose();
+					await harness?.dispose();
 				} finally {
-					this.#streamedBridgeCalls.delete(toolCallId);
+					try {
+						await bridge?.dispose();
+					} finally {
+						displayBudget.release();
+						this.#streamedBridgeCalls.delete(toolCallId);
+						if (context && !bridge) cancelEvalCompletionSpeculation(toolCallId, context.generation, this.session);
+					}
 				}
 			},
 		};
@@ -1414,6 +1522,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
 		const completion = Promise.withResolvers<ManagedBashJobCompletion>();
 
+		// A queued/backgrounded job can outlive execute() before its bridge starts.
+		if (options.streamedCompletionContext?.claimable) this.#streamedBridgeCalls.add(options.toolCallId);
 		let jobId: string;
 		try {
 			jobId = manager.register(
@@ -1437,26 +1547,28 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						// call's kernel cells share the session's kernel: passing the job's
 						// `async:<id>` lane here would spawn a fresh kernel per job.
 						const kernelLane = options.lane;
-						const pyBridge = this.#kernelShellBridge(
-							options.toolCallId,
-							{
-								command: options.command,
-								lane: kernelLane,
-								cwd: options.commandCwd,
-								env: options.resolvedEnv,
-								pty: false,
-								async: true,
-							},
-							undefined,
-							text => {
-								tailBuffer.append(text);
-								latestTextDirty = true;
-								progressScheduler.enqueue(undefined);
-							},
-							options.streamedCompletionContext,
-						);
 						let resultRecorded = false;
+						let pyBridge: KernelShellBridgeHandle | undefined;
 						try {
+							pyBridge = await this.#kernelShellBridge(
+								options.toolCallId,
+								{
+									command: options.command,
+									lane: kernelLane,
+									cwd: options.commandCwd,
+									env: options.resolvedEnv,
+									pty: false,
+									async: true,
+								},
+								undefined,
+								text => {
+									tailBuffer.append(text);
+									latestTextDirty = true;
+									progressScheduler.enqueue(undefined);
+								},
+								options.streamedCompletionContext,
+								runSignal,
+							);
 							const { path: artifactPath, id: artifactId } =
 								(await this.session.allocateOutputArtifact?.("bash")) ?? {};
 							const result = await executeBash(options.command, {
@@ -1543,8 +1655,9 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						} finally {
 							laneReservation?.release();
 							progressScheduler.cancel();
-							pyBridge?.dispose();
+							await pyBridge?.dispose();
 							if (!pyBridge) {
+								this.#streamedBridgeCalls.delete(options.toolCallId);
 								cancelEvalCompletionSpeculation(
 									options.toolCallId,
 									options.streamedCompletionContext?.generation,
@@ -1575,6 +1688,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			);
 		} catch (error) {
 			options.laneReservation.release();
+			this.#streamedBridgeCalls.delete(options.toolCallId);
 			cancelEvalCompletionSpeculation(
 				options.toolCallId,
 				options.streamedCompletionContext?.generation,
@@ -2191,20 +2305,20 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		const liveUpdateScheduler = new LatestValueScheduler<void>(pushLiveUpdate, {
 			delayMs: BASH_LIVE_UPDATE_INTERVAL_MS,
 		});
-		const pyBridge = interactiveUi
-			? undefined
-			: this.#kernelShellBridge(
-					_toolCallId,
-					{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested, lane },
-					event => {
-						upsertStatusEvent(liveStatusEvents, event);
-						liveUpdateScheduler.enqueue(undefined);
-					},
-					text => {
-						tailBuffer.append(text);
-						liveUpdateScheduler.enqueue(undefined);
-					},
-				);
+		const pyBridge = await this.#kernelShellBridge(
+			_toolCallId,
+			{ command: rawCommand, cwd, env: rawEnv, pty, async: asyncRequested, lane },
+			event => {
+				upsertStatusEvent(liveStatusEvents, event);
+				liveUpdateScheduler.enqueue(undefined);
+			},
+			text => {
+				tailBuffer.append(text);
+				liveUpdateScheduler.enqueue(undefined);
+			},
+			undefined,
+			signal,
+		);
 		try {
 			const result: BashResult | BashInteractiveResult = interactiveUi
 				? await runInteractiveBashPty(interactiveUi, {
@@ -2212,7 +2326,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 						cwd: commandCwd,
 						timeoutMs,
 						signal,
-						env: backendPreflight?.env ?? resolvedEnv,
+						env: { ...(backendPreflight?.env ?? resolvedEnv), ...pyBridge?.env },
 						artifactPath,
 						artifactId,
 					})
@@ -2267,7 +2381,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		} finally {
 			await liveUpdateScheduler.flush();
 			liveUpdateScheduler.cancel();
-			pyBridge?.dispose();
+			await pyBridge?.dispose();
 			if (!pyBridge) this.#cancelStreamedCompletion(_toolCallId);
 		}
 	}
@@ -2430,7 +2544,7 @@ function bashEmbeddedRegions(command: string): EmbeddedCodeRegion[] {
 	}
 	return regions.sort((a, b) => a.start - b.start);
 }
-// A kernel-routed `python`/`node`/`bun` bash cell renders identically to an `eval`
+// A kernel-routed `node`/`bun` bash cell renders identically to an `eval`
 // cell (header, AST preview, output, Status hunks, JSON display trees) by
 // building an EvalCellResult and handing it to the shared renderKernelCellLines.
 function kernelCellLines(
@@ -2488,7 +2602,7 @@ function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererC
 }
 
 export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
-	// Kernel-routed `python`/`node`/`bun` cells animate their preview while running,
+	// Kernel-routed `node`/`bun` cells animate their preview while running,
 	// matching the eval tool (plain shell commands keep the default behavior).
 	const isKernelCellArgs = (args: unknown): boolean => {
 		const command = config.resolveCommand?.(args as TArgs);
@@ -2751,6 +2865,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								outputBlockContentWidth(width),
 							)
 						: [];
+					const jsonLines = renderJsonDisplayLines(details?.jsonOutputs ?? [], uiTheme, expanded === true, width);
 					const framed = outputBlock.render(
 						{
 							header,
@@ -2776,8 +2891,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					cachedRawOutput = rawOutput;
 					cachedIsPartial = isPartial;
 					cachedPreviewWindow = previewWindow;
-					cachedLines = framed;
-					return framed;
+					cachedLines = jsonLines.length > 0 ? [...framed, "", ...jsonLines] : framed;
+					return cachedLines;
 				},
 				invalidate: () => {
 					outputBlock.invalidate();

@@ -4,9 +4,28 @@ import type { FsObservation } from "./fs-observations";
 import { KernelInputReader } from "./kernel-streams";
 import type { KernelTarget } from "./kernel-target";
 import { type KernelDisplayOutput, renderKernelDisplay } from "./py/display";
+import { MAX_GRAPH_FRAME_CHARS } from "./state-limits";
 import type { KernelInvocation } from "./types";
 
+/** Canonical process transport: direct subprocesses and forkserver children share lifecycle semantics. */
+export interface KernelProcess {
+	readonly pid: number;
+	readonly stdin: { write(data: string): unknown; flush(): unknown; end(): unknown };
+	readonly stdout: ReadableStream<Uint8Array>;
+	readonly stderr: ReadableStream<Uint8Array>;
+	readonly exited: Promise<number>;
+	kill(signal?: NodeJS.Signals | number): void;
+}
+
 export type KernelRuntimeEnv = Record<string, string | null>;
+
+export interface KernelToolRequest {
+	name: string;
+	args: Record<string, unknown>;
+	cwd?: string;
+}
+
+export type KernelToolRequestCallback = (request: KernelToolRequest, signal: AbortSignal) => Promise<unknown>;
 
 export interface KernelExecuteOptions {
 	id?: string;
@@ -28,11 +47,7 @@ export interface KernelExecuteOptions {
 	releaseOutput?: () => void;
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	timeoutMs?: number;
-	silent?: boolean;
-	storeHistory?: boolean;
-	allowStdin?: boolean;
-
-	prelude?: boolean;
+	onToolRequest?: KernelToolRequestCallback;
 }
 
 export interface KernelExecuteResult {
@@ -84,6 +99,7 @@ interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = Kerne
 	buildPayload: (code: string, msgId: string, options?: TExecuteOptions) => string;
 
 	buildCancelPayload?: (msgId: string) => string;
+	captureCancellationCleanup?: () => () => Promise<boolean>;
 	onFrame?: (frame: Frame) => boolean;
 }
 
@@ -104,7 +120,7 @@ export interface Frame {
 	stateError?: string;
 	type: FrameType;
 	requestId?: string;
-	payload?: { name: string; args: unknown; completionInvocationId?: string };
+	payload?: { name: string; args: unknown; cwd?: string };
 	id?: string;
 	data?: string;
 	encoding?: "base64";
@@ -154,6 +170,9 @@ interface PendingExecution {
 	cancelled: boolean;
 	timedOut: boolean;
 	stdinRequested: boolean;
+	outputFailed: boolean;
+	cancelCleanup?: () => Promise<boolean>;
+	cancellationCleanup?: Promise<boolean>;
 	kernelKilled: boolean;
 	settled: boolean;
 	started: boolean;
@@ -278,8 +297,8 @@ function unrefTimeout(callback: () => void, delayMs: number): NodeJS.Timeout {
 
 export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = KernelExecuteOptions> {
 	readonly id: string;
-	#proc: Subprocess | null = null;
-	#stdin: Bun.FileSink | null = null;
+	#proc: KernelProcess | null = null;
+	#stdin: KernelProcess["stdin"] | null = null;
 	#alive = true;
 	#disposed = false;
 	#shutdownConfirmed = false;
@@ -301,11 +320,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		this.#options = options;
 	}
 
-	setProcess(
-		proc: Subprocess<"pipe", "pipe", "pipe">,
-		targetTerminate?: () => Promise<boolean>,
-		targetInterrupt?: () => Promise<void>,
-	) {
+	setProcess(proc: KernelProcess, targetTerminate?: () => Promise<boolean>, targetInterrupt?: () => Promise<void>) {
 		this.#targetTerminate = targetTerminate;
 		this.#targetInterrupt = targetInterrupt;
 		this.#proc = proc;
@@ -323,6 +338,10 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 		this.#startReader(proc.stdout as ReadableStream<Uint8Array>);
 		this.#startStderrDrain(proc.stderr as ReadableStream<Uint8Array>);
+	}
+
+	get pid(): number | undefined {
+		return this.#proc?.pid;
 	}
 
 	isAlive(): boolean {
@@ -346,6 +365,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			cancelled: false,
 			timedOut: false,
 			stdinRequested: false,
+			outputFailed: false,
+			cancelCleanup: this.#options.captureCancellationCleanup?.(),
 			settled: false,
 			kernelKilled: false,
 			started: false,
@@ -377,16 +398,29 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				this.#trimCompletedOutputSinks();
 			}
 			cleanup();
-			resolve({
-				status: pending.status,
-				exitCode: pending.exitCode,
-				executionCount: pending.executionCount,
-				error: pending.error,
-				cancelled: pending.cancelled,
-				timedOut: pending.timedOut,
-				stdinRequested: pending.stdinRequested,
-				kernelKilled: pending.kernelKilled,
-			});
+			const settle = async (): Promise<void> => {
+				if (pending.cancellationCleanup && !(await pending.cancellationCleanup)) {
+					pending.kernelKilled = true;
+					pending.status = "error";
+					pending.error ??= {
+						name: "ProcessCleanupError",
+						value: "Owned subprocess cleanup could not be confirmed; kernel terminated",
+						traceback: [],
+					};
+					await this.shutdown();
+				}
+				resolve({
+					status: pending.status,
+					exitCode: pending.exitCode,
+					executionCount: pending.executionCount,
+					error: pending.error,
+					cancelled: pending.cancelled,
+					timedOut: pending.timedOut,
+					stdinRequested: pending.stdinRequested,
+					kernelKilled: pending.kernelKilled,
+				});
+			};
+			void settle();
 		};
 
 		let requestWritten = false;
@@ -414,6 +448,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				}
 				return;
 			}
+			pending.cancellationCleanup ??= pending.cancelCleanup?.().catch(() => false);
 			void this.interrupt();
 			const escalation = setTimeout(() => {
 				if (pending.settled) return;
@@ -507,7 +542,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		this.#statePending.set(id, pending);
 		const timer = setTimeout(() => pending.reject(new Error("Declared state request timed out")), 15_000);
 		try {
-			void this.#writeLine(JSON.stringify({ type: "state", id, action, snapshot })).catch(pending.reject);
+			void this.writeControl({ type: "state", id, action, snapshot }).catch(pending.reject);
 			return await pending.promise;
 		} finally {
 			clearTimeout(timer);
@@ -636,7 +671,16 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 	async writeControl(frame: unknown): Promise<void> {
 		const line = JSON.stringify(frame);
-		if (line.length > MAX_KERNEL_FRAME_CHARS) throw new Error("Kernel control frame exceeds the transport limit");
+		const graphFrame =
+			typeof frame === "object" &&
+			frame !== null &&
+			"type" in frame &&
+			(frame.type === "state" ||
+				(frame.type === "tool_response" &&
+					"name" in frame &&
+					(frame.name === "store.get_graph" || frame.name === "store.put_graph")));
+		const limit = graphFrame ? MAX_GRAPH_FRAME_CHARS : MAX_KERNEL_FRAME_CHARS;
+		if (line.length > limit) throw new Error("Kernel control frame exceeds the transport limit");
 		await this.#writeLine(line);
 	}
 
@@ -729,8 +773,12 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 			const newline = remaining.indexOf("\n");
 			const segment = newline < 0 ? remaining : remaining.slice(0, newline);
-			if (this.#readChars + segment.length > MAX_KERNEL_FRAME_CHARS) {
-				const prefixLength = Math.max(0, MAX_KERNEL_FRAME_CHARS - this.#readChars);
+			const graphCapacity =
+				this.#statePending.size > 0 ||
+				[...this.#pending.values()].some(execution => Boolean(execution.options?.onToolRequest));
+			const limit = graphCapacity ? MAX_GRAPH_FRAME_CHARS : MAX_KERNEL_FRAME_CHARS;
+			if (this.#readChars + segment.length > limit) {
+				const prefixLength = Math.max(0, limit - this.#readChars);
 				const prefix = [...this.#readChunks, segment.slice(0, prefixLength)].join("");
 				await this.#rejectOversizedFrame(prefix);
 				this.#readChunks = [];
@@ -763,6 +811,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			} catch {}
 		}
 		const message = `[kernel] ${this.#options.languageName} runner frame exceeded ${MAX_KERNEL_FRAME_CHARS} characters and was discarded before JSON parsing.\n`;
+		const state = rid ? this.#statePending.get(rid) : undefined;
+		if (state) {
+			state.reject(new Error("Kernel graph state frame exceeds the transport limit"));
+			return;
+		}
 		const pending = rid ? this.#pending.get(rid) : undefined;
 		if (pending) {
 			pending.status = "error";
@@ -788,6 +841,17 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				error: err instanceof Error ? err.message : String(err),
 			});
 			return;
+		}
+		if (line.length > MAX_KERNEL_FRAME_CHARS) {
+			const graphRequest =
+				frame.type === "tool_request" &&
+				frame.id &&
+				this.#pending.get(frame.id)?.options?.onToolRequest &&
+				(frame.payload?.name === "store.get_graph" || frame.payload?.name === "store.put_graph");
+			if (!(frame.id && this.#statePending.has(frame.id)) && !graphRequest) {
+				await this.#rejectOversizedFrame(line.slice(0, MAX_KERNEL_FRAME_CHARS));
+				return;
+			}
 		}
 		if (this.#options.traceIpc) {
 			logger.debug(`${this.#options.languageName}Kernel recv`, { type: frame.type, id: frame.id });
@@ -850,6 +914,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	#failOutputConsumer(rid: string | undefined, error: unknown): void {
 		const pending = rid ? this.#pending.get(rid) : undefined;
 		if (pending) {
+			pending.outputFailed = true;
 			pending.status = "error";
 			pending.error = {
 				name: "OutputError",
@@ -1006,6 +1071,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				return;
 			}
 			case "error": {
+				if (pending.outputFailed) return;
 				const traceback = Array.isArray(frame.traceback) ? frame.traceback.map(String) : [];
 				pending.status = "error";
 				pending.error = {
@@ -1039,7 +1105,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				if (frame.status === "error" && pending.status === "ok") {
 					pending.status = "error";
 				}
-				if (frame.cancelled) {
+				if (frame.cancelled && !pending.outputFailed) {
 					pending.cancelled = true;
 				}
 				pending.finalize?.();
@@ -1076,8 +1142,6 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			const result = await this.execute(code, {
 				...extra,
 				signal: controller.signal,
-				silent: true,
-				storeHistory: false,
 			} as TExecuteOptions);
 			if (result.kernelKilled && !controller.signal.aborted) {
 				throw new Error(`${label} failed: ${result.error?.value ?? "kernel process exited"}`);

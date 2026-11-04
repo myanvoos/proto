@@ -98,10 +98,6 @@ struct ProtolensShellExtensions;
 
 impl ShellExtensions for ProtolensShellExtensions {
 	type ErrorFormatter = ProtolensErrorFormatter;
-
-	fn builtin_alias(command_name: &str) -> Option<&'static str> {
-		pi_builtins::kernel_builtin_alias(command_name)
-	}
 }
 
 const PROTOLENS_STDIN_LIMIT: usize = 1024 * 1024;
@@ -884,7 +880,12 @@ fn copy_env_into_shell(
 		let (Some(key), Some(value)) = (key.to_str(), value.to_str()) else {
 			continue;
 		};
-		if should_skip_env_var(key) || is_git_repo_location_var(key) {
+		if should_skip_env_var(key)
+			|| is_git_repo_location_var(key)
+			|| matches!(
+				key,
+				"PI_PYTHON_HARNESS_URL" | "PI_PYTHON_HARNESS_TOKEN" | "PI_PYTHON_HARNESS_PATH"
+			) {
 			continue;
 		}
 		if key == "PATH" {
@@ -1094,13 +1095,7 @@ async fn run_shell_command(
 		},
 	};
 
-	if env_scope_pushed {
-		session
-			.shell
-			.env_mut()
-			.pop_scope(EnvironmentScope::Command)
-			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
-	}
+	finish_command_env(&mut session.shell, env_scope_pushed)?;
 
 	result.map(|(exec, minimized)| CommandOutcome::collect(session, exec, minimized))
 }
@@ -1520,13 +1515,7 @@ async fn run_shell_command_streams(
 		terminate_background_jobs(&mut session.shell);
 	}
 
-	if env_scope_pushed {
-		session
-			.shell
-			.env_mut()
-			.pop_scope(EnvironmentScope::Command)
-			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
-	}
+	finish_command_env(&mut session.shell, env_scope_pushed)?;
 
 	drop(params);
 
@@ -1716,16 +1705,42 @@ fn terminate_background_jobs(shell: &mut BrushShell<ProtolensShellExtensions>) {
 	});
 }
 
+struct ManagedPythonPath {
+	root:     String,
+	injected: String,
+	previous: Option<ShellVariable>,
+}
+
+struct CommandEnvScope {
+	pushed:      bool,
+	/// Automatic PYTHONPATH injection must preserve native export/unset behavior
+	/// within this run.
+	python_path: Option<ManagedPythonPath>,
+}
+
 fn apply_command_env(
 	shell: &mut BrushShell<ProtolensShellExtensions>,
 	env: Option<&HashMap<String, String>>,
-) -> Result<bool> {
+) -> Result<CommandEnvScope> {
 	let Some(env) = env else {
-		return Ok(false);
+		return Ok(CommandEnvScope { pushed: false, python_path: None });
 	};
+	let python_path = env.get("PI_PYTHON_HARNESS_PATH").map(|root| {
+		let prior = env.get("PYTHONPATH").cloned().or_else(|| {
+			shell
+				.env()
+				.get("PYTHONPATH")
+				.map(|(_, var)| var.value().to_cow_str(shell).into_owned())
+		});
+		let injected = match prior.filter(|value| !value.is_empty()) {
+			Some(prior) => format!("{root}:{prior}"),
+			None => root.clone(),
+		};
+		(root.clone(), injected)
+	});
 	shell.env_mut().push_scope(EnvironmentScope::Command);
 	for (key, value) in env {
-		if should_skip_env_var(key) {
+		if should_skip_env_var(key) || (key == "PYTHONPATH" && python_path.is_some()) {
 			continue;
 		}
 		let mut var = ShellVariable::new(ShellValue::String(value.clone()));
@@ -1737,7 +1752,75 @@ fn apply_command_env(
 			return Err(Error::msg(format!("Failed to set env: {err}")));
 		}
 	}
-	Ok(true)
+	let mut managed_python_path = None;
+	if let Some((root, injected)) = python_path {
+		let previous = shell.env().get("PYTHONPATH").map(|(_, var)| var.clone());
+		let mut var = ShellVariable::new(ShellValue::String(injected.clone()));
+		var.export();
+		let result = if env.contains_key("PYTHONPATH") {
+			shell
+				.env_mut()
+				.add("PYTHONPATH", var, EnvironmentScope::Command)
+		} else {
+			managed_python_path = Some(ManagedPythonPath { root, injected, previous });
+			shell.env_mut().set_global("PYTHONPATH", var)
+		};
+		if let Err(err) = result {
+			let _ = shell.env_mut().pop_scope(EnvironmentScope::Command);
+			return Err(Error::msg(format!("Failed to set Python package path: {err}")));
+		}
+	}
+	Ok(CommandEnvScope { pushed: true, python_path: managed_python_path })
+}
+
+fn finish_command_env(
+	shell: &mut BrushShell<ProtolensShellExtensions>,
+	scope: CommandEnvScope,
+) -> Result<()> {
+	let python_path = scope.python_path.map(|managed| {
+		let current = shell.env().get("PYTHONPATH");
+		if current
+			.map(|(_, var)| var.value().to_cow_str(shell))
+			.as_deref()
+			== Some(&managed.injected)
+		{
+			return managed.previous;
+		}
+		current.map(|(_, var)| {
+			let value = var
+				.value()
+				.to_cow_str(shell)
+				.split(':')
+				.filter(|entry| *entry != managed.root)
+				.collect::<Vec<_>>()
+				.join(":");
+			let mut result = ShellVariable::new(ShellValue::String(value));
+			if var.is_exported() {
+				result.export();
+			}
+			result
+		})
+	});
+	if scope.pushed {
+		shell
+			.env_mut()
+			.pop_scope(EnvironmentScope::Command)
+			.map_err(|err| Error::msg(format!("Failed to pop env scope: {err}")))?;
+	}
+	if let Some(value) = python_path {
+		if let Some(var) = value {
+			shell
+				.env_mut()
+				.set_global("PYTHONPATH", var)
+				.map_err(|err| Error::msg(format!("Failed to preserve Python package path: {err}")))?;
+		} else {
+			shell
+				.env_mut()
+				.unset("PYTHONPATH")
+				.map_err(|err| Error::msg(format!("Failed to unset Python package path: {err}")))?;
+		}
+	}
+	Ok(())
 }
 
 fn apply_env_fallback(shell: &mut BrushShell<ProtolensShellExtensions>) -> Result<()> {

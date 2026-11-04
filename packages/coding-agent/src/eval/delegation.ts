@@ -11,7 +11,7 @@ import { ToolError } from "../tools/tool-errors";
 import { sessionProjectCwd } from "./bridge-cwd";
 import pythonClient from "./delegation/proto_session.py" with { type: "text" };
 import javascriptClient from "./delegation/proto-session.mjs.txt" with { type: "text" };
-import { callSessionToolPromptOnAbort } from "./py/tool-bridge";
+import { callSessionTool } from "./js/tool-bridge";
 
 export interface DelegationGrant {
 	tool: string;
@@ -319,11 +319,9 @@ async function handleRequest(state: SessionDelegations, request: Request): Promi
 	active.calls.set(id, controller);
 	active.info.requests++;
 	try {
-		const value = await callSessionToolPromptOnAbort(name, input.args, {
-			toolSession: state.session,
+		const value = await callSessionTool(name, input.args, {
+			session: state.session,
 			signal,
-			abortRequested: () => signal.aborted,
-			drainOnAbort: true,
 		});
 		if (signal.aborted) return failure("cancelled", "Delegated request cancelled", 409);
 		const body = JSON.stringify({ ok: true, value });

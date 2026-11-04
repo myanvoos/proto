@@ -7,10 +7,15 @@ import { AsyncJobManager } from "../async";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { handleKernelControl } from "../eval/kernel-control";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { runEvalRuntime } from "../eval/runtime-bridge";
 import { disposeBashSessions, executeBash } from "../exec/bash-executor";
-import type { ToolSession } from ".";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+
+const pythonInterpreter = (await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true }))
+	.pythonPath!;
+const pythonCommand = `'${pythonInterpreter.replaceAll("'", "'\\''")}'`;
 
 async function fixture(run: (bash: BashTool, cwd: string, owner: string, session: ToolSession) => Promise<void>) {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-runtime-"));
@@ -27,8 +32,10 @@ async function fixture(run: (bash: BashTool, cwd: string, owner: string, session
 		getEvalSessionId: () => owner,
 		getEvalKernelOwnerId: () => owner,
 	} as unknown as ToolSession;
+	const bash = new BashTool(session);
+	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
 	try {
-		await run(new BashTool(session), cwd, owner, session);
+		await run(bash, cwd, owner, session);
 	} finally {
 		await Promise.all([
 			disposeBashSessions(owner),
@@ -57,30 +64,31 @@ for (const lang of ["python", "node"] as const) {
 					: 'console.log(process.env.RUNTIME_ENV); process.stderr.write("diagnostic\\n")';
 			const flag = lang === "python" ? "-c" : "-e";
 			const result = await bash.execute("env", {
-				command: `${lang} ${flag} '${source}' 2> stderr-capture.txt`,
+				command: `${lang === "python" ? "python3" : lang} ${flag} '${source}' 2> stderr-capture.txt`,
 				env: { RUNTIME_ENV: "tool-value" },
 			});
 			expect(text(result)).toContain("tool-value");
 			expect(text(result)).not.toContain("diagnostic");
 			expect(await Bun.file(path.join(cwd, "stderr-capture.txt")).text()).toContain("diagnostic");
 			const inline = await bash.execute("inline", {
-				command: `RUNTIME_ENV=inline-value ${lang} ${flag} '${source}' 2> stderr-capture.txt`,
+				command: `RUNTIME_ENV=inline-value ${lang === "python" ? "python3" : lang} ${flag} '${source}' 2> stderr-capture.txt`,
 			});
 			expect(text(inline)).toContain("inline-value");
 		});
 	}, 30_000);
 
-	test(`${lang} piped input retains prior cell state`, async () => {
+	test(`${lang} piped input retains prior explicit kernel state`, async () => {
 		await fixture(async bash => {
 			const flag = lang === "python" ? "-c" : "-e";
+			const command = lang === "python" ? `${pythonCommand} -m proto_harness.kernel main` : lang;
 			await bash.execute("seed", {
-				command: `${lang} ${flag} '${lang === "python" ? "runtime_marker = 41" : "globalThis.runtime_marker = 41"}'`,
+				command: `${command} ${flag} '${lang === "python" ? "runtime_marker = 41" : "globalThis.runtime_marker = 41"}'`,
 			});
 			const source =
 				lang === "python"
 					? "import sys; print(runtime_marker + int(sys.stdin.read()))"
 					: 'let input = ""; for await (const chunk of process.stdin) input += chunk; console.log(runtime_marker + Number(input))';
-			const result = await bash.execute("input", { command: `printf 1 | ${lang} ${flag} '${source}'` });
+			const result = await bash.execute("input", { command: `printf 1 | ${command} ${flag} '${source}'` });
 			expect(text(result)).toContain("42");
 			expect(result.isError).not.toBe(true);
 		});
@@ -99,16 +107,19 @@ test("overlapping shell calls queue without losing exported state", async () => 
 
 test("named lanes isolate shell and kernel state", async () => {
 	await fixture(async bash => {
-		await bash.execute("seed", { lane: "one", command: "export LANE_MARKER=one; python -c 'lane_marker = 42'" });
+		await bash.execute("seed", {
+			lane: "one",
+			command: `export LANE_MARKER=one; ${pythonCommand} -m proto_harness.kernel one -c 'lane_marker = 42'`,
+		});
 		const other = await bash.execute("other", {
 			lane: "two",
-			command: `printf 'shell=%s\\n' "$LANE_MARKER"; python -c 'print("kernel", "lane_marker" in globals())'`,
+			command: `printf 'shell=%s\\n' "$LANE_MARKER"; ${pythonCommand} -m proto_harness.kernel two -c 'print("kernel", "lane_marker" in globals())'`,
 		});
 		expect(text(other)).toContain("kernel False");
 		expect(text(other)).not.toContain("shell=one");
 		const original = await bash.execute("original", {
 			lane: "one",
-			command: `printf 'shell=%s\\n' "$LANE_MARKER"; python -c 'print(lane_marker)'`,
+			command: `printf 'shell=%s\\n' "$LANE_MARKER"; ${pythonCommand} -m proto_harness.kernel one -c 'print(lane_marker)'`,
 		});
 		expect(text(original)).toContain("shell=one");
 		expect(text(original)).toContain("42");
@@ -117,10 +128,12 @@ test("named lanes isolate shell and kernel state", async () => {
 
 test("explicit main shares default shell and kernel state", async () => {
 	await fixture(async bash => {
-		await bash.execute("default", { command: "export MAIN_MARKER=shared; python -c 'main_marker = 73'" });
+		await bash.execute("default", {
+			command: `export MAIN_MARKER=shared; ${pythonCommand} -m proto_harness.kernel main -c 'main_marker = 73'`,
+		});
 		const result = await bash.execute("main", {
 			lane: "main",
-			command: `printf '%s\n' "$MAIN_MARKER"; python -c 'print(main_marker)'`,
+			command: `printf '%s\n' "$MAIN_MARKER"; ${pythonCommand} -m proto_harness.kernel main -c 'print(main_marker)'`,
 		});
 		expect(text(result)).toContain("shared\n73");
 	});
@@ -139,11 +152,11 @@ test("stage records retain an earlier failed pipeline member and split diagnosti
 		expect(await Bun.file(path.join(cwd, "artifacts", producer!.stderr!.artifactId!)).text()).toBe("diagnostic");
 		expect(result.details?.execution?.stages?.at(-1)?.exitCode).toBe(0);
 		const query = await bash.execute("query", {
-			command: `python -c 'print(executions("pipeline")["records"][0]["result"]["details"]["execution"]["stages"][1]["exitCode"])'`,
+			command: `${pythonCommand} -c 'import proto_harness as harness; print(harness.executions("pipeline")["records"][0]["result"]["details"]["execution"]["stages"][1]["exitCode"])'`,
 		});
 		expect(text(query)).toMatch(/^7\n/);
 		const history = await bash.execute("history", {
-			command: `python -c 'print(executions("query")["records"][0]["resultOmitted"])'`,
+			command: `${pythonCommand} -c 'import proto_harness as harness; print(harness.executions("query")["records"][0]["resultOmitted"])'`,
 		});
 		expect(text(history)).toContain("executions query");
 	});
@@ -172,7 +185,7 @@ test("tracing bounds retained stages without dropping command output", async () 
 
 test("stage output previews preserve UTF-8 while reporting omitted bytes", async () => {
 	await fixture(async bash => {
-		const result = await bash.execute("large", { command: `python -c 'print("😀" * 10000)'` });
+		const result = await bash.execute("large", { command: `${pythonCommand} -c 'print("😀" * 10000)'` });
 		const stage = result.details?.execution?.stages?.[0];
 		expect(stage?.stdout?.bytes).toBe(40001);
 		expect(stage?.stdout?.truncated).toBe(true);
@@ -226,9 +239,12 @@ test("same-lane shell and kernel calls run in issue order when an earlier call p
 			bash.execute("py-a", {
 				lane: "fifo-py",
 				cwd: slowCwd,
-				command: `python -c 'open("${order}", "a").write("py-a ")'`,
+				command: `${pythonCommand} -c 'open("${order}", "a").write("py-a ")'`,
 			}),
-			bash.execute("py-b", { lane: "fifo-py", command: `python -c 'open("${order}", "a").write("py-b ")'` }),
+			bash.execute("py-b", {
+				lane: "fifo-py",
+				command: `${pythonCommand} -c 'open("${order}", "a").write("py-b ")'`,
+			}),
 		]);
 		const written = (await Bun.file(order).text()).trim().split(" ");
 		expect(written.filter(entry => entry.startsWith("shell"))).toEqual(["shell-a", "shell-b"]);
@@ -265,7 +281,7 @@ test("a background kernel cell force-closed mid-run fails with the close as its 
 					new BashTool(managedSession).execute("hung-cell", {
 						async: true,
 						lane: "kx",
-						command: `python -c 'print("long cell start", flush=True)\nimport threading\nthreading.Event().wait()'`,
+						command: `${pythonCommand} -m proto_harness.kernel kx -c 'print("long cell start", flush=True)\nimport threading\nthreading.Event().wait()'`,
 					}),
 			);
 			await running.promise;
@@ -300,7 +316,8 @@ for (const language of ["python", "node", "bun"] as const) {
 					? "background_marker += 1; print(background_marker)"
 					: "console.log(++globalThis.background_marker)";
 			const read = language === "python" ? "print(background_marker)" : "console.log(globalThis.background_marker)";
-			const cell = (source: string) => `${language} <<'CELL'\n${source}\nCELL`;
+			const cell = (source: string) =>
+				`${language === "python" ? `${pythonCommand} -m proto_harness.kernel main` : language} <<'CELL'\n${source}\nCELL`;
 			try {
 				await bash.execute("seed-main", { command: cell(seed) });
 				const before = await handleKernelControl(managedSession, { op: "inspect", language, lane: "main" });
@@ -360,10 +377,12 @@ test("managed jobs isolate default state but honor explicit lanes and retain fai
 		} as unknown as ToolSession;
 		const managed = new BashTool(managedSession);
 		try {
-			await bash.execute("seed-main", { command: "export BG_MARKER=main; python -c 'background_marker = 39'" });
+			await bash.execute("seed-main", {
+				command: `export BG_MARKER=main; ${pythonCommand} -m proto_harness.kernel main -c 'background_marker = 39'`,
+			});
 			await bash.execute("seed-lane", {
 				lane: "work",
-				command: "export BG_MARKER=work; python -c 'background_marker = 41'",
+				command: `export BG_MARKER=work; ${pythonCommand} -m proto_harness.kernel work -c 'background_marker = 41'`,
 			});
 			const mainKernelBefore = await handleKernelControl(managedSession, {
 				op: "inspect",
@@ -372,18 +391,17 @@ test("managed jobs isolate default state but honor explicit lanes and retain fai
 			});
 			const isolated = await managed.execute("background-default", {
 				async: true,
-				command: `printf 'shell=%s\n' "$BG_MARKER"; python -c 'print("known", "background_marker" in globals(), background_marker)'`,
+				command: `printf 'shell=%s\n' "$BG_MARKER"; ${pythonCommand} -m proto_harness.kernel main -c 'print("known", "background_marker" in globals(), background_marker)'`,
 			});
 			const shared = await managed.execute("background-work", {
 				async: true,
 				lane: "work",
-				command: `printf 'shell=%s\n' "$BG_MARKER"; python -c 'print(background_marker + 1)'; false`,
+				command: `printf 'shell=%s\n' "$BG_MARKER"; ${pythonCommand} -m proto_harness.kernel work -c 'print(background_marker + 1)'; sh -c 'exit 7'`,
 			});
 			await manager.waitForAll();
 			const isolatedJob = manager.getJob(isolated.details!.async!.jobId)!;
 			const sharedJob = manager.getJob(shared.details!.async!.jobId)!;
-			// A backgrounded call gets its own shell lane but shares the session's kernel:
-			// it sees the main lane's python state instead of spawning a second kernel.
+			// Background shell isolation does not change an explicitly selected named kernel.
 			expect(isolatedJob.resultText).toContain("known True 39");
 			expect(isolatedJob.resultText).not.toContain("shell=main");
 			const mainKernelAfter = await handleKernelControl(managedSession, {
@@ -401,7 +419,7 @@ test("managed jobs isolate default state but honor explicit lanes and retain fai
 				]),
 			);
 			expect(history.records[0]?.result?.details).toMatchObject({
-				execution: { exitCode: 1, stages: expect.arrayContaining([expect.objectContaining({ exitCode: 1 })]) },
+				execution: { exitCode: 7, stages: expect.arrayContaining([expect.objectContaining({ exitCode: 7 })]) },
 			});
 		} finally {
 			await manager.dispose();
@@ -410,18 +428,19 @@ test("managed jobs isolate default state but honor explicit lanes and retain fai
 }, 30_000);
 
 for (const lang of ["python", "node"] as const) {
-	test(`${lang} inline cells consume redirected file input without losing state`, async () => {
+	test(`${lang} explicit cells consume redirected file input without losing state`, async () => {
 		await fixture(async bash => {
 			const flag = lang === "python" ? "-c" : "-e";
+			const command = lang === "python" ? `${pythonCommand} -m proto_harness.kernel main` : lang;
 			await bash.execute("redirect-seed", {
-				command: `${lang} ${flag} '${lang === "python" ? "redirect_marker = 98" : "globalThis.redirect_marker = 98"}'`,
+				command: `${command} ${flag} '${lang === "python" ? "redirect_marker = 98" : "globalThis.redirect_marker = 98"}'`,
 			});
 			const source =
 				lang === "python"
 					? "import sys; print(redirect_marker + int(sys.stdin.read()))"
 					: 'let body = ""; for await (const chunk of process.stdin) body += chunk; console.log(redirect_marker + Number(body))';
 			const result = await bash.execute("redirect-input", {
-				command: `printf 11 > program-input.txt; ${lang} ${flag} '${source}' < program-input.txt`,
+				command: `printf 11 > program-input.txt; ${command} ${flag} '${source}' < program-input.txt`,
 			});
 			expect(result.isError).not.toBe(true);
 			expect(text(result)).toMatch(/^109\n/);

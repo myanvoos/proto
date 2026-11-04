@@ -196,8 +196,6 @@ async function startKernel(
 			signal,
 			reset: args.op === "reset",
 			toolSession: session,
-			sessionFile: session.getSessionFile?.() ?? undefined,
-			artifactsDir: session.getArtifactsDir?.() ?? undefined,
 		});
 	const info = await startVmKernelSession({
 		...configuration,

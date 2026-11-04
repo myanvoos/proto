@@ -3,8 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../config/settings";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
+
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 
 function makeBash(cwd: string): BashTool {
 	const session: ToolSession = {
@@ -24,9 +27,9 @@ test("an in-flight assertion preflight survives newer deltas and reports on the 
 		const bash = makeBash(cwd);
 		const toolCallId = "streamed-assert";
 		const head = [
-			"python - <<'PY'",
-			"from pathlib import Path",
-			'text = Path("anchor.txt").read_text()',
+			`'${python.pythonPath}' - <<'PY'`,
+			"import proto_harness as harness",
+			'text = harness.fs.read_text("anchor.txt")',
 			'assert text.count("old") == 1',
 			"",
 		].join("\n");
@@ -55,7 +58,7 @@ test("cancelling a streamed call discards its in-flight preflight result", async
 		fs.writeFileSync(path.join(cwd, "anchor.txt"), "old\nold\n", "utf8");
 		const bash = makeBash(cwd);
 		const toolCallId = "cancelled-assert";
-		const command = `python - <<'PY'\nfrom pathlib import Path\ntext = Path("anchor.txt").read_text()\nassert text.count("old") == 1\n`;
+		const command = `'${python.pythonPath}' - <<'PY'\nimport proto_harness as harness\ntext = harness.fs.read_text("anchor.txt")\nassert text.count("old") == 1\n`;
 		const observation = bash.observeStreamedInput(toolCallId, `{"command":${JSON.stringify(command).slice(0, -1)}`);
 		await bash.flushStreamedInput(toolCallId);
 		bash.cancelStreamedInput(toolCallId);

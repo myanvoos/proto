@@ -104,13 +104,27 @@ if (process.argv.includes("--cleanup")) {
 	const steps: string[] = [];
 	const capturePath = path.join(root, "capture.ansi");
 	const proofPath = path.join(root, "driver-proof.json");
+	const compiledExecutable = process.env.PROTO_COMPILED_PYTHON_TEST_BIN;
+	let extensionPath = path.resolve(import.meta.dir, "deep-focused-extension.ts");
+	if (compiledExecutable) {
+		// Installed CLIs expose their SDK/AI modules, not this workspace's utility package.
+		// Ship the fixture like a standalone extension: bundle its utility dependency.
+		const bundled = await Bun.build({
+			entrypoints: [extensionPath],
+			target: "bun",
+			external: ["@oh-my-pi/pi-coding-agent", "@oh-my-pi/pi-ai"],
+		});
+		if (!bundled.success) throw new AggregateError(bundled.logs, "Failed to bundle the terminal fixture");
+		extensionPath = path.join(root, "deep-focused-extension.js");
+		await Bun.write(extensionPath, bundled.outputs[0]);
+	}
 	const run = pty.startArgv(
 		{
-			application: process.execPath,
+			application: compiledExecutable ?? process.execPath,
 			args: [
-				path.resolve(import.meta.dir, "../../src/cli.ts"),
+				...(compiledExecutable ? [] : [path.resolve(import.meta.dir, "../../src/cli.ts")]),
 				"--trusted-extension",
-				path.resolve(import.meta.dir, "deep-focused-extension.ts"),
+				extensionPath,
 				"--provider",
 				"p1-deep",
 				"--model",
@@ -147,11 +161,21 @@ if (process.argv.includes("--cleanup")) {
 		},
 	);
 
-	async function waitFor(pattern: string | RegExp, startAt = 0, screen = false): Promise<string> {
+	async function waitFor(
+		pattern: string | RegExp | ((visible: string) => boolean),
+		startAt = 0,
+		screen = false,
+	): Promise<string> {
 		const pending = Promise.withResolvers<string>();
 		const listener = () => {
 			const visible = screen ? screenText() : Bun.stripANSI(output.slice(startAt));
-			if (typeof pattern === "string" ? visible.includes(pattern) : pattern.test(visible)) pending.resolve(visible);
+			const matches =
+				typeof pattern === "function"
+					? pattern(visible)
+					: typeof pattern === "string"
+						? visible.includes(pattern)
+						: pattern.test(visible);
+			if (matches) pending.resolve(visible);
 			else if (/Extension "[^"\r\n]+" error:/.test(visible)) pending.reject(new Error(visible));
 			else if (streamError) pending.reject(streamError);
 			else if (ended) pending.reject(new Error(`TUI exited before ${String(pattern)}`));
@@ -173,7 +197,9 @@ if (process.argv.includes("--cleanup")) {
 
 	async function command(text: string, pattern: string | RegExp): Promise<string> {
 		const startAt = output.length;
-		pty.write(`${text}\r`);
+		pty.write(`\x1b[200~${text}\x1b[201~`);
+		await waitFor(visible => visible.replace(/[\s┆]/g, "").includes(text.slice(-40).replace(/\s/g, "")), 0, true);
+		pty.write("\r");
 		const visible = await waitFor(pattern, startAt);
 		steps.push(text);
 		screens.push({ step: text, screen: screenText() });
@@ -193,7 +219,9 @@ if (process.argv.includes("--cleanup")) {
 		let stage: Stage | undefined;
 		const outputStart = output.length;
 		try {
-			pty.write(`${text}\r`);
+			pty.write(`\x1b[200~${text}\x1b[201~`);
+			await waitFor(visible => visible.replace(/[\s┆]/g, "").includes(text.slice(-40).replace(/\s/g, "")), 0, true);
+			pty.write("\r");
 			stage = (await report()).stages.find(candidate => candidate.phase === phase);
 			while (!stage) {
 				const event = await nextEvent;
@@ -223,6 +251,25 @@ if (process.argv.includes("--cleanup")) {
 	let failure: unknown;
 	try {
 		await waitFor("DEEP_FIXTURE_READY");
+		const freshFirst = await command(
+			"$import os; transient_value = 41; print('PY' + 'FRESH1', os.getpid())",
+			/PYFRESH1 \d+/,
+		);
+		const firstPid = freshFirst.match(/PYFRESH1 (\d+)/)?.[1];
+		assert(firstPid, "First user Python process did not report its PID");
+		const freshSecond = await command(
+			"$import os; print('PY' + 'FRESH2', os.getpid(), 'transient_value' in globals(), 'tool' in globals())",
+			/PYFRESH2 \d+ False False/,
+		);
+		assert.notEqual(freshSecond.match(/PYFRESH2 (\d+)/)?.[1], firstPid);
+		await command(
+			`$import proto_harness as harness; harness.store["root_answer"] = 42; harness.kernel("analysis").run("warm_value = 41"); print('PY' + 'SEEDED')`,
+			"PYSEEDED",
+		);
+		await command(
+			`$import proto_harness as harness; print('PY' + 'ROOTSTORE', harness.store["root_answer"]); print(harness.kernel("analysis").run("print('PY' + 'NAMED', warm_value + 1)")["output"])`,
+			"PYNAMED 42",
+		);
 		await command("/deep-setup", "DEEP_SETUP_READY");
 		const setup = await report();
 		assert.notEqual(setup.selected.sessionId, setup.rootSessionId);
@@ -271,12 +318,26 @@ if (process.argv.includes("--cleanup")) {
 		pty.write("\x1b");
 		await waitFor(/^(?![\s\S]*Session Tree)[\s\S]*›\s+ask anything/, 0, true);
 		await proof("tree", 3);
+		await command(
+			`$import proto_harness as harness; print('PY' + 'CHILDISOLATED', "root_answer" in harness.store); print('PY' + 'OUTPUT', harness.output(${JSON.stringify(setup.selected.id)}).strip() == "DEEP_RESULT_3"); harness.store["child_answer"] = 42; harness.kernel("analysis").run("shared = []; graph = [shared, shared]; shared.append(graph); closure = lambda: 42"); print('PY' + 'CHILDREADY')`,
+			"PYCHILDREADY",
+		);
+		assert(Bun.stripANSI(output).includes("PYCHILDISOLATED False"), "Child inherited the root's Python store");
+		assert(
+			Bun.stripANSI(output).includes("PYOUTPUT True"),
+			"Fresh Python could not read its published worker output",
+		);
 		await proof("beforefork", 3);
 		await command("/fork", /[Ff]orked/);
 		const fork = await proof("fork", 0);
 		assert.notEqual(fork.sessionId, setup.selected.sessionId);
 		assert.notEqual(fork.sessionId, setup.rootSessionId);
 		assert.equal(fork.rootId, fork.nodeId);
+		await command(
+			`$import proto_harness as harness; print('PY' + 'FORKSTORE', harness.store["child_answer"]); print(harness.kernel("analysis").run("print('PY' + 'FORKGRAPH', graph[0] is graph[1], graph[0][0] is graph, closure())")["output"])`,
+			"PYFORKGRAPH True True 42",
+		);
+		assert(Bun.stripANSI(output).includes("PYFORKSTORE 42"), "Independent root lost the child's Python store");
 		const independent = await proof("independent", 0, "/deep-independent");
 		const finalReport = await report();
 		assert(independent?.worker, "Independent fork did not create a real worker");

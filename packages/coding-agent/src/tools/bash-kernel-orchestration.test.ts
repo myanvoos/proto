@@ -3,9 +3,15 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
+import { handleKernelControl } from "../eval/kernel-control";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import type { ToolSession } from ".";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+
+const pythonInterpreter = (await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true }))
+	.pythonPath!;
+const pythonCommand = `'${pythonInterpreter.replaceAll("'", "'\\''")}'`;
 
 const OWNER = `orchestration-test:${process.pid}`;
 
@@ -18,13 +24,16 @@ async function cell(lane: "python" | "bun", code: string | string[], ceiling = 0
 			getShellConfig: () => ({ env: {} }),
 		},
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
+		getSessionId: () => cwd,
 		getEvalSessionId: () => cwd,
 		getEvalKernelOwnerId: () => OWNER,
 	} as unknown as ToolSession;
+	const bash = new BashTool(session);
+	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
 	try {
 		for (const source of typeof code === "string" ? [code] : code) {
-			const result = await new BashTool(session).execute("orchestration", {
-				command: `${lane} <<'CELL'\n${source}\nCELL`,
+			const result = await bash.execute("orchestration", {
+				command: `${lane === "python" ? `${pythonCommand} -m proto_harness.kernel main` : lane} <<'CELL'\n${lane === "python" ? "import proto_harness as harness\n" : ""}${source}\nCELL`,
 				timeout: 30,
 			});
 			const output = result.content
@@ -34,8 +43,7 @@ async function cell(lane: "python" | "bun", code: string | string[], ceiling = 0
 			expect(result.isError, output).not.toBe(true);
 			expect(output).toContain("CONTRACT_OK");
 			if (Array.isArray(code)) {
-				await disposeKernelSessionsByOwner(OWNER);
-				await disposeVmContextsByOwner(OWNER);
+				await handleKernelControl(session, { op: "reset", language: lane });
 			}
 		}
 	} finally {
@@ -52,13 +60,13 @@ const failures = {
 	python: `
 def fail(value):
     raise ValueError("broken")
-rows = pipeline([1, 2], lambda x: x * 2, fail, streaming=True, settled=True)
+rows = harness.pipeline([1, 2], lambda x: x * 2, fail, streaming=True, settled=True)
 assert [r["stage"] for r in rows] == [1, 1], rows
 assert all(r["error"]["name"] == "ValueError" and r["error"]["stack"] for r in rows)
 try:
-    parallel([lambda: 7, lambda: fail(0)])
+    harness.parallel([lambda: 7, lambda: fail(0)])
     raise AssertionError("expected failure")
-except BatchError as error:
+except harness.BatchError as error:
     assert error.results[0]["value"] == 7
     assert error.results[1]["error"]["message"] == "broken"
 print("CONTRACT_OK")`,
@@ -91,13 +99,13 @@ def work():
     with lock:
         active -= 1
     return 1
-assert parallel([work] * 6, concurrency=3) == [1] * 6
+assert harness.parallel([work] * 6, concurrency=3) == [1] * 6
 assert active == 0 and peak == 2, (active, peak)
 peak = 0
-assert parallel([work] * 4, concurrency=1) == [1] * 4
+assert harness.parallel([work] * 4, concurrency=1) == [1] * 4
 assert peak == 1
-assert parallel([]) == []
-assert pipeline([1, 2]) == [1, 2]
+assert harness.parallel([]) == []
+assert harness.pipeline([1, 2]) == [1, 2]
 print("CONTRACT_OK")`,
 	bun: `
 let active = 0, peak = 0;
@@ -130,7 +138,7 @@ def slow():
 def observer(row):
     time.sleep(0.01)
     marks.append("observer")
-rows = parallel([slow], timeout=0.005, on_result=observer, settled=True)
+rows = harness.parallel([slow], timeout=0.005, on_result=observer, settled=True)
 assert rows[0]["status"] == "timed_out", rows
 assert marks == ["work", "observer"]
 time.sleep(0.02)
@@ -138,33 +146,33 @@ assert marks == ["work", "observer"]
 def cooperative():
     try:
         while True:
-            task_signal().check()
+            harness.task_signal().check()
             time.sleep(0.001)
     finally:
         marks.append("cleanup")
-assert parallel([cooperative], timeout=0.005, settled=True)[0]["status"] == "timed_out"
+assert harness.parallel([cooperative], timeout=0.005, settled=True)[0]["status"] == "timed_out"
 assert marks[-1] == "cleanup"
 def late_failure():
     time.sleep(0.01)
     raise ValueError("failed after deadline")
-assert parallel([late_failure], timeout=0.002, settled=True)[0]["status"] == "timed_out"
+assert harness.parallel([late_failure], timeout=0.002, settled=True)[0]["status"] == "timed_out"
 cancel = threading.Event()
 cancel.set()
-rows = parallel([lambda: marks.append("forbidden")] * 3, cancel=cancel, settled=True)
+rows = harness.parallel([lambda: marks.append("forbidden")] * 3, cancel=cancel, settled=True)
 assert all(row["status"] == "cancelled" for row in rows)
 assert "forbidden" not in marks
 def cancelled():
     cancel.set()
-    task_signal().check()
+    harness.task_signal().check()
 cancel.clear()
-assert parallel([cancelled], cancel=cancel, settled=True)[0]["status"] == "cancelled"
+assert harness.parallel([cancelled], cancel=cancel, settled=True)[0]["status"] == "cancelled"
 def bad_observer(row):
     marks.append(row["value"])
     raise ValueError("observer failed")
 try:
-    parallel([lambda: 4, lambda: 5], on_result=bad_observer)
+    harness.parallel([lambda: 4, lambda: 5], on_result=bad_observer)
     raise AssertionError("expected observer failure")
-except BatchError as error:
+except harness.BatchError as error:
     assert [row["value"] for row in error.results] == [4, 5]
     assert len(error.callback_errors) == 2
     assert all(row["error"]["stack"] for row in error.callback_errors)
@@ -215,7 +223,7 @@ def second(value):
     seen.append(value)
     gate.set()
     return value + 10
-assert pipeline([0, 1], first, second, streaming=True, concurrency=2) == [10, 11]
+assert harness.pipeline([0, 1], first, second, streaming=True, concurrency=2) == [10, 11]
 assert seen == [1, 0], seen
 observed = []
 def reject_zero(value):
@@ -224,7 +232,7 @@ def reject_zero(value):
     return value
 def notify(row):
     observed.append((row["stage"], row["index"]))
-rows = pipeline([0, 1, 2], reject_zero, lambda x: x + 10, settled=True, on_result=notify)
+rows = harness.pipeline([0, 1, 2], reject_zero, lambda x: x + 10, settled=True, on_result=notify)
 assert rows[0]["stage"] == 0 and rows[0]["status"] == "rejected"
 assert [row["index"] for row in rows] == [0, 1, 2]
 assert sorted(observed) == [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2)], observed
@@ -232,9 +240,9 @@ assert [rows[i]["value"] for i in (1, 2)] == [11, 12]
 def broken_notify(row):
     raise ValueError("observer")
 try:
-    pipeline([0, 1], reject_zero, lambda x: x + 10, on_result=broken_notify)
+    harness.pipeline([0, 1], reject_zero, lambda x: x + 10, on_result=broken_notify)
     raise AssertionError("expected observer failure")
-except BatchError as error:
+except harness.BatchError as error:
     assert error.results[1]["value"] == 11
     assert sorted((r["stage"], r["index"]) for r in error.callback_errors) == [(0, 0), (0, 1), (1, 1)]
 print("CONTRACT_OK")`,
@@ -283,17 +291,17 @@ def two():
     if calls[1] == 1:
         raise ValueError("transient")
     return 22
-opts = dict(checkpoint="parallel-cache", key="workflow-v1", keys=["one", "two"], settled=True)
-rows = parallel([one, two], **opts)
+opts = dict(checkpoint="harness.parallel-cache", key="workflow-v1", keys=["one", "two"], settled=True)
+rows = harness.parallel([one, two], **opts)
 assert [r["status"] for r in rows] == ["fulfilled", "rejected"]
 assert calls == [1, 1], calls
-rows = parallel([one, two], resume=True, **opts)
+rows = harness.parallel([one, two], resume=True, **opts)
 assert calls == [1, 2] and rows[0]["resumed"] and rows[1]["value"] == 22, (calls, rows)
-rows = parallel([one, two], **opts)
+rows = harness.parallel([one, two], **opts)
 assert calls == [2, 3], "resume must be explicit"
-rows = parallel([two, one], checkpoint="parallel-cache", key="workflow-v1", keys=["two", "one"], resume=True, settled=True)
+rows = harness.parallel([two, one], checkpoint="harness.parallel-cache", key="workflow-v1", keys=["two", "one"], resume=True, settled=True)
 assert calls == [2, 3] and rows[0]["value"] == 22 and rows[1]["value"] == {"nested": [1, None, True]}
-parallel([one, two], **{**opts, "key": "workflow-v2", "resume": True})
+harness.parallel([one, two], **{**opts, "key": "workflow-v2", "resume": True})
 assert calls == [3, 4], "workflow identity must invalidate cache"
 counts = [0, 0]
 def first(value):
@@ -304,11 +312,11 @@ def second(value):
     if value == 10 and counts[1] <= 2:
         raise ValueError("stage failure")
     return value + 1
-opts = dict(checkpoint="pipeline-cache", key="pipeline-v1", keys=["a", "b"], settled=True, concurrency=1)
-rows = pipeline([1, 2], first, second, **opts)
+opts = dict(checkpoint="harness.pipeline-cache", key="harness.pipeline-v1", keys=["a", "b"], settled=True, concurrency=1)
+rows = harness.pipeline([1, 2], first, second, **opts)
 assert rows[0]["stage"] == 1 and rows[0]["status"] == "rejected"
 assert counts == [2, 2]
-rows = pipeline([2, 1], first, second, streaming=True, resume=True, **{**opts, "keys": ["b", "a"]})
+rows = harness.pipeline([2, 1], first, second, streaming=True, resume=True, **{**opts, "keys": ["b", "a"]})
 assert counts == [2, 3], counts
 assert [r["value"] for r in rows] == [21, 11], rows
 assert rows[0]["resumed"] and rows[0]["stage"] == 1 and rows[1]["stage"] == 1
@@ -316,8 +324,8 @@ seen = []
 def canonical(item):
     seen.append(item)
     return len(seen)
-assert pipeline([{"b": 2, "a": 1}], canonical, checkpoint="canonical", key="v1") == [1]
-assert pipeline([{"a": 1, "b": 2}], canonical, checkpoint="canonical", key="v1", resume=True) == [1]
+assert harness.pipeline([{"b": 2, "a": 1}], canonical, checkpoint="canonical", key="v1") == [1]
+assert harness.pipeline([{"a": 1, "b": 2}], canonical, checkpoint="canonical", key="v1", resume=True) == [1]
 assert len(seen) == 1
 print("CONTRACT_OK")`,
 	bun: `
@@ -359,26 +367,26 @@ cycle.append(cycle)
 invalid.append(cycle)
 for index, value in enumerate(invalid):
     opts = dict(checkpoint="invalid", key="v1", keys=[str(index)], settled=True)
-    rows = parallel([lambda: value], **opts)
+    rows = harness.parallel([lambda: value], **opts)
     assert rows[0]["status"] == "rejected", rows
-    rows = parallel([lambda: "replacement"], resume=True, **opts)
+    rows = harness.parallel([lambda: "replacement"], resume=True, **opts)
     assert rows[0]["value"] == "replacement" and not rows[0].get("resumed"), rows
 for opts in [dict(concurrency=0), dict(concurrency=True), dict(timeout=0), dict(timeout=True), dict(timeout=float("nan")), dict(checkpoint="cache"), dict(checkpoint="cache", key=4), dict(resume=True), dict(keys=[1]), dict(keys=[]), dict(keys="x")]:
     for streaming in [False, True]:
         try:
-            pipeline([1], lambda x: x, streaming=streaming, **opts)
+            harness.pipeline([1], lambda x: x, streaming=streaming, **opts)
             raise AssertionError(opts)
         except (ValueError, TypeError):
             pass
 for streaming in [False, True]:
     try:
-        pipeline([1, 2], lambda x: x, keys=["same", "same"], streaming=streaming)
+        harness.pipeline([1, 2], lambda x: x, keys=["same", "same"], streaming=streaming)
         raise AssertionError("duplicate keys")
     except ValueError:
         pass
 try:
-    parallel([lambda: 1], checkpoint="cache", key="v1")
-    raise AssertionError("parallel keys required")
+    harness.parallel([lambda: 1], checkpoint="cache", key="v1")
+    raise AssertionError("harness.parallel keys required")
 except ValueError:
     pass
 print("CONTRACT_OK")`,
@@ -424,11 +432,11 @@ for (const lane of ["python", "bun"] as const) {
 
 const restart = {
 	python: [
-		`assert parallel([lambda: None, lambda: {"result": [1, 2]}], checkpoint="restart", key="v1", keys=["null", "object"]) == [None, {"result": [1, 2]}]
+		`assert harness.parallel([lambda: None, lambda: {"result": [1, 2]}], checkpoint="restart", key="v1", keys=["null", "object"]) == [None, {"result": [1, 2]}]
 print("CONTRACT_OK")`,
 		`def forbidden():
     raise AssertionError("checkpointed work executed after restart")
-rows = parallel([forbidden, forbidden], checkpoint="restart", key="v1", keys=["object", "null"], resume=True, settled=True)
+rows = harness.parallel([forbidden, forbidden], checkpoint="restart", key="v1", keys=["object", "null"], resume=True, settled=True)
 assert [r["value"] for r in rows] == [{"result": [1, 2]}, None]
 assert all(r["resumed"] for r in rows)
 print("CONTRACT_OK")`,

@@ -40,7 +40,27 @@ async function javascript(session: AgentSession, code: string): Promise<string> 
 	return output;
 }
 
-test("SDK temporal navigation, independent fork and restart use the exact declared Python and JavaScript boundary", async () => {
+async function python(session: AgentSession, code: string) {
+	const result = await session.executePython(
+		[
+			"import proto_harness as harness",
+			`result = harness.kernel("temporal").run(${JSON.stringify(code)})`,
+			'print(result["output"], end="")',
+			'assert result["exitCode"] == 0, result["output"]',
+		].join("\n"),
+	);
+	expect(result.exitCode, result.output).toBe(0);
+	return result;
+}
+
+const observePython = [
+	"import proto_harness as harness",
+	'print("WARM", value, counter.value, closure(), first is second, cycle[0] is cycle)',
+	'graph = harness.store["graph"]',
+	'print("STORE", graph["counter"].value, graph["closure"](), graph["first"] is graph["second"], graph["cycle"][0] is graph["cycle"])',
+].join("\n");
+
+test("SDK temporal navigation, independent fork and restart restore exact rich Python and declared JavaScript boundaries", async () => {
 	using directory = TempDir.createSync("@sdk-state-continuity-");
 	const auth = await AuthStorage.create(":memory:");
 	const model = createMockModel({ responses: [{ content: ["Ready"] }] });
@@ -62,7 +82,7 @@ test("SDK temporal navigation, independent fork and restart use the exact declar
 				streamFn: model.stream,
 				disableExtensionDiscovery: true,
 				enableMCP: false,
-				toolNames: [],
+				toolNames: ["bash", "read"],
 				skills: [],
 				rules: [],
 				contextFiles: [],
@@ -76,12 +96,49 @@ test("SDK temporal navigation, independent fork and restart use the exact declar
 	let resumed: AgentSession | undefined;
 	try {
 		await session.prompt("Prepare computation");
-		expect((await session.executePython('value = 41\ndeclare_state(["value"])')).exitCode).toBe(0);
+		expect(
+			(
+				await python(
+					session,
+					[
+						"import proto_harness as harness",
+						"class Counter:",
+						"    def __init__(self, value): self.value = value",
+						"def capture(items):",
+						"    return lambda: items[0]",
+						"value = 41",
+						"counter = Counter(value)",
+						"first = [value]",
+						"second = first",
+						"cycle = []",
+						"cycle.append(cycle)",
+						"closure = capture(first)",
+						'harness.store["graph"] = {"counter": counter, "closure": closure, "first": first, "second": second, "cycle": cycle}',
+					].join("\n"),
+				)
+			).exitCode,
+		).toBe(0);
+		expect((await session.executePython("print(value)")).exitCode).not.toBe(0);
 		await javascript(session, 'var value = 41; declareState(["value"]);');
 		session.sessionManager.appendCustomEntry("state-test-boundary", { turn: 1 });
 		await captureSessionState(session.sessionManager, session.getEvalKernelOwnerId());
 		const early = session.sessionManager.getLeafId()!;
-		expect((await session.executePython("value = 73")).exitCode).toBe(0);
+		expect(
+			(
+				await python(
+					session,
+					[
+						"value = 73",
+						"counter.value = value",
+						"first[0] = value",
+						'graph = harness.store["graph"]',
+						'graph["counter"].value = value',
+						'graph["first"][0] = value',
+						"harness.store.commit()",
+					].join("\n"),
+				)
+			).exitCode,
+		).toBe(0);
 		await javascript(session, "value = 73;");
 		session.sessionManager.appendCustomEntry("state-test-boundary", { turn: 2 });
 		await captureSessionState(session.sessionManager, session.getEvalKernelOwnerId());
@@ -91,27 +148,26 @@ test("SDK temporal navigation, independent fork and restart use the exact declar
 		fork = (await session.fork()) ?? undefined;
 		if (!fork) throw new Error("Fork was cancelled");
 		expect(fork.getEvalKernelOwnerId()).not.toBe(session.getEvalKernelOwnerId());
-		expect((await fork.executePython("print(value)")).output).toContain("73");
+		expect((await python(fork, observePython)).output).toContain("WARM 73 73 73 True True\nSTORE 73 73 True True");
 		expect(await javascript(fork, "console.log(value);")).toContain("73");
 		expect(session.sessionManager.getLeafId()).toBe(sourceHead);
 		expect(await Bun.file(sourceFile).text()).toBe(sourceBytes);
 		const navigated = await session.navigateTree(early, { summarize: false, requireIdle: true });
 		expect(navigated.cancelled).toBe(false);
-		expect((await session.executePython("print(value)")).output).toContain("41");
+		expect((await python(session, observePython)).output).toContain("WARM 41 41 41 True True\nSTORE 41 41 True True");
 		expect(await javascript(session, "console.log(value);")).toContain("41");
-		expect((await fork.executePython("print(value)")).output).toContain("73");
+		expect((await python(fork, observePython)).output).toContain("WARM 73 73 73 True True\nSTORE 73 73 True True");
 		const oldOwner = session.getEvalKernelOwnerId();
 		await session.dispose();
 		const reopened = await SessionManager.open(sourceFile);
 		expect(reopened.getCustomEntries("session_exit").length).toBeGreaterThan(0);
 		resumed = await open(reopened);
 		expect(resumed.getEvalKernelOwnerId()).not.toBe(oldOwner);
-		expect((await resumed.executePython("print(value)")).output).toContain("41");
+		expect((await python(resumed, observePython)).output).toContain("WARM 41 41 41 True True\nSTORE 41 41 True True");
 		expect(await javascript(resumed, "console.log(value);")).toContain("41");
-		await resumed.executePython('first = []\nsecond = []\ndeclare_state(["first", "second"])');
-		await expect(resumed.executePython("second = first")).rejects.toThrow("aliases");
-		await expect(resumed.dispose()).rejects.toThrow("aliases");
-		expect((await resumed.executePython("print(first is second)\nsecond = []")).output).toContain("True");
+		expect((await resumed.executePython("print(value)")).exitCode).not.toBe(0);
+		expect((await python(resumed, "first[0] = 99; print(closure(), second[0])")).output).toContain("99 99");
+		expect((await python(fork, observePython)).output).toContain("WARM 73 73 73 True True\nSTORE 73 73 True True");
 	} finally {
 		await resumed?.dispose();
 		await fork?.dispose();

@@ -8,7 +8,7 @@ import { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
 import { checkPythonKernelAvailability } from "./py/kernel";
 
-const pythonAvailable = (await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true })).ok;
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content
@@ -17,7 +17,7 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 		.join("\n");
 }
 
-test.if(pythonAvailable)(
+test.if(python.ok)(
 	"kernel tool-bridge calls resolve relative paths against the calling cell's cwd",
 	async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "bridge-cwd-"));
@@ -53,7 +53,7 @@ test.if(pythonAvailable)(
 				if (!bash) throw new Error("bash tool missing");
 
 				const pyRead = await bash.execute("py-read", {
-					command: `python -c 'print(tool.read({"path": "probe.txt"})["text"])'`,
+					command: `'${python.pythonPath}' -c 'import proto_harness as harness; print(harness.tool.read({"path": "probe.txt"})["text"])'`,
 					cwd: cellDir,
 				});
 				expect(textOf(pyRead)).toContain("from-cell-dir");
@@ -67,14 +67,14 @@ test.if(pythonAvailable)(
 				expect(textOf(jsRead)).not.toContain("from-session-dir");
 
 				const pyArtifact = await bash.execute("py-artifact", {
-					command: `python -c 'ref = publish_artifact(path="probe.txt", kind="text"); print(read_artifact(ref)["data"])'`,
+					command: `'${python.pythonPath}' -c 'import proto_harness as harness; ref = harness.publish_artifact(path="probe.txt", kind="text"); print(harness.read_artifact(ref)["data"])'`,
 					cwd: cellDir,
 				});
 				expect(textOf(pyArtifact)).toContain("from-cell-dir");
 
 				// Without a per-call cwd the cell runs in the session directory, and so does the bridge.
 				const sessionRead = await bash.execute("py-session-read", {
-					command: `python -c 'print(tool.read({"path": "probe.txt"})["text"])'`,
+					command: `'${python.pythonPath}' -c 'import proto_harness as harness; print(harness.tool.read({"path": "probe.txt"})["text"])'`,
 				});
 				expect(textOf(sessionRead)).toContain("from-session-dir");
 			} finally {

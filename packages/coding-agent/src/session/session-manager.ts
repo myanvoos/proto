@@ -1059,8 +1059,7 @@ export class SessionManager {
 
 	#clearRawEntryRetention(): void {
 		this.#rawEntryFiles.clear();
-		this.#rawEntryCache.clear();
-		this.#rawEntryCacheBytes = 0;
+		this.trimHydratedEntryCache();
 	}
 
 	#disposeRawEntryDirectory(): void {
@@ -1237,8 +1236,7 @@ export class SessionManager {
 	#materializeEntries(entries: readonly SessionEntry[]): SessionEntry[] {
 		if (this.#rawEntryFiles.size === 0) return [...entries];
 		const materialized = entries.map(entry => this.#materializeEntry(entry, false));
-		this.#rawEntryCache.clear();
-		this.#rawEntryCacheBytes = 0;
+		this.trimHydratedEntryCache();
 
 		const candidates: SessionEntry[] = [];
 		let candidateBytes = 0;
@@ -2468,6 +2466,16 @@ export class SessionManager {
 		if (this.#released) return;
 		this.#released = true;
 		this.#diskEpoch++;
+	}
+
+	/**
+	 * Drop disposable hydrated payloads, leaving caller-owned snapshots untouched.
+	 * Authoritative entry metadata, compressed spill files, blobs, and journal writability survive;
+	 * later history reads or descendant appends may populate the cache again.
+	 */
+	trimHydratedEntryCache(): void {
+		this.#rawEntryCache.clear();
+		this.#rawEntryCacheBytes = 0;
 	}
 
 	releaseRetainedEntries(): void {

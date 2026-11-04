@@ -4,8 +4,8 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { checkPythonKernelAvailability, PythonKernel } from "./kernel";
 
-// A kernel cell stands in for a fresh `python` process: imports must see
-// project source as it is on disk now, resolved from the cell's own cwd/env.
+// Explicit warm kernels retain CPython sys.modules; only an explicit reload
+// or removal from the cache changes an already imported module.
 
 const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 const kernelTest = availability.ok ? test : test.skip;
@@ -50,9 +50,9 @@ async function withKernel(prefix: string, body: (kernel: PythonKernel, dir: stri
 	}
 }
 
-describe("python kernel import freshness", () => {
+describe("explicit Python kernel native import caching", () => {
 	kernelTest(
-		"a module edited between cells imports fresh; earlier bindings are named, libraries stay",
+		"an edited module stays cached with its earlier bindings until explicitly reloaded",
 		async () => {
 			await withKernel("@py-import-edit-", async (kernel, dir) => {
 				await Bun.write(path.join(dir, "probe_mod.py"), 'VALUE = "v1"\nclass Thing: pass\n');
@@ -62,19 +62,17 @@ describe("python kernel import freshness", () => {
 				await Bun.write(path.join(dir, "probe_mod.py"), 'VALUE = "v2-edited"\nclass Thing: pass\n');
 				const second = await run(kernel, "import json\nimport probe_mod\nprint(probe_mod.VALUE, json is lib)");
 
-				expect(second.stdout).toContain("v2-edited True");
-				// Only `thing` is stale: the cell rebinds probe_mod itself, and json is a library.
+				expect(second.stdout).toContain("v1 True");
 				expect(second.stderr).toBe("");
-				expect(second.notes.join("")).toContain(
-					"probe_mod changed on disk; imports load the new source, but names from earlier cells still hold the old code: thing\n",
-				);
+				expect(second.notes).toEqual([]);
+				expect((await run(kernel, "assert isinstance(thing, probe_mod.Thing)")).status).toBe("ok");
 			});
 		},
 		60_000,
 	);
 
 	kernelTest(
-		"a cell that rewrites an already-imported module imports its own rewrite",
+		"rewriting a cached module from Python or a subprocess does not implicitly reload it",
 		async () => {
 			await withKernel("@py-import-rewrite-", async (kernel, dir) => {
 				await Bun.write(path.join(dir, "probe_mod.py"), 'VALUE = "v1"\n');
@@ -89,7 +87,7 @@ describe("python kernel import freshness", () => {
 						"print(probe_mod.VALUE)",
 					].join("\n"),
 				);
-				expect(kernelWrite.stdout).toContain("kernel-write");
+				expect(kernelWrite.stdout).toContain("v1");
 
 				const childWrite = await run(
 					kernel,
@@ -100,14 +98,14 @@ describe("python kernel import freshness", () => {
 						"print('child', probe_mod.VALUE)",
 					].join("\n"),
 				);
-				expect(childWrite.stdout).toContain("child 3");
+				expect(childWrite.stdout).toContain("child v1");
 			});
 		},
 		60_000,
 	);
 
 	kernelTest(
-		"a cwd change re-resolves top-level modules and drops the previous cwd from sys.path",
+		"a cwd change updates search paths without replacing cached modules",
 		async () => {
 			await withKernel("@py-import-cwd-", async (kernel, dir) => {
 				const a = path.join(dir, "a");
@@ -119,11 +117,12 @@ describe("python kernel import freshness", () => {
 				const fromB = await run(kernel, `import sys, util\nprint(util.WHERE, ${JSON.stringify(a)} in sys.path)`, {
 					cwd: b,
 				});
-				expect(fromB.stdout).toContain("b False");
+				expect(fromB.stdout).toContain("a False");
 
 				await fs.rm(path.join(a, "util.py"));
 				await fs.rm(path.join(b, "util.py"));
-				const gone = await run(kernel, "import util", { cwd: b });
+				expect((await run(kernel, "import util; print(util.WHERE)", { cwd: b })).stdout).toContain("a");
+				const gone = await run(kernel, "del sys.modules['util']; import util", { cwd: b });
 				expect(gone.status).toBe("error");
 				expect(gone.traceback.join("\n")).toContain("ModuleNotFoundError");
 			});
@@ -132,7 +131,7 @@ describe("python kernel import freshness", () => {
 	);
 
 	kernelTest(
-		"PYTHONPATH from the cell's environment applies to that cell only",
+		"PYTHONPATH updates search paths without evicting an imported module",
 		async () => {
 			await withKernel("@py-import-pythonpath-", async (kernel, dir) => {
 				const lib = path.join(dir, "lib");
@@ -143,7 +142,12 @@ describe("python kernel import freshness", () => {
 				});
 				expect(withPath.stdout).toContain("extra");
 
-				const without = await run(kernel, "import extra_mod", { shellEnv: {} });
+				expect((await run(kernel, "import extra_mod; print(extra_mod.NAME)", { shellEnv: {} })).stdout).toContain(
+					"extra",
+				);
+				const without = await run(kernel, "import sys; del sys.modules['extra_mod']; import extra_mod", {
+					shellEnv: {},
+				});
 				expect(without.status).toBe("error");
 				expect(without.traceback.join("\n")).toContain("No module named 'extra_mod'");
 			});
@@ -152,7 +156,7 @@ describe("python kernel import freshness", () => {
 	);
 
 	kernelTest(
-		"importlib.reload of an evicted module updates that module object in place",
+		"explicit importlib.reload updates the cached module object in place",
 		async () => {
 			await withKernel("@py-import-reload-", async (kernel, dir) => {
 				await Bun.write(path.join(dir, "probe_mod.py"), 'VALUE = "v1"\n');

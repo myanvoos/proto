@@ -190,7 +190,7 @@ for (const language of KERNEL_LANGUAGES) {
 			const first = await handleKernelControl(session, { op: "start", language, interpreter });
 			const code =
 				language === "python"
-					? "import json; print(json.dumps(kernel_state()))"
+					? 'import proto_harness as harness; import json; state = harness.kernel_state(); print(json.dumps({key: state[key] for key in ("generation", "interpreter")}))'
 					: "console.log(JSON.stringify(kernelState()))";
 			const result = await execute(session, language, "main", code);
 			expect(result.exitCode).toBe(0);
@@ -248,9 +248,17 @@ for (const language of KERNEL_LANGUAGES) {
 				});
 				expect(keepalive.kernel?.keepAliveUntil).toBeGreaterThanOrEqual(before + MAX_KERNEL_KEEPALIVE_MS);
 				expect(keepalive.kernel?.keepAliveUntil).toBeLessThanOrEqual(Date.now() + MAX_KERNEL_KEEPALIVE_MS);
-				await expect(handleKernelControl(session, { op: "start", language, lane: "two" })).rejects.toThrow(
-					"Interpreter limit",
-				);
+				if (language === "python") {
+					// Python residency is memory-bounded, independently of JS execution admission.
+					expect((await handleKernelControl(session, { op: "start", language, lane: "two" })).kernel?.state).toBe(
+						"idle",
+					);
+					await handleKernelControl(session, { op: "close", language, lane: "two" });
+				} else {
+					await expect(handleKernelControl(session, { op: "start", language, lane: "two" })).rejects.toThrow(
+						"Interpreter limit",
+					);
+				}
 				await handleKernelControl(session, { op: "close", language, lane: "one" });
 				expect((await handleKernelControl(session, { op: "start", language, lane: "two" })).kernel?.state).toBe(
 					"idle",

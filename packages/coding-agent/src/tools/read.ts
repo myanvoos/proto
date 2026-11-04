@@ -1860,7 +1860,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					.sourcePath(absolutePath)
 					.done();
 			}
-			await fsObservationLedgerFor(this.session).recordRead(absolutePath);
+			await fsObservationLedgerFor(this.session).observeRead(absolutePath);
 
 			const buffered = wholeFileBytes ? deriveBufferedFileText(wholeFileBytes) : undefined;
 

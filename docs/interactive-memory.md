@@ -19,6 +19,8 @@ These are admission and retention limits, **not a process-wide RSS ceiling**. Me
 
 Session managers retain small structural entries and keep raw entries in temporary backing storage with an LRU capped at **64 entries and 8 MiB**. Metadata preserves graph identity, usage and tool-call identity; human-readable previews are at most 256 UTF-16 code units plus an ellipsis. Active model context hydrates only the current reset/compaction window. Normal UI transcript access selects a window using metadata before loading its message bodies.
 
+Parking a runtime flushes its journal and discards the disposable hydrated-entry cache, even when the registry keeps that journal available to descendants. Structural metadata, compressed temporary entries, blobs and caller-owned snapshots survive. Later history reads or descendant writes can hydrate the cache again; parking does not seal or close the shared journal.
+
 Compaction archives append independently compressed batches instead of decompressing and rewriting every prior archived message on every compaction. Legacy archives remain readable. Reopen, branch, rewind and export preserve the saved history, and malformed archive data fails closed for destructive rewrites.
 
 The ordinary persistence size policy is unchanged: strings exceeding **500,000 characters** are truncated in their saved representation. Their complete current-process version may exist only in the temporary entry store; it is not guaranteed after process restart or temporary-directory deletion. Signed/encrypted provider replay content, images, and declared-state manifests retain their separate lossless durable blob handling; declared state is not truncated into a history preview. A missing or corrupt temporary entry can fall back to its display preview, but cannot authorize overwriting the durable transcript from that preview: reopen the session before rewriting it. See [session storage](./session.md).
@@ -33,9 +35,13 @@ Explicit APIs such as `getEntries()`, `getBranch()`, `getTree()` and unwindowed 
 | Main UI history page | 512 messages and 4 MiB estimated payload, with semantic groups admitted before hydration |
 | Fleet raw-file viewer window | 4 MiB serialized span, 512 semantic groups, 1,024 JSONL records, and 2,048 estimated render units |
 | Fleet transient stream | 4 MiB estimated retained source and 512 content blocks; checked before partial argument decoding |
-| Markdown rendering cache | 4,096 entries / 24 MiB total / 4 MiB per entry, counting source keys and rendered rows; oversized sources render without cache admission. Incremental fragment caches have the same accounting limits |
+| Global Markdown rendering cache | 4,096 entries / 10 MiB total / 4 MiB per entry; oversized sources render without cache admission. Per-instance incremental fragment caches retain their separate 24 MiB / 4 MiB-per-fragment limits |
+| Global output-block rendering cache | 4,096 entries / 10 MiB total / 4 MiB per entry |
+| Global wrapping / truncation caches | 6 MiB / 2 MiB respectively, each also capped at 512 entries |
 | Node/RPC history page | At most 512 messages and a 1,536 KiB page budget; typed node pages preserve semantic groups and omit oversized indivisible groups visibly |
 | Session picker and tree view | Search/ranking metadata and selected visible rows, not one component or full rendered string per historical row |
+
+The four global rendering caches have a combined **28 MiB accounted allowance**, not a process-memory ceiling. Accounting conservatively includes UTF-16 text, keys, string overhead and row/container storage rather than treating JavaScript string length as bytes. Entries unused for 60 seconds are removed by an unreferenced sweep on a 30-second cadence; hits refresh their age. Sweeps stop when a cache becomes empty, do not keep the CLI alive, and do not alter rendered output or discard source history. Active component-local state remains separately owned.
 
 Committed blocks retire only after acknowledged emission into terminal history. Disposal clears builder pointers, layout/replay caches, image ownership and obsolete streaming/optimistic components. Message-to-component reuse is weak and restricted to components still live in the previous view.
 
@@ -59,32 +65,74 @@ Async jobs bound pending/running work and retained completed results together: t
 
 ## Interpreters, subprocesses and provider state
 
-JavaScript and Python share one admission pool of **256 process-wide interpreters and 16 per creating owner**, reserving capacity before startup and retaining it until shutdown is confirmed. Queue and payload bounds are also applied to JavaScript and Python requests. Idle persistent kernels are not silently evicted just to make room; exhaustion names the capacity failure so the owner can close/restart state intentionally.
+The Python execution overhaul described here is **unreleased**; it is not part of the original v20.0.2/P5 delivery. Ordinary Python commands now start real fresh processes, including `python -c`, stdin/heredocs, scripts, aliases, shebangs, subprocesses, interactive `$` / `$$` submissions and the fresh `executePython` API. There is no implicit warm dispatch, helper injection or declaration requirement. Native argv, binary stdin/stdout/stderr, exit status, signals, imports and process-exit behavior remain Python's own.
 
-Automatic nested shell execution uses **8 reusable leased lanes per tool session**, not a fresh persistent lane per call. Leases remain occupied through actual cleanup, including cancelled asynchronous work. The existing 15-minute idle reap remains, but busy, unknown-busy, dirty or unsafely captured generations are not automatically evicted. A clean declared snapshot can restore lazily after residency ends; loss after an uncommitted computation boundary refuses an older or fresh namespace instead of pretending continuity.
+Explicit host integration uses `import proto_harness as harness`. The managed agent-shell environment makes this package available without changing the user's installed Python; `-I`, `-E` and `-S` remain native opt-outs from that environment integration. Helpers are authenticated to their owning run/session and retain host tool authority, cancellation and admission policy. Use `harness.fs` for permission-checked, atomic, stale-guarded file operations; ordinary Python file APIs retain native semantics.
 
-Owner disposal terminates JavaScript/Python subprocess resources and known descendants, cancels bridge registrations, releases require/runtime caches and callbacks, closes owned provider connections, and stops extension-managed timers. The process-group/descendant behavior has Linux regression coverage; other operating systems and unmanaged application resources need their own platform verification.
+### Fresh processes, durable store and optional warm kernels
 
-### Declared state and safe eviction
+These are separate choices:
 
-Python `declare_state(["name", ...])` and JavaScript `declareState(["name", ...])` explicitly select top-level data bindings for durable continuity; `[]` clears the declaration. Completed model turns and direct Python submissions capture immutable, versioned manifests at their exact conversation-entry boundaries. Capture freezes cell admission under the node/kernel execution gate; the manifest is committed durably before a boundary-dependent fork, navigation or runtime release succeeds. Retained historical manifests remain reachable with their branches: there is no twenty-turn limit, nearest-earlier snapshot, or silent fresh-kernel fallback. See [declared state at temporal boundaries](./session-operations.md#declared-state-at-temporal-boundaries) and the [cell API](./bash-tool-runtime.md#declared-session-state).
+- **Fresh Python:** normal commands retain no hidden globals across processes.
+- **Durable values:** `harness.store` is a session-owned mapping serialized as one rich Python graph. Assignment/deletion commits the whole graph with a revision compare-and-swap (CAS); a stale writer fails instead of overwriting another process. `refresh()` reloads the current graph; `commit()` persists in-place mutations. `transaction()` batches updates into one commit, not a cross-process lock or filesystem transaction.
+- **Warm namespace:** `harness.kernel("analysis", interpreter=None, cwd=None, target=None)` returns an explicit named handle with `run(code)`, `exec(file)`, `status()`, `stop()` and `restart()`. Alternatively, use `python -m proto_harness.kernel analysis -c '...'`, `--file script.py`, or code on stdin. Each warm namespace still imports `proto_harness` explicitly. Nested named kernels are supported; a dependency back to a waiting ancestor is refused, not deadlocked.
 
-The existing selected-data codec supports bounded plain JSON-like values and bytes, not arbitrary interpreter heaps: at most 4,096 bindings, 100,000 value nodes, depth 64 and a 16 MiB encoded snapshot per kernel. Selected shared mutable aliases, cycles, custom objects, accessors/proxies and resources are refused. Explicit sharing of a live namespace still works; distinct declared physical namespaces that collide on one language/lane/environment are an ambiguous temporal alias and refuse capture rather than selecting one. Use separate named lanes for independently declared namespaces. Live retained Python tasks/user threads and JavaScript `retainTask` resources also prevent a declared-state boundary. Undeclared objects, imports, closures and external side effects are not reconstructed; artifact-reference metadata alone does not transfer artifact authority.
+Python warm imports are ordinary persistent imports, not pretend-fresh module reloads. Explicit `stop()`/`restart()` and kernel reset/close discard that kernel's namespace; they are different from automatic parking or restoration after host restart.
 
-Restoration is lazy, before the first destination cell, into the recorded language/runtime, lane, working directory, target and interpreter environment. Automatic durable restore requires the same interpreter implementation, version and executable; incompatible, missing or corrupt manifests fail explicitly. Temporal preflight validates with the actual selected interpreter before source teardown. Copied ancestor history does not become a worker's own state manifest. Independent forks receive a destination-owned manifest; model context-only `checkpoint`/`rewind(report)` preserves current computation instead of applying temporal restoration.
+### Python residency and process ownership
 
-Runtime release/normal close validates and commits declared state before beginning destructive teardown; a refused capture keeps the runtime attached and usable. Runtime parking emits neither logical session shutdown nor session exit. Normal close commits its exit record and exact state manifest together. Explicit kernel reset/close and Python `%reset` still mean discarding that kernel's bindings/declarations; they are not automatic restoration requests. This is a safety policy, not a new fixed kernel-count cap, fork server, or plain-Python product migration.
+Python does **not** share the old JavaScript interpreter admission cap. Its settings are:
 
-### Measured snapshot and restore costs
+| Setting | Default and meaning |
+|---|---|
+| `python.kernelMemoryBudgetBytes` | `min(25% of physical RAM, 4 GiB)` private-memory residency budget |
+| `python.kernelMaxResidentCount` | 64 resident named kernels as a process-count safety limit, not runnable concurrency |
 
-One macOS arm64 run (Apple M4 Max, CPython 3.13.16 and Bun 1.4.2) exercised paired Python+Bun namespaces through three captures, compatibility preflights and cold restores. Each runtime held one ASCII string of the stated length; measurements include actual subprocess startup and durable commits, not mocked kernels. Ranges are the observed samples, not latency guarantees.
+Residency accounts for kernel children **and forkserver parents**, measuring macOS `phys_footprint` or Linux private mappings rather than summing shared RSS. This is neither a whole-application memory ceiling nor a promise to constrain user allocations during an executing cell. Remote or unavailable measurements are reported as unknown/unmeasured, not invented as zero.
+
+Under measured pressure, only least-recently-used **idle, durably restorable** kernels may park. Busy, dirty, frozen, unknown-busy or unmeasured state is not evicted. If safe parking cannot admit a new kernel, admission fails visibly; it does not silently substitute a fresh or older namespace. Status reports expose residency, private-memory metric/bytes and reasons separately from execution admission.
+
+Supported local POSIX CPython interpreters use a real per-interpreter, single-threaded forkserver launched with `-I -S`. The sterile parent imports no user libraries; child runtime threads start only after fork. The host uses buffered `node:net` transport. Unsupported local runtimes and remote targets report their supported spawn/remote launch mode rather than pretending to fork. Process resources and reservations remain owned until actual shutdown settles, including cancellation and forkserver failure.
+
+JavaScript retains its separate **256 process-wide / 16 per creating owner** interpreter admission pool, reserved before startup until confirmed shutdown. Automatic nested shell execution uses **8 reusable leased lanes per tool session**. The 15-minute idle reap remains, with safe-state checks rather than silent loss of a busy or dirty generation. Runtime release does not stop descendants merely because their parent is parked; explicit subtree/tree shutdown remains separate.
+
+### Exact state at temporal boundaries
+
+Python warm kernels automatically capture the **whole supported user namespace as one graph**; there is no `declare_state` opt-in. `harness.store` uses the same rich-graph serialization contract. Lazy, vendored cloudpickle **3.1.2** preserves aliases, cycles, closures, functions, classes and module metadata. It is trusted session-local serialization, not a format for untrusted uploads. Imported modules require a compatible recorded environment; serialization does not roll back installed packages or external files.
+
+The Python graph limit is **64 MiB of encoded payload** (base64 text), not 64 MiB of arbitrary live heap. State transport allows **96 MiB frames** for the graph envelope. Ordinary requests remain **8 MiB**, with a **16 MiB ordinary request queue**; the state exception does not raise ordinary code/helper admission limits. Unsupported live OS/runtime resources, including open files, sockets, generators, live tasks and user threads, refuse capture **before destructive teardown**. Bindings are not silently dropped or converted to approximate data.
+
+JavaScript `declareState(["name", ...])` remains the existing selected-data contract (`[]` clears it): plain JSON-like data/bytes, at most 4,096 bindings, 100,000 value nodes, depth 64 and **16 MiB encoded per kernel**. Shared mutable aliases, cycles, custom objects, accessors/proxies and live retained resources remain unsupported for JavaScript. This JavaScript limit is not the Python graph limit.
+
+Completed turns and explicit continuity boundaries capture immutable, versioned manifests under the owner/kernel execution gate and commit them durably before acknowledging boundary-dependent transitions. Historical manifests stay reachable with their branches: **no twenty-turn window, nearest-earlier restore or silent fresh fallback**. Missing, corrupt or incompatible exact state refuses the transition. Independently restorable namespaces must not ambiguously collide on one physical language/lane/environment identity.
+
+Restoration is lazy, before the destination's first cell, into the recorded interpreter, target, working directory and environment. Preflight validates with the actual selected interpreter before source teardown. Fork copies the exact manifest into a destination-owned independent root without changing the source; copied ancestor history alone does not become a worker's own state. Model context-only `checkpoint`/`rewind(report)` preserves current computation, rather than applying temporal restoration. See [state at temporal boundaries](./session-operations.md#declared-state-at-temporal-boundaries).
+
+Runtime release/normal close validates and commits state before destructive teardown; refusal keeps the source runtime attached and usable. Parking emits neither logical session shutdown nor session exit. Normal close commits its exit record and exact manifest together. Durable snapshots preserve computation across parking and host restart, not live external resources or filesystem side effects.
+
+### Unreleased Python measurements (macOS sample)
+
+One scoped macOS run compared four initialized warm fork children **plus their server** against four independent interpreters using the same embedded runner/runtime initialization. The residency owner's real-process selection passed **15 tests / 55 assertions**. These are machine-specific observations, not latency or memory guarantees and not Linux/remote measurements.
+
+| Measurement | Forkserver mode | Independent spawn |
+|---|---:|---:|
+| Private footprint, four initialized children including server | 83,511,024 bytes | 98,027,296 bytes |
+| Total initialized startup for four kernels with server already warm | 79.30 ms | 334.84 ms |
+
+A separate cold-parent sample observed 56.89 ms for server plus first child and 2.01 ms for the next fork. A child allocating 64 MiB increased its measured private footprint by more than 48 MiB while its sibling changed by less than 16 MiB. Neither summed RSS nor total host application memory was the measurement.
+
+The continuity owner's actual 40 MiB raw-byte graph encoded to **55,924,120 bytes**, crossed store HTTP with aliases intact and reopened durably from disk: one sample took about **770 ms**, with **55,925,550 bytes** of referenced blob plus session data. Warm namespace capture plus restore of that graph took about **4,750 ms** in that sample. A 49 MiB raw namespace exceeded the 64 MiB encoded limit and was refused while its live bindings remained intact. More than 23 later history boundaries, exact earlier restoration, independent forks, restart and uncaptured-boundary refusal were exercised. These proofs do not imply constant disk usage or arbitrary resource serialization.
+
+### Prior P5 snapshot measurements (historical)
+
+The following samples measured the **prior selected-data Python+Bun contract**, not the unreleased whole-graph serializer or forkserver. One macOS arm64 run (Apple M4 Max, CPython 3.13.16 and Bun 1.4.2) exercised three captures, compatibility preflights and cold restores. Each runtime held one ASCII string of the stated length; measurements include actual subprocess startup and durable commits. Ranges are observed samples, not guarantees.
 
 | Namespace per runtime | Initial paired startup | Capture/commit | Compatibility preflight | Cold paired restore | Referenced durable bytes after boundaries 1 → 2 → 3 |
 |---|---:|---:|---:|---:|---:|
 | 100 characters | 292 ms | 1.7–4.5 ms | 209–249 ms | 238–246 ms | 2,270 → 3,774 → 5,278 |
 | 600,000 characters | 266 ms | 9.4–10.4 ms | 221–243 ms | 242–247 ms | 1,202,170 → 2,403,574 → 3,604,978 |
 
-Disk accounting includes the session files and their referenced global snapshot blobs; counting only the transcript would omit the large payloads. Durable disk growth remains proportional to retained boundaries/payloads. Runtime regressions also exercise more than twenty later boundaries, 600,000-character Unicode payloads, actual Python/Node/Bun restoration, normal-exit restart, parked-parent result delivery, aliases/resources, corruption, and capture-versus-next-cell races. These macOS measurements do **not** measure private/native memory, prove an RSS ceiling, or establish Linux/remote-target performance. No memory-pressure eviction policy was added on the strength of these timings.
+Disk accounting includes session files and referenced snapshot blobs; retained boundaries/payloads consume durable disk. These historical timings did not measure private/native memory and establish neither an RSS ceiling nor Linux/remote performance.
 
 ## Rich displays, browser output and blobs
 
@@ -130,6 +178,12 @@ Image disposal cancels queued encodes and releases ownership. Kitty offscreen re
 Pipe/PTY daemon logging admits at most **1 MiB queued plus in-flight UTF-8 output**. Storage cannot stop draining worker pipes. If storage stalls, excess text is omitted with an ordered notice reporting the exact omitted-byte count; admission resumes after that notice. Log cursors count captured bytes and notices, not omitted bytes, so follow/rotation does not replay old content or gap markers.
 
 Detached direct-to-file output remains independent of the broker and survives broker restart. Catch-up uses **64 KiB reads**, a persistent UTF-8 decoder and one reader per process generation. Readiness matching has bounded carry and preserves split UTF-8/ANSI sequences. Managed logs retain their existing 25 MiB current file plus one rotated file; detached direct-file logs retain their existing non-rotating disk semantics.
+
+## Measuring retained memory
+
+RSS includes clean mappings and allocator pages that the operating system can reclaim; it is not a count of live JavaScript objects. Compare retained heap after collection and the operating system's charged footprint alongside RSS. In particular, releasing a cache can lower live heap and macOS physical footprint without immediately lowering RSS.
+
+`bun test packages/coding-agent/src/tui/render-cache-retention.test.ts packages/coding-agent/src/session/session-history-lazy.test.ts` exercises isolated-process wrapping retention and parked-journal release. The wrapping probe processes 1,000 distinct 20,000-character strings for both ASCII and two-byte Unicode, drops caller-owned rows, and checks retained heap plus prompt process exit. The journal probe preserves history, snapshots and descendant writes across actual park/revive while checking that cached entry objects become collectible. These are focused retention contracts, not whole-session memory ceilings.
 
 ## Remaining scaling dimensions
 

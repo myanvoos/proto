@@ -8,7 +8,9 @@ if (!availability.ok) console.warn("skipping python kernel stdout tests: no loca
 
 async function run(kernel: PythonKernel, code: string): Promise<{ status: string; text: string }> {
 	const chunks: string[] = [];
-	const result = await kernel.execute(code, { onChunk: text => void chunks.push(text) });
+	const result = await kernel.execute(`import proto_harness as harness\n${code}`, {
+		onChunk: text => void chunks.push(text),
+	});
 	return { status: result.status, text: chunks.join("") };
 }
 
@@ -94,7 +96,12 @@ describe("python kernel stdout proxy", () => {
 			const events: string[] = [];
 			const streams: string[] = [];
 			const { status } = await kernel.execute(
-				['print("TEXT BEFORE DISPLAY")', 'display("DISPLAYED VALUE")', 'print("TEXT AFTER DISPLAY")'].join("\n"),
+				"import proto_harness as harness\n" +
+					[
+						'print("TEXT BEFORE DISPLAY")',
+						'harness.display("DISPLAYED VALUE")',
+						'print("TEXT AFTER DISPLAY")',
+					].join("\n"),
 				{
 					onChunk: text => {
 						streams.push(text);

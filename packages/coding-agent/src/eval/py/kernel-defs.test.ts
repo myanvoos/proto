@@ -2,23 +2,25 @@ import { expect, test } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { disposeKernelSessionsByOwner, executePython } from "./executor";
 
-test("defs() reports every kernel-defined name with the cell that defined it", async () => {
+test("harness.defs() reports every kernel-defined name with the cell that defined it", async () => {
 	using tempDir = TempDir.createSync("@python-kernel-defs-");
 	const ownerId = `test-owner:${crypto.randomUUID()}`;
 	const options = {
 		cwd: tempDir.path(),
-		artifactsDir: tempDir.path(),
 		sessionId: `test-session:${crypto.randomUUID()}`,
 		kernelOwnerId: ownerId,
-		kernelMode: "session" as const,
 		timeoutMs: 20_000,
 	};
 
 	try {
-		await executePython("probe_total = 41 + 1\nimport json as probe_json", options);
-		await executePython("def probe_fn():\n    return probe_total", options);
+		await executePython(
+			"import proto_harness as harness\n" + "probe_total = 41 + 1\nimport json as probe_json",
+			options,
+		);
+		await executePython("import proto_harness as harness\n" + "def probe_fn():\n    return probe_total", options);
 		const listed = await executePython(
-			"print(sorted(defs()))\nprint(defs()['probe_total'] < defs()['probe_fn'])",
+			"import proto_harness as harness\n" +
+				"print(sorted(harness.defs()))\nprint(harness.defs()['probe_total'] < harness.defs()['probe_fn'])",
 			options,
 		);
 

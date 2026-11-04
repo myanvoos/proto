@@ -1,3 +1,6 @@
+import * as path from "node:path";
+import { tokenizeShellSegments } from "../tools/shell-tokenize";
+
 export interface StreamedKernelFailure {
 	toolCallId: string;
 	message: string;
@@ -501,14 +504,6 @@ export function parseStreamedBashInput(rawPartialJson: string): StreamedBashInpu
 	return parsePartialRecord(rawPartialJson);
 }
 
-function readIdentifierAt(text: string, start: number): { value: string; end: number } | undefined {
-	const first = text[start];
-	if (!first || !PY_IDENT_START.test(first)) return undefined;
-	let end = start + 1;
-	while (end < text.length && PY_IDENT_CONT.test(text[end]!)) end++;
-	return { value: text.slice(start, end), end };
-}
-
 function isHorizontalWhitespace(text: string): boolean {
 	return /^[ \t]*$/u.test(text);
 }
@@ -516,14 +511,25 @@ function isHorizontalWhitespace(text: string): boolean {
 export function parseStandaloneQuotedHeredoc(command: string): StreamedHeredocCell | undefined {
 	let i = 0;
 	while (i < command.length && /[ \t\r\n]/u.test(command[i]!)) i++;
-	const executable = readIdentifierAt(command, i);
-	if (!executable || !["python", "python3", "node", "nodejs", "bun"].includes(executable.value)) return undefined;
-	i = executable.end;
-	while (i < command.length && /[ \t]/u.test(command[i]!)) i++;
-	if (command[i] === "-") {
-		i++;
-		while (i < command.length && /[ \t]/u.test(command[i]!)) i++;
-	}
+	const headerEnd = command.indexOf("\n", i);
+	if (headerEnd < 0) return undefined;
+	const redirect = command.indexOf("<<", i);
+	if (redirect < 0 || redirect > headerEnd) return undefined;
+	const prefix = command.slice(i, redirect);
+	// Deliberately narrow static argv, not a second shell parser: no expansion,
+	// assignment, chaining or redirects besides the quoted heredoc below.
+	if (!/^(?:'[^'\r\n]*'|"[^"$`\\\r\n]*"|[A-Za-z0-9_./+@-]+)(?:[ \t]+-)?[ \t]*$/u.test(prefix)) return undefined;
+	const segments = tokenizeShellSegments(prefix);
+	const executable = segments[0]?.[0];
+	if (segments.length !== 1 || !executable) return undefined;
+	const basename = path.posix.basename(executable);
+	const language: StreamedCompletionLanguage | undefined = /^python(?:[0-9]+(?:\.[0-9]+)*)?$/u.test(basename)
+		? "python"
+		: ["node", "nodejs", "bun"].includes(basename)
+			? "js"
+			: undefined;
+	if (!language) return undefined;
+	i = redirect;
 	if (command[i] !== "<" || command[i + 1] !== "<") return undefined;
 	i += 2;
 	const stripTabs = command[i] === "-";
@@ -558,7 +564,6 @@ export function parseStandaloneQuotedHeredoc(command: string): StreamedHeredocCe
 		if (lineEnd < 0) break;
 		cursor = lineEnd + 1;
 	}
-	const language: StreamedCompletionLanguage = executable.value.startsWith("python") ? "python" : "js";
 	const code = command.slice(bodyStart, bodyEnd);
 	return code.trim().length > 0 ? { language, code, closed } : undefined;
 }
@@ -656,10 +661,12 @@ function parseLiteralArgs(inner: string, language: StreamedCompletionLanguage): 
 		return false;
 	};
 	if (language === "python") {
+		const seen = new Set<string>();
 		while (!cursor.atEnd()) {
 			if (!cursor.consume(",")) return undefined;
 			const key = cursor.next();
-			if (key?.kind !== "identifier" || !cursor.consume("=")) return undefined;
+			if (key?.kind !== "identifier" || seen.has(key.value) || !cursor.consume("=")) return undefined;
+			seen.add(key.value);
 			const value = parseLiteral(cursor);
 			if (value === undefined && cursor.peek()?.value !== "null") return undefined;
 			if (!setOption(key.value, value)) return undefined;
@@ -693,10 +700,7 @@ function callPrefixAllowed(source: string, token: Token, language: StreamedCompl
 	const lineStart = source.lastIndexOf("\n", token.start - 1) + 1;
 	const prefix = source.slice(lineStart, token.start);
 	if (language === "python") {
-		return (
-			/^(?:(?:[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)?\s*=\s*)?await\s+)?$/u.test(prefix) ||
-			/^(?:[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)?\s*=\s*)?$/u.test(prefix)
-		);
+		return /^(?:[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)?\s*=\s*)?$/u.test(prefix);
 	}
 	return /^(?:(?:(?:const|let|var)\s+)?[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*)?(?:await\s+)?$/u.test(prefix);
 }
@@ -724,6 +728,73 @@ function matchingParen(tokens: Token[], openIndex: number): number | undefined {
 	return undefined;
 }
 
+/** Only an explicit, unchanged module binding authorizes Python speculation. */
+function pythonCompletionReceivers(source: string, tokens: Token[], depths: number[]): Map<number, number> | undefined {
+	const bindings = new Map<string, number>();
+	const permitted = new Set<number>();
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		if (token.value !== "import" || depths[index] !== 0) continue;
+		const lineStart = source.lastIndexOf("\n", token.start - 1) + 1;
+		const lineEnd = source.indexOf("\n", token.end);
+		const end = lineEnd < 0 ? source.length : lineEnd;
+		const line = source.slice(lineStart, end);
+		const match = /^import[ \t]+proto_harness(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?[ \t]*(?:#.*)?$/u.exec(line);
+		if (!match) continue;
+		const binding = match[1] ?? "proto_harness";
+		if (bindings.has(binding)) return undefined;
+		bindings.set(binding, end);
+		for (let cursor = index; cursor < tokens.length && tokens[cursor]!.start < end; cursor++) permitted.add(cursor);
+	}
+	if (!bindings.size) return undefined;
+	const receivers = new Map<number, number>();
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index]!;
+		if (token.kind !== "identifier" || permitted.has(index)) continue;
+		// Formatted strings execute expressions hidden from this literal lexer.
+		if (/^(?:f|fr|rf)$/iu.test(token.value) && ["'", '"'].includes(source[token.end] ?? "")) return undefined;
+		if (
+			[
+				"exec",
+				"eval",
+				"globals",
+				"locals",
+				"vars",
+				"setattr",
+				"delattr",
+				"__import__",
+				"raise",
+				"assert",
+				"del",
+			].includes(token.value)
+		)
+			return undefined;
+		const importedAt = bindings.get(token.value);
+		if (importedAt === undefined) continue;
+		if (
+			token.start <= importedAt ||
+			depths[index] !== 0 ||
+			tokens[index + 1]?.value !== "." ||
+			tokens[index + 2]?.value !== "completion" ||
+			tokens[index + 3]?.value !== "(" ||
+			!callPrefixAllowed(source, token, "python")
+		)
+			return undefined;
+		receivers.set(index + 2, index);
+		permitted.add(index);
+		permitted.add(index + 2);
+	}
+	// Bare names, foreign-object methods, and imported-function aliases are not
+	// implicit harness capabilities. Unsupported occurrences invalidate ordinals.
+	if (
+		tokens.some(
+			(token, index) => token.kind === "identifier" && token.value === "completion" && !permitted.has(index),
+		)
+	)
+		return undefined;
+	return receivers;
+}
+
 export function findLiteralCompletionCalls(
 	language: StreamedCompletionLanguage,
 	source: string,
@@ -742,31 +813,43 @@ export function findLiteralCompletionCalls(
 			if (depth < 0) return [];
 		}
 	}
+	const pythonReceivers = language === "python" ? pythonCompletionReceivers(source, tokens, depths) : undefined;
+	if (language === "python" && !pythonReceivers) return [];
 	const completionTokens = tokens
 		.map((token, index) => ({ token, index }))
-		.filter(item => item.token.kind === "identifier" && item.token.value === "completion");
+		.filter(
+			item =>
+				item.token.kind === "identifier" &&
+				item.token.value === "completion" &&
+				(language !== "python" || pythonReceivers!.has(item.index)),
+		);
 	if (completionTokens.length === 0) return [];
 	const candidates: LiteralCompletionCall[] = [];
 	for (const { token, index } of completionTokens) {
 		const previous = tokens[index - 1]?.value;
 		const next = tokens[index + 1];
-		if (previous === "." || previous === "?." || previous === "?" || next?.value !== "(" || depths[index] !== 0)
+		if (
+			(language === "js" && (previous === "." || previous === "?." || previous === "?")) ||
+			next?.value !== "(" ||
+			depths[index] !== 0
+		)
 			continue;
-		if (!callPrefixAllowed(source, token, language)) continue;
+		const callee = pythonReceivers ? tokens[pythonReceivers.get(index)!]! : token;
+		if (!callPrefixAllowed(source, callee, language)) continue;
 		const closeIndex = matchingParen(tokens, index + 1);
 		if (closeIndex === undefined) continue;
 		const close = tokens[closeIndex]!;
 		if (!callSuffixAllowed(source, close.end, language)) continue;
 		const args = parseLiteralArgs(source.slice(next!.end, close.start), language);
 		if (!args) continue;
-		const callSource = source.slice(token.start, close.end);
+		const callSource = source.slice(callee.start, close.end);
 		candidates.push({
 			index: candidates.length,
 			language,
 			args,
 			source: callSource,
 			fingerprint: JSON.stringify({ language, args }),
-			start: token.start,
+			start: callee.start,
 			end: close.end,
 		});
 	}

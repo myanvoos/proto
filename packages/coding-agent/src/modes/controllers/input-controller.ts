@@ -428,6 +428,10 @@ export class InputController {
 					safeAbort("focused retry", () => viewSession.abortRetry());
 					aborted = true;
 				}
+				if (viewSession.isEvalRunning) {
+					safeAbort("focused Python execution", () => viewSession.abortEval());
+					aborted = true;
+				}
 				if (!aborted && viewSession.isStreaming) {
 					this.#abortFocusedStreamingTurn();
 					aborted = true;
@@ -989,8 +993,22 @@ export class InputController {
 			});
 			return;
 		}
-		if (text.startsWith("!") || parsePythonCommandInput(text)) {
-			this.ctx.showStatus("Shell and kernel shortcuts are unavailable in a focused session");
+		const pythonCommand = parsePythonCommandInput(text);
+		if (pythonCommand) {
+			if (!pythonCommand.code) return;
+			if (target.isEvalRunning) {
+				this.ctx.showWarning("A Python execution is already running. Press Esc to cancel it first.");
+				return;
+			}
+			this.ctx.editor.clearDraft(text);
+			this.ctx.editor.addToHistory(text);
+			await this.ctx.handlePythonCommand(pythonCommand.code, pythonCommand.isExcluded);
+			this.ctx.isPythonMode = false;
+			this.ctx.updateEditorBorderColor();
+			return;
+		}
+		if (text.startsWith("!")) {
+			this.ctx.showStatus("Shell shortcuts are unavailable in a focused session");
 			return;
 		}
 		const continueShortcut = streamingBehavior === "steer" && !images && (text === "." || text === "c");

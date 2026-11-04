@@ -132,8 +132,17 @@ export function sliceWithWidth(line: string, startCol: number, length: number, s
 	return nativeSliceWithWidth(line, startCol, length, strict ?? null, DEFAULT_TAB_WIDTH);
 }
 
+/** Conservative retained bytes: UTF-16 backing storage, string headers, slots and cache/map overhead. */
+export function estimateRenderCacheSize(key: string, value: string | readonly string[]): number {
+	const entryBytes = 128 + 32 + key.length * 2;
+	if (typeof value === "string") return entryBytes + 32 + value.length * 2;
+	let size = entryBytes + 32;
+	for (const line of value) size += 8 + 32 + line.length * 2;
+	return size;
+}
+
 const TRUNCATE_CACHE_MAX = 512;
-const TRUNCATE_CACHE_MAX_SIZE = 4 * 1024 * 1024;
+const TRUNCATE_CACHE_MAX_SIZE = 2 * 1024 * 1024;
 const TRUNCATE_CACHE_MAX_ENTRY_SIZE = 64 * 1024;
 const TRUNCATE_CACHE_MAX_TEXT_LENGTH = 8 * 1024;
 
@@ -141,7 +150,10 @@ const truncateCache = new LRUCache<string, string>({
 	max: TRUNCATE_CACHE_MAX,
 	maxSize: TRUNCATE_CACHE_MAX_SIZE,
 	maxEntrySize: TRUNCATE_CACHE_MAX_ENTRY_SIZE,
-	sizeCalculation: (value, key) => key.length + value.length,
+	sizeCalculation: (value, key) => estimateRenderCacheSize(key, value),
+	ttl: 60_000,
+	ttlAutopurge: true,
+	updateAgeOnGet: true,
 });
 
 export function truncateToWidth(
@@ -180,7 +192,7 @@ export function truncateStartToWidth(text: string, maxWidth: number): string {
 }
 
 const WRAP_CACHE_MAX = 512;
-const WRAP_CACHE_MAX_SIZE = 16 * 1024 * 1024;
+const WRAP_CACHE_MAX_SIZE = 6 * 1024 * 1024;
 const WRAP_CACHE_MAX_ENTRY_SIZE = 512 * 1024;
 const WRAP_CACHE_MAX_TEXT_LENGTH = 64 * 1024;
 
@@ -188,7 +200,10 @@ const wrapCache = new LRUCache<string, string[]>({
 	max: WRAP_CACHE_MAX,
 	maxSize: WRAP_CACHE_MAX_SIZE,
 	maxEntrySize: WRAP_CACHE_MAX_ENTRY_SIZE,
-	sizeCalculation: (lines, key) => key.length + lines.reduce((size, line) => size + line.length, 0),
+	sizeCalculation: (lines, key) => estimateRenderCacheSize(key, lines),
+	ttl: 60_000,
+	ttlAutopurge: true,
+	updateAgeOnGet: true,
 });
 let wrapCacheEpoch = widthConfigEpoch;
 

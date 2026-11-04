@@ -4,13 +4,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import type { ToolSession } from ".";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+import { ReadTool } from "./read";
 
 // The JS prelude's symbols()/blockRange() mirror Python's symbols()/block_range() through the
 // host tree-sitter bridge; node (real Node.js) and bun cells must agree with the Python kernel.
 const KERNEL_OWNER = `bash-kernel-js-helpers-test:${process.pid}`;
 const JS_INTERPRETERS = ["node", "bun"] as const;
+const python = await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true });
 
 // Method body (lines 5-9) is long enough to fold; the kept last line is indented.
 const SHAPE_PY = [
@@ -34,14 +37,23 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-	dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-kernel-js-helpers-"));
-	tool = new BashTool({
+	dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "bash-kernel-js-helpers-")));
+	const tools = new Map<string, Tool>();
+	const session = {
 		cwd: dir,
 		settings: { get: () => undefined, getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(dir, "artifacts"),
 		getEvalSessionId: () => `bash-kernel-js-helpers-test:${dir}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
-	} as unknown as ToolSession);
+		getSessionId: () => KERNEL_OWNER,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
+	} as unknown as ToolSession;
+	tool = new BashTool(session);
+	tools.set("bash", tool);
+	tools.set("read", new ReadTool(session));
 	await Bun.write(path.join(dir, "shape.py"), SHAPE_PY);
 });
 
@@ -51,7 +63,7 @@ afterEach(async () => {
 
 async function runCell(interpreter: string, code: string, env?: Record<string, string>): Promise<string> {
 	const result = await tool.execute("bash-kernel-js-helpers-test", {
-		command: `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`,
+		command: `${interpreter === "python" ? JSON.stringify(python.pythonPath) : interpreter} <<'__PROTO_CELL__'\n${interpreter === "python" ? "import proto_harness as harness\n" : ""}${code}\n__PROTO_CELL__`,
 		timeout: 60,
 		env,
 	});
@@ -70,7 +82,7 @@ test("symbols() outlines a file identically in python, node and bun, keeping ind
 		"6-8: <elided>",
 		"9-9:         return a",
 	].join("\n");
-	expect(await runCell("python", 'print(symbols("shape.py"))')).toBe(expected);
+	expect(await runCell("python", 'print(harness.symbols("shape.py"))')).toBe(expected);
 	for (const interpreter of JS_INTERPRETERS) {
 		expect(await runCell(interpreter, 'print(await symbols("shape.py"))')).toBe(expected);
 		// In-memory code with an explicit lang outlines the same as the file on disk.
@@ -88,9 +100,12 @@ test("symbols() reports no outline instead of echoing unparsed source", async ()
 	const notes = `<no symbols parsed for ${path.join(dir, "notes.txt")}>`;
 	const source = "def g():\n    pass\n";
 
-	expect(await runCell("python", `print(symbols(code=${JSON.stringify(source)}))\nprint(symbols("notes.txt"))`)).toBe(
-		`<no symbols parsed for <code> (pass lang=, e.g. lang="python")>\n${notes}`,
-	);
+	expect(
+		await runCell(
+			"python",
+			`print(harness.symbols(code=${JSON.stringify(source)}))\nprint(harness.symbols("notes.txt"))`,
+		),
+	).toBe(`<no symbols parsed for <code> (pass lang=, e.g. lang="python")>\n${notes}`);
 	for (const interpreter of JS_INTERPRETERS) {
 		expect(
 			await runCell(
@@ -121,9 +136,9 @@ test("JS symbols() rejects ambiguous or malformed arguments", async () => {
 
 test("blockRange() returns the enclosing block like block_range(), null past EOF, and accepts shell-resolved paths", async () => {
 	await Bun.write(path.join(dir, "artifacts", "local", "shape.py"), SHAPE_PY);
-	expect(await runCell("python", 'print(block_range("shape.py", 2), block_range("shape.py", 99))')).toBe(
-		"(2, 3) None",
-	);
+	expect(
+		await runCell("python", 'print(harness.block_range("shape.py", 2), harness.block_range("shape.py", 99))'),
+	).toBe("(2, 3) None");
 	const cell = [
 		'print(JSON.stringify([await blockRange("shape.py", 2), await blockRange("shape.py", 99), await blockRange(env("SHAPE_PATH"), 4)]))',
 		'try { await blockRange("shape.py", 0); } catch (err) { print(err.name, err.message); }',

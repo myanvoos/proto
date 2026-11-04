@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import { type AuthAccountPolicies, DEFAULT_USAGE_RESERVE_PCT } from "@oh-my-pi/pi-ai/auth/account-policy";
 import { THINKING_EFFORTS } from "@oh-my-pi/pi-catalog/effort";
 import {
@@ -2696,15 +2697,26 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	"python.kernelMode": {
-		type: "enum",
-		values: ["session", "per-call"] as const,
-		default: "session",
+	"python.kernelMemoryBudgetBytes": {
+		type: "number",
+		default: Math.min(Math.floor(os.totalmem() / 4), 4 * 1024 * 1024 * 1024),
 		ui: {
 			tab: "shell",
 			group: "Eval & Runtimes",
-			label: "Python Kernel Mode",
-			description: "Keep the IPython kernel alive across eval calls or start fresh each time",
+			label: "Python Kernel Memory Budget",
+			description:
+				"Private-memory budget in bytes for explicit named Python kernels; safely captured idle kernels park least-recently-used first",
+		},
+	},
+	"python.kernelMaxResidentCount": {
+		type: "number",
+		default: 64,
+		ui: {
+			tab: "shell",
+			group: "Eval & Runtimes",
+			label: "Python Kernel Safety Limit",
+			description:
+				"Maximum resident named Python kernels as a process-count safety limit, separate from execution concurrency and memory pressure",
 		},
 	},
 	"python.interpreter": {

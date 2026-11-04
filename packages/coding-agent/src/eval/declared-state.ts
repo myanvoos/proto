@@ -188,12 +188,16 @@ export function discardDeclaredStateKernel(
 
 /** Residency may end only at a successfully captured, quiescent generation. Unknown/dirty state stays resident. */
 export function isDeclaredStateKernelSafeToRelease(generation: string): boolean {
+	let known = false;
 	for (const state of owners.values()) {
 		for (const tracked of state.kernels.values()) {
-			if (tracked.generation === generation && (tracked.dirty || state.active > 0 || state.frozen)) return false;
+			if (tracked.generation !== generation) continue;
+			known = true;
+			if (tracked.dirty || (tracked.metadata.language === "python" && tracked.captured == null) || state.frozen)
+				return false;
 		}
 	}
-	return true;
+	return known;
 }
 
 export function hasDeclaredStateContinuity(ownerId: string): boolean {

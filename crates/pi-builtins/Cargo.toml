@@ -317,7 +317,6 @@ base = [
 
 "util.proc-match" = ["builtin.kill", "util.procs"]
 "util.node" = []
-"util.python" = []
 
 "util.procs" = []
 "util.ps" = ["util.procs"]
@@ -399,7 +398,6 @@ utils = [
   "util.node",
   "util.proc-match",
   "util.procs",
-  "util.python",
   "util.ps",
   "util.sleep",
   "util.timeout",

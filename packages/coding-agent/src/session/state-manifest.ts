@@ -10,6 +10,14 @@ import { validateVmDeclaredState } from "../eval/js/context-manager";
 import { listKernelLaneConfigurations, setKernelLaneConfiguration } from "../eval/kernel-environment";
 import { parseKernelTarget } from "../eval/kernel-target";
 import { PythonKernel } from "../eval/py/kernel";
+import {
+	capturePythonStore,
+	type PythonStoreState,
+	stagePythonStore,
+	validatePythonGraph,
+	validatePythonStore,
+	validatePythonStoreEnvironment,
+} from "../eval/py/python-store";
 import type { SessionManager } from "./session-manager";
 
 export const DECLARED_STATE_CUSTOM_TYPE = "declared-state";
@@ -19,15 +27,18 @@ interface StateManifest {
 	boundaryEntryId: string | null;
 	kernels: DeclaredKernelState[];
 	configurations: Omit<DeclaredKernelState, "snapshot">[];
+	pythonStore?: PythonStoreState;
 }
 export interface PreparedSessionState {
 	readonly boundaryEntryId: string | null;
 	readonly kernels: readonly DeclaredKernelState[];
 	readonly configurations: readonly Omit<DeclaredKernelState, "snapshot">[];
+	readonly pythonStore?: PythonStoreState;
 }
 
-function readManifest(value: unknown): StateManifest {
-	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Corrupt declared state manifest");
+function readManifest(value: unknown, entryId: string): StateManifest {
+	if (!value || typeof value !== "object" || Array.isArray(value))
+		throw new Error(`Corrupt declared state manifest at entry ${entryId}: expected an object`);
 	const manifest = value as StateManifest;
 	if (
 		manifest.version !== 1 ||
@@ -61,6 +72,7 @@ function readManifest(value: unknown): StateManifest {
 		if (keys.has(key)) throw new Error("Duplicate declared state kernel manifest");
 		keys.add(key);
 	}
+	if (manifest.pythonStore !== undefined) validatePythonStore(manifest.pythonStore);
 	return structuredClone(manifest);
 }
 
@@ -75,6 +87,7 @@ export async function captureSessionState(
 		if (manager.getLeafId() !== boundaryEntryId)
 			throw new Error("Declared state capture requires the exact current history boundary");
 		const kernels = await captureDeclaredState(ownerId);
+		const pythonStore = capturePythonStore(ownerId, manager);
 		const configurations = listKernelLaneConfigurations(ownerId).map(({ language, sessionId, configuration }) => ({
 			language,
 			lane: declaredStateLane(sessionId),
@@ -85,12 +98,13 @@ export async function captureSessionState(
 		const leaf = manager.getLeafEntry();
 		// An empty turn must not create an unbounded chain of redundant manifest-only boundaries.
 		if (leaf?.type === "custom" && leaf.customType === DECLARED_STATE_CUSTOM_TYPE && boundaryEntryId === leaf.id) {
-			const previous = readManifest(leaf.data);
+			const previous = readManifest(leaf.data, leaf.id);
 			if (
 				!beforeCommit &&
 				previous.sessionId === manager.getSessionId() &&
 				JSON.stringify(previous.kernels) === JSON.stringify(kernels) &&
-				JSON.stringify(previous.configurations) === JSON.stringify(configurations)
+				JSON.stringify(previous.configurations) === JSON.stringify(configurations) &&
+				JSON.stringify(previous.pythonStore) === JSON.stringify(pythonStore)
 			) {
 				commitDeclaredStateCapture(ownerId, kernels);
 				return;
@@ -104,6 +118,7 @@ export async function captureSessionState(
 				boundaryEntryId: manager.getLeafId(),
 				kernels,
 				configurations,
+				pythonStore,
 			} satisfies StateManifest);
 		});
 		commitDeclaredStateCapture(ownerId, kernels);
@@ -121,7 +136,7 @@ export async function prepareSessionStateRestore(
 		let selected: StateManifest | undefined;
 		for (const entry of manager.iterateCustomEntries(DECLARED_STATE_CUSTOM_TYPE)) {
 			// Inspect every retained historical manifest, not a recent-turn window.
-			const manifest = readManifest(entry.data);
+			const manifest = readManifest(entry.data, entry.id);
 			if (manifest.sessionId !== manager.getSessionId()) continue;
 			if (entry.id !== boundaryEntryId && manifest.boundaryEntryId !== boundaryEntryId) continue;
 			if (entry.id !== boundaryEntryId && entry.parentId !== manifest.boundaryEntryId)
@@ -131,9 +146,13 @@ export async function prepareSessionStateRestore(
 		if (!selected) {
 			if (
 				current.length ||
+				capturePythonStore(ownerId, manager).graph !== null ||
 				manager.getCustomEntries(DECLARED_STATE_CUSTOM_TYPE).some(entry => {
-					const manifest = readManifest(entry.data);
-					return manifest.sessionId === manager.getSessionId() && manifest.kernels.length;
+					const manifest = readManifest(entry.data, entry.id);
+					return (
+						manifest.sessionId === manager.getSessionId() &&
+						(manifest.kernels.length > 0 || manifest.pythonStore?.graph != null)
+					);
 				})
 			)
 				throw new Error("No declared state manifest exists at this exact history boundary");
@@ -145,6 +164,16 @@ export async function prepareSessionStateRestore(
 				await validateVmDeclaredState(state);
 				continue;
 			}
+			if (
+				state.snapshot !== null &&
+				typeof state.snapshot === "object" &&
+				"format" in state.snapshot &&
+				state.snapshot.format !== "proto.python-graph"
+			)
+				throw new Error(
+					"Unsupported Python namespace checkpoint codec; explicitly reset or close this named Python kernel to discard its old namespace. History and JavaScript state remain readable.",
+				);
+			validatePythonGraph(state.snapshot);
 			const kernel = await PythonKernel.start({
 				cwd: state.cwd,
 				interpreter: state.interpreter,
@@ -165,7 +194,13 @@ export async function prepareSessionStateRestore(
 			if (errors.length === 1) throw errors[0];
 			if (errors.length > 1) throw new AggregateError(errors, "Declared state validation and cleanup failed");
 		}
-		return { boundaryEntryId, kernels: selected.kernels, configurations: selected.configurations };
+		if (selected.pythonStore?.graph) await validatePythonStoreEnvironment(selected.pythonStore.graph);
+		return {
+			boundaryEntryId,
+			kernels: selected.kernels,
+			configurations: selected.configurations,
+			pythonStore: selected.pythonStore,
+		};
 	});
 }
 
@@ -177,6 +212,7 @@ export function activateSessionStateRestore(
 ): void {
 	const kernels = structuredClone([...prepared.kernels]);
 	stageDeclaredState(targetOwnerId, kernels);
+	stagePythonStore(targetOwnerId, prepared.pythonStore ?? { revision: 0, graph: null });
 	for (const state of prepared.configurations) {
 		const sessionId =
 			state.lane === "main" ? targetEvalSessionId : `${targetEvalSessionId}:lane:${encodeURIComponent(state.lane)}`;
@@ -194,9 +230,9 @@ export function stageSessionStateOnResume(manager: SessionManager, ownerId: stri
 	let selected: StateManifest | undefined;
 	let hasDeclared = false;
 	for (const entry of manager.iterateCustomEntries(DECLARED_STATE_CUSTOM_TYPE)) {
-		const manifest = readManifest(entry.data);
+		const manifest = readManifest(entry.data, entry.id);
 		if (manifest.sessionId !== manager.getSessionId()) continue;
-		hasDeclared ||= manifest.kernels.length > 0;
+		hasDeclared ||= manifest.kernels.length > 0 || manifest.pythonStore?.graph != null;
 		if (entry.id === leafId || (manifest.boundaryEntryId === leafId && entry.parentId === leafId))
 			selected = manifest;
 	}
@@ -204,7 +240,12 @@ export function stageSessionStateOnResume(manager: SessionManager, ownerId: stri
 		throw new Error("Declared state has no exact manifest at the resumed history boundary");
 	if (selected)
 		activateSessionStateRestore(
-			{ boundaryEntryId: leafId, kernels: selected.kernels, configurations: selected.configurations },
+			{
+				boundaryEntryId: leafId,
+				kernels: selected.kernels,
+				configurations: selected.configurations,
+				pythonStore: selected.pythonStore,
+			},
 			ownerId,
 			evalSessionId,
 		);
@@ -223,9 +264,9 @@ export async function appendSessionMetadataWithState(
 		let selected: StateManifest | undefined;
 		let hasDeclared = false;
 		for (const entry of manager.iterateCustomEntries(DECLARED_STATE_CUSTOM_TYPE)) {
-			const manifest = readManifest(entry.data);
+			const manifest = readManifest(entry.data, entry.id);
 			if (manifest.sessionId !== manager.getSessionId()) continue;
-			hasDeclared ||= manifest.kernels.length > 0;
+			hasDeclared ||= manifest.kernels.length > 0 || manifest.pythonStore?.graph != null;
 			if (entry.id === boundary || (entry.parentId === boundary && manifest.boundaryEntryId === boundary))
 				selected = manifest;
 		}

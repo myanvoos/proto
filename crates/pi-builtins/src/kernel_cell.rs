@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
 	host::Host,
-	kernel_route::{ArgvRoute, KernelArgv, kernel_builtin_alias, route_argv},
+	kernel_route::{ArgvRoute, KernelArgv, route_argv},
 };
 
 const ADDR_VAR: &str = "PI_KERNEL_BRIDGE_ADDR";
@@ -29,8 +29,7 @@ pub(crate) struct KernelLang {
 	pub argv:             &'static KernelArgv,
 	pub fleet_extensions: &'static [&'static str],
 	/// PATH names to try, in order, when the invocation falls through to a real
-	/// interpreter (the invoked builtin name is always tried first). Lets
-	/// `python file.py` find `python3` on hosts that ship no `python`.
+	/// interpreter (the invoked builtin name is always tried first).
 	pub interpreters:     &'static [&'static str],
 }
 
@@ -50,11 +49,6 @@ pub(crate) fn kernel_lang_app(name: &'static str) -> ClapCommand {
 
 pub(crate) fn run_kernel_lang(spec: &KernelLang, argv: &[OsString], host: &mut Host) -> i32 {
 	let interpreter = resolve_interpreter(spec, host);
-	if interpreter.is_none() && kernel_builtin_alias(host.name()).is_some() {
-		// A named interpreter that does not exist: report it exactly as the shell
-		// would.
-		return spawn_external(spec, host, argv, None);
-	}
 	if let Some(observation) = &host.command_observation {
 		observation.route(spec.lang);
 	}
@@ -100,17 +94,10 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host, interpreter: Opti
 			let code = args[index].unwrap_or_default();
 			{
 				let mut arguments = &argv[index + 1..];
-				if spec.lang != "py" && arguments.first().is_some_and(|arg| arg == "--") {
+				if arguments.first().is_some_and(|arg| arg == "--") {
 					arguments = &arguments[1..];
 				}
-				let invocation = cell_invocation(
-					spec,
-					host,
-					interpreter,
-					(spec.lang == "py").then_some("-c"),
-					arguments,
-					None,
-				);
+				let invocation = cell_invocation(host, interpreter, None, arguments, None);
 				Plan::Cell { code: code.to_string(), stdin_body: None, program_input, invocation }
 			}
 		},
@@ -128,15 +115,9 @@ fn plan(spec: &KernelLang, argv: &[OsString], host: &mut Host, interpreter: Opti
 				Ok(code) => {
 					let dash = argv.iter().position(|arg| arg == "-");
 					let arguments = dash.map_or(&[][..], |index| &argv[index + 1..]);
-					let argv0 = if dash.is_some() {
-						Some("-")
-					} else if spec.lang == "py" {
-						Some("")
-					} else {
-						None
-					};
+					let argv0 = dash.map(|_| "-");
 					let invocation =
-						cell_invocation(spec, host, interpreter, argv0, arguments, Some("<stdin>"));
+						cell_invocation(host, interpreter, argv0, arguments, Some("<stdin>"));
 					Plan::Cell {
 						code: code.to_string(),
 						stdin_body: Some(body),
@@ -172,21 +153,14 @@ fn plan_positional(
 		return Plan::External { stdin_body: None };
 	}
 	let filename = candidate.to_string_lossy();
-	let invocation = cell_invocation(
-		spec,
-		host,
-		interpreter,
-		Some(&filename),
-		&argv[index + 1..],
-		Some(&filename),
-	);
+	let invocation =
+		cell_invocation(host, interpreter, Some(&filename), &argv[index + 1..], Some(&filename));
 	Plan::Cell { code, stdin_body: None, program_input: false, invocation }
 }
 
 /// Program identity belongs to the invocation, not the retained runner
 /// bootstrap.
 fn cell_invocation(
-	spec: &KernelLang,
 	host: &Host,
 	interpreter: Option<&Path>,
 	argv0: Option<&str>,
@@ -194,13 +168,17 @@ fn cell_invocation(
 	filename: Option<&str>,
 ) -> Value {
 	let mut argv = Vec::<String>::new();
-	if spec.lang != "py" {
-		argv.push(
-			interpreter
-				.map(|path| path.to_string_lossy().into_owned())
-				.unwrap_or_else(|| host.name().to_string()),
-		);
-	}
+	argv.push(
+		interpreter
+			.map(|path| {
+				// Native JS runtimes expose the resolved executable as argv[0].
+				std::fs::canonicalize(path)
+					.unwrap_or_else(|_| path.to_path_buf())
+					.to_string_lossy()
+					.into_owned()
+			})
+			.unwrap_or_else(|| host.name().to_string()),
+	);
 	if let Some(argv0) = argv0 {
 		argv.push(argv0.to_string());
 	}
@@ -284,7 +262,7 @@ fn run_kernel_cell(
 	let mut input_requested = false;
 	let mut cancel_deadline: Option<Instant> = None;
 	loop {
-		// Our stdout consumer exited (`python -c '…big loop…' | head -1`). A real
+		// Our stdout consumer exited (`node -e '…big loop…' | head -1`). A real
 		// interpreter takes SIGPIPE here and dies; the cell runs in the kernel
 		// process, which never sees the broken pipe, so without this it keeps
 		// producing output nobody reads until the command deadline. Ask the kernel to
@@ -554,9 +532,7 @@ fn resolve_interpreter(spec: &KernelLang, host: &Host) -> Option<PathBuf> {
 	interpreter_candidates(spec, program).find_map(|name| resolve_on_path(host, name))
 }
 
-/// The invoked name first, then the spec's alternates (`python` → `python3`).
-/// A version-specific name (`python3.13`) has none: nothing else stands in for
-/// it.
+/// The invoked name first, then the JavaScript runtime's alternate names.
 fn interpreter_candidates<'a>(
 	spec: &'a KernelLang,
 	program: &'a str,

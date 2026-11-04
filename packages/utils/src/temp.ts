@@ -24,6 +24,17 @@ export class TempDir {
 		return new TempDir(await fsPromises.mkdtemp(normalizePrefix(prefix)));
 	}
 
+	/** Private socket directory; AF_UNIX limits apply to UTF-8 bytes, independent of TMPDIR length. */
+	static async createForUnixSocket(prefix: string, socketName: string): Promise<TempDir> {
+		if (![prefix, socketName].every(part => /^[a-zA-Z0-9._-]+$/.test(part)))
+			throw new Error("Socket directory prefix and name must be basenames");
+		let base = os.tmpdir();
+		if (!unixSocketPathFits(path.join(base, `${prefix}XXXXXX`, socketName))) base = "/tmp";
+		if (!unixSocketPathFits(path.join(base, `${prefix}XXXXXX`, socketName)))
+			throw new Error("Unix socket directory prefix exceeds the platform path limit");
+		return TempDir.create(path.join(base, prefix));
+	}
+
 	#removePromise: Promise<void> | null = null;
 
 	path(): string {
@@ -72,6 +83,11 @@ export class TempDir {
 			this.removeSync();
 		} catch {}
 	}
+}
+
+/** Leave room for the trailing NUL in sockaddr_un.sun_path. */
+export function unixSocketPathFits(socketPath: string, platform: typeof process.platform = process.platform): boolean {
+	return Buffer.byteLength(socketPath) < (platform === "darwin" ? 104 : 108);
 }
 
 const kTempDir = os.tmpdir();

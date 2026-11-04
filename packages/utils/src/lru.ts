@@ -11,6 +11,9 @@ export interface LRUCacheOptions<K, V> {
 
 	ttl?: number;
 
+	/** Remove expired entries while idle using one unrefed timer; requires ttl. */
+	ttlAutopurge?: boolean;
+
 	updateAgeOnGet?: boolean;
 
 	dispose?: (value: V, key: K, reason: DisposeReason) => void;
@@ -35,6 +38,8 @@ export class LRUCache<K, V> {
 	readonly #maxEntrySize: number;
 	readonly #sizeCalculation: ((value: V, key: K) => number) | undefined;
 	readonly #ttl: number;
+	readonly #ttlAutopurge: boolean;
+	#expiryTimer?: NodeJS.Timeout;
 	readonly #updateAgeOnGet: boolean;
 	readonly #dispose: ((value: V, key: K, reason: DisposeReason) => void) | undefined;
 	#calculatedSize = 0;
@@ -45,6 +50,8 @@ export class LRUCache<K, V> {
 		const explicitMaxEntrySize = positiveInteger(options.maxEntrySize, "maxEntrySize");
 		this.#maxEntrySize = explicitMaxEntrySize || this.#maxSize;
 		this.#ttl = positiveInteger(options.ttl, "ttl");
+		this.#ttlAutopurge = options.ttlAutopurge === true;
+		if (this.#ttlAutopurge && this.#ttl === 0) throw new TypeError("ttlAutopurge requires ttl");
 		if (this.#max === 0 && this.#maxSize === 0 && this.#ttl === 0) {
 			throw new TypeError("At least one of max, maxSize, or ttl is required");
 		}
@@ -93,6 +100,7 @@ export class LRUCache<K, V> {
 		}
 		this.#entries.set(key, { value, size, start: this.#ttl === 0 ? 0 : performance.now() });
 		this.#calculatedSize += size;
+		this.#startExpiryTimer();
 		return this;
 	}
 
@@ -127,9 +135,11 @@ export class LRUCache<K, V> {
 	}
 
 	clear(): void {
-		for (const [key, entry] of this.#entries) this.#dispose?.(entry.value, key, "delete");
+		const entries = [...this.#entries];
 		this.#entries.clear();
 		this.#calculatedSize = 0;
+		this.#stopExpiryTimer();
+		for (const [key, entry] of entries) this.#dispose?.(entry.value, key, "delete");
 	}
 
 	*keys(): Generator<K, void, unknown> {
@@ -156,13 +166,39 @@ export class LRUCache<K, V> {
 		return size;
 	}
 
+	#startExpiryTimer(): void {
+		if (!this.#ttlAutopurge || this.#expiryTimer !== undefined) return;
+		// One bounded sweep per cache, never a timer per entry or a per-frame scan.
+		this.#expiryTimer = setInterval(
+			() => {
+				const now = performance.now();
+				// Disposal may replace or add entries: scan only this bounded snapshot and
+				// never expire a replacement installed by an earlier disposal callback.
+				for (const [key, entry] of [...this.#entries]) {
+					if (now - entry.start >= this.#ttl && this.#entries.get(key) === entry) {
+						this.#remove(key, entry, "expire");
+					}
+				}
+			},
+			Math.min(this.#ttl, 30_000),
+		);
+		this.#expiryTimer.unref();
+	}
+
+	#stopExpiryTimer(): void {
+		if (this.#expiryTimer === undefined) return;
+		clearInterval(this.#expiryTimer);
+		this.#expiryTimer = undefined;
+	}
+
 	#isStale(entry: Entry<V>): boolean {
 		return this.#ttl !== 0 && performance.now() - entry.start > this.#ttl;
 	}
 
 	#remove(key: K, entry: Entry<V>, reason: DisposeReason): void {
-		this.#dispose?.(entry.value, key, reason);
 		this.#entries.delete(key);
 		this.#calculatedSize -= entry.size;
+		if (this.#entries.size === 0) this.#stopExpiryTimer();
+		this.#dispose?.(entry.value, key, reason);
 	}
 }

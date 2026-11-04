@@ -2,24 +2,41 @@ import { afterAll, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+
+import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import type { ToolSession } from ".";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+import { ReadTool } from "./read";
 
-// Contract (prompts/tools/bash.md): "Net-mutated paths emit one compact `<kernel> note:` line
-// per path in cell output." Status events feed the TUI and the fs ledger but are invisible to
-// the model, so the note has to be in the cell's own text — in every kernel language.
+// Mutation receipts must be model-visible, not only structured TUI events.
+// Python receipts accompany explicit atomic fs operations; JS retains net-cell notes.
+const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+if (!availability.ok || !availability.pythonPath) throw new Error(availability.reason ?? "Python unavailable");
+const PYTHON = JSON.stringify(availability.pythonPath);
+const TEMP_ROOT = await fs.realpath(os.tmpdir());
+
 const KERNEL_OWNER = `kernel-note-test:${process.pid}`;
 
 function stubSession(cwd: string): ToolSession {
 	const settings = new Map<string, unknown>();
-	return {
+	const tools = new Map<string, Tool>();
+	const session = {
 		cwd,
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
 		getEvalSessionId: () => `kernel-note-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
+		getSessionId: () => KERNEL_OWNER,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
 	} as unknown as ToolSession;
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
 }
 
 async function runCommand(tool: BashTool, id: string, command: string): Promise<string> {
@@ -31,6 +48,10 @@ async function runCommand(tool: BashTool, id: string, command: string): Promise<
 }
 
 function heredoc(interpreter: string, code: string): string {
+	if (interpreter === "python") {
+		interpreter = `${PYTHON} -m proto_harness.kernel main --interpreter ${PYTHON}`;
+		code = `import proto_harness as harness\n${code}`;
+	}
 	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
 }
 
@@ -41,12 +62,15 @@ function noteLines(output: string): string[] {
 		.map(line => line.trim());
 }
 
+retainFsObservationLedger(KERNEL_OWNER, KERNEL_OWNER);
+
 afterAll(async () => {
 	await Promise.all([disposeKernelSessionsByOwner(KERNEL_OWNER), disposeVmContextsByOwner(KERNEL_OWNER)]);
+	releaseFsObservationLedger(KERNEL_OWNER, KERNEL_OWNER);
 });
 
-test("every kernel entry point reports its net mutations in model-visible text", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-note-entry-"));
+test("kernel entry points report explicit mutations in model-visible text", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "kernel-note-entry-"));
 	try {
 		const tool = new BashTool(stubSession(dir));
 		const cases: Array<{ id: string; command: string; file: string }> = [
@@ -68,7 +92,7 @@ test("every kernel entry point reports its net mutations in model-visible text",
 			{
 				id: "python-heredoc",
 				file: "python-heredoc.txt",
-				command: heredoc("python", "open('python-heredoc.txt', 'w').write('a\\n')"),
+				command: heredoc("python", "harness.fs.write_text('python-heredoc.txt', 'a\\n')"),
 			},
 		];
 		for (const testCase of cases) {
@@ -83,8 +107,8 @@ test("every kernel entry point reports its net mutations in model-visible text",
 	}
 }, 180000);
 
-test("js and python kernels word overwrite and delete notes identically", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-note-parity-"));
+test("explicit Python overwrite receipts match JS notes without auditing native deletes", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "kernel-note-parity-"));
 	try {
 		const tool = new BashTool(stubSession(dir));
 		await Bun.write(path.join(dir, "js.txt"), "one\ntwo\n");
@@ -114,9 +138,9 @@ test("js and python kernels word overwrite and delete notes identically", async 
 				[
 					"from pathlib import Path",
 					"import os",
-					"Path('py.txt').read_text()",
-					"Path('py.txt').write_text('one\\nthree\\n')",
-					"Path('py-gone.txt').read_text()",
+					"harness.fs.read_text('py.txt')",
+					"harness.fs.write_text('py.txt', 'one\\nthree\\n')",
+					"harness.fs.read_text('py-gone.txt')",
 					"os.remove('py-gone.txt')",
 				].join("\n"),
 			),
@@ -125,17 +149,15 @@ test("js and python kernels word overwrite and delete notes identically", async 
 			"<kernel> note: deleted js-gone.txt",
 			"<kernel> note: wrote js.txt (+1 −1)",
 		]);
-		expect(noteLines(pyOutput).sort()).toEqual([
-			"<kernel> note: deleted py-gone.txt",
-			"<kernel> note: wrote py.txt (+1 −1)",
-		]);
+		expect(noteLines(pyOutput)).toEqual(["<kernel> note: wrote py.txt (+1 −1)"]);
+		expect(await Bun.file(path.join(dir, "py-gone.txt")).exists()).toBe(false);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 180000);
 
 test("notes count every changed line when the status-event diff is capped", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-note-capped-"));
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "kernel-note-capped-"));
 	try {
 		const tool = new BashTool(stubSession(dir));
 		// 1000 rows exceed the diff row cap; 150 rewritten 250-char lines exceed only the char cap.
@@ -164,9 +186,9 @@ test("notes count every changed line when the status-event diff is capped", asyn
 				"python",
 				[
 					"from pathlib import Path",
-					"Path('py-rows.txt').write_text(''.join(f'row {i}\\n' for i in range(1000)))",
-					"Path('py-wide.txt').read_text()",
-					"Path('py-wide.txt').write_text(''.join(f'new{i}'.ljust(250, 'x') + '\\n' for i in range(150)))",
+					"harness.fs.write_text('py-rows.txt', ''.join(f'row {i}\\n' for i in range(1000)))",
+					"harness.fs.read_text('py-wide.txt')",
+					"harness.fs.write_text('py-wide.txt', ''.join(f'new{i}'.ljust(250, 'x') + '\\n' for i in range(150)))",
 				].join("\n"),
 			),
 		);
@@ -184,7 +206,7 @@ test("notes count every changed line when the status-event diff is capped", asyn
 }, 180000);
 
 test("a js cell whose net effect is nothing emits no note at all", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-note-revert-"));
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "kernel-note-revert-"));
 	try {
 		const tool = new BashTool(stubSession(dir));
 		await Bun.write(path.join(dir, "keep.txt"), "same\n");

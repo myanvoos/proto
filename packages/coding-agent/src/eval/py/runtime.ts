@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $env, $whichAll, getPythonEnvDir } from "@oh-my-pi/pi-utils";
+import { $env, $which, $whichAll, getPythonEnvDir } from "@oh-my-pi/pi-utils";
 
 const DEFAULT_ENV_ALLOWLIST = new Set([
 	"PATH",
@@ -146,7 +146,12 @@ export function resolveExplicitPythonRuntime(
 			: interpreter.startsWith("~/")
 				? path.join(os.homedir(), interpreter.slice(2))
 				: interpreter;
-	const pythonPath = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+	const pythonPath = path.isAbsolute(expanded)
+		? expanded
+		: expanded.includes("/") || expanded.includes("\\")
+			? path.resolve(cwd, expanded)
+			: $which(expanded, { PATH: baseEnv.PATH, cwd });
+	if (!pythonPath) throw new Error(`Python executable not found on PATH: ${interpreter}`);
 	const venv = detectExplicitVenv(pythonPath);
 	if (venv) {
 		return { pythonPath, env: applyVenvEnv(baseEnv, venv.venvPath, venv.binDir), venvPath: venv.venvPath };

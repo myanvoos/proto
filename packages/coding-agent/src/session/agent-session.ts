@@ -325,6 +325,7 @@ import { SessionTools, type SessionToolsHost } from "./session-tools";
 import { skillPromptTitleInput } from "./skill-title-input";
 import { activateSessionStateRestore, captureSessionState, prepareSessionStateRestore } from "./state-manifest";
 import { abandonContinuationChildren, withTemporalMutation } from "./temporal-operations";
+import { authorizeSessionToolCall } from "./tool-call-policy";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -1086,6 +1087,7 @@ export class AgentSession {
 		this.#bash = new BashRunner(bashHost);
 
 		const evalHost: EvalRunnerHost = {
+			toolSession: () => config.evalToolSession,
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			settings: this.settings,
@@ -3271,31 +3273,40 @@ export class AgentSession {
 
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
 		await this.#ttsr.beforeToolCall(ctx);
-		const runner = this.#extensionRunner;
-		if (!runner?.hasHandlers("tool_call")) return undefined;
-		const metadata = ctx.toolCall.providerMetadata;
-		const computer = metadata?.type === "computer" ? metadata : undefined;
-		const eventArgs = computer
-			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
-			: ctx.args;
-		runner.markToolCallEmitted(ctx.toolCall.id, ctx.tool.name);
-		const callResult = await runner.emitToolCall(
-			{
-				type: "tool_call",
-				toolName: ctx.tool.name,
-				toolCallId: ctx.toolCall.id,
-				input: eventArgs,
-			},
-			signal,
-		);
-		if (callResult?.block) {
-			return { block: true, reason: callResult.reason || "Tool execution was blocked by an extension" };
-		}
+		return await authorizeSessionToolCall(this.#extensionRunner, ctx.toolCall, ctx.tool, ctx.args, signal);
+	}
 
-		if (callResult?.input !== undefined && !computer) {
-			return { args: callResult.input };
+	/** Python/JS helpers are actual tool calls, not a bypass around extension admission. */
+	async beforeEvalToolCall(
+		tool: AgentTool,
+		toolCallId: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<BeforeToolCallResult | undefined> {
+		const toolCall: AgentToolCall = { type: "toolCall", id: toolCallId, name: tool.name, arguments: args };
+		const assistantMessage = this.#findLastAssistantMessage();
+		try {
+			if (!assistantMessage)
+				return await authorizeSessionToolCall(this.#extensionRunner, toolCall, tool, args, signal);
+			return await this.#beforeToolCall(
+				{
+					assistantMessage,
+					toolCall,
+					tool,
+					args,
+					context: {
+						systemPrompt: this.agent.state.systemPrompt,
+						messages: this.agent.state.messages,
+						tools: this.agent.state.tools,
+					},
+				},
+				signal,
+			);
+		} finally {
+			// Internal API descriptors have no execution wrapper to consume the exactly-once marker.
+			if (this.getToolForEvalBridge(tool.name) !== tool)
+				this.#extensionRunner?.consumeToolCallEmitted(toolCallId, tool.name);
 		}
-		return undefined;
 	}
 
 	#findLastAssistantMessage(): AssistantMessage | undefined {
@@ -3963,6 +3974,7 @@ export class AgentSession {
 		} else {
 			// The node's journal is shared with descendant completion writers and the next runtime lease.
 			await this.sessionManager.flush();
+			this.sessionManager.trimHydratedEntryCache();
 		}
 		this.#liveHeartbeat?.dispose();
 		this.#liveHeartbeat = undefined;

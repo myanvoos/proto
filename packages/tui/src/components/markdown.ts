@@ -30,6 +30,7 @@ import {
 	applyBackgroundToLine,
 	Ellipsis,
 	encodeTextSized,
+	estimateRenderCacheSize,
 	getPaddingX,
 	getSegmenter,
 	getWidthConfigEpoch,
@@ -967,7 +968,8 @@ for (const table of [Lexer.rules.block.normal, Lexer.rules.block.gfm]) {
 }
 
 const RENDER_CACHE_MAX = 4096;
-const RENDER_CACHE_MAX_SIZE = 24 * 1024 * 1024;
+const RENDER_CACHE_MAX_SIZE = 10 * 1024 * 1024;
+const INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE = 24 * 1024 * 1024;
 const RENDER_CACHE_MAX_ENTRY_SIZE = 4 * 1024 * 1024;
 const EMPTY_RENDER_LINES: readonly string[] = [];
 
@@ -1055,6 +1057,9 @@ const renderCache = new LRUCache<string, RenderCacheEntry>({
 	maxSize: RENDER_CACHE_MAX_SIZE,
 	maxEntrySize: RENDER_CACHE_MAX_ENTRY_SIZE,
 	sizeCalculation: renderCacheEntrySize,
+	ttl: 60_000,
+	ttlAutopurge: true,
+	updateAgeOnGet: true,
 });
 
 // Retained strings are materialized UTF-16, not UTF-8 or display columns.
@@ -1066,7 +1071,7 @@ function renderedLinesCacheSize(lines: readonly string[]): number {
 }
 
 function renderCacheEntrySize(entry: RenderCacheEntry, key: string): number {
-	return key.length * 2 + renderedLinesCacheSize(entry.lines);
+	return estimateRenderCacheSize(key, entry.lines) + 32; // RenderCacheEntry object.
 }
 
 const FRAGMENT_STRING_FIELDS = [
@@ -1859,7 +1864,7 @@ export class Markdown implements Component {
 	// #streamPrefixLineCache, while this cache covers the mutable suffix only.
 	#incrementalTokenFragments = new LRUCache<number, IncrementalRenderFragment>({
 		max: RENDER_CACHE_MAX,
-		maxSize: RENDER_CACHE_MAX_SIZE,
+		maxSize: INCREMENTAL_FRAGMENT_CACHE_MAX_SIZE,
 		maxEntrySize: RENDER_CACHE_MAX_ENTRY_SIZE,
 		sizeCalculation: incrementalTokenFragmentSize,
 	});

@@ -39,6 +39,12 @@ test("evicted history payloads collect while complete rewind and streaming expor
 	expect(result.exportedCharacters).toBe(100 * 256 * 1024 + "active tail".length);
 }, 30_000);
 
+test("parking releases cached payloads without losing rewind, blobs, descendant writes, or resumed history", async () => {
+	const result = await probe("runtime-release");
+	expect(result.retainedBeforePark).toBe(8);
+	expect(result.survivors).toBe(0);
+}, 30_000);
+
 test("active context and maintenance do not read compacted-away oversized backing files", async () => {
 	const manager = SessionManager.inMemory();
 	managers.push(manager);

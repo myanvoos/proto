@@ -331,7 +331,12 @@ function stripReplayedReasoningSignatures(entry: FileEntry): FileEntry {
 
 export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStore): FileEntry {
 	// State codec payloads are durable computation, not lossy transcript previews.
-	if (entry.type === "custom" && entry.customType === "declared-state" && entry.data && typeof entry.data === "object")
+	if (
+		entry.type === "custom" &&
+		(entry.customType === "declared-state" || entry.customType === "python-store") &&
+		entry.data &&
+		typeof entry.data === "object"
+	)
 		return { ...entry, data: preserveReplaySubtree(entry.data, blobStore) };
 	const stripped = stripReplayedReasoningSignatures(entry);
 	if (!needsPersistenceTraversal(stripped)) return stripped;

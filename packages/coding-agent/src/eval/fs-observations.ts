@@ -23,6 +23,7 @@ interface FsObservationLedgerCallbacks {
 
 export class FsObservationLedger {
 	readonly #pending = new Map<string, FsObservation>();
+	readonly #reads = new Map<string, FsObservation>();
 	readonly #pendingReads = new Set<string>();
 	readonly #mutationPaths = new Set<string>();
 	readonly #ensureCurrent?: () => FsObservationLedger | null;
@@ -56,6 +57,13 @@ export class FsObservationLedger {
 		this.#pending.delete(observation.path);
 		this.#pendingReads.delete(observation.path);
 		this.#pending.set(observation.path, observation);
+		// Automatic observations arm unseen paths, but cannot acknowledge bytes
+		// an explicit reader has not seen or refresh an established stale baseline.
+		if (observation.kind === "read" && !this.#reads.has(observation.path)) {
+			this.#reads.set(observation.path, observation);
+			if (this.#reads.size > MAX_PENDING) this.#reads.delete(this.#reads.keys().next().value!);
+		}
+
 		if (observation.kind === "write") this.#mutationPaths.add(observation.path);
 		else if (!this.#mutationPaths.has(observation.path)) this.#pendingReads.add(observation.path);
 		if (this.#pending.size > MAX_PENDING) {
@@ -97,10 +105,73 @@ export class FsObservationLedger {
 		}
 	}
 
-	async recordRead(absPath: string): Promise<void> {
+	/** Capture a fixed comparison stamp for one atomic edit, not a mutable global read. */
+	writeGuard(absPath: string): () => Promise<void> {
+		const previous = this.#reads.get(absPath);
+		return async () => {
+			if (!previous) return;
+			const current = await observe(absPath, "read");
+			if (
+				previous.mtimeNs !== current.mtimeNs ||
+				previous.size !== current.size ||
+				previous.sha !== current.sha ||
+				previous.mtimeNs === null
+			) {
+				throw new Error(`StaleWriteError: ${absPath} changed since its last read; re-read before writing`);
+			}
+		};
+	}
+
+	async assertUnchanged(absPath: string): Promise<void> {
+		await this.writeGuard(absPath)();
+	}
+
+	#acknowledgeRead(observation: FsObservation): void {
+		const current = this.#ensureCurrent?.();
+		if (current === null) return;
+		if (current !== undefined && current !== this) {
+			current.#acknowledgeRead(observation);
+			return;
+		}
+		this.#reads.delete(observation.path);
+		this.#reads.set(observation.path, observation);
+		if (this.#reads.size > MAX_PENDING) this.#reads.delete(this.#reads.keys().next().value!);
+		this.record(observation);
+	}
+
+	/** Stamp the bytes actually returned, never a later reread of a concurrently edited file. */
+	async readBytes(absPath: string): Promise<Uint8Array> {
+		const before = await fs.stat(absPath, { bigint: true });
+		const bytes = await fs.readFile(absPath);
+		const after = await fs.stat(absPath, { bigint: true });
+		if (before.mtimeNs !== after.mtimeNs || before.size !== after.size) {
+			throw new Error(`File changed while reading: ${absPath}; read again`);
+		}
+		this.#acknowledgeRead({
+			path: absPath,
+			kind: "read",
+			mtimeNs: after.mtimeNs.toString(),
+			size: bytes.length,
+			sha: new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, 16),
+		});
+		return bytes;
+	}
+
+	/** Observe a tool read without replacing an established explicit read baseline. */
+	async observeRead(absPath: string): Promise<void> {
 		this.#beginAsyncRecord();
 		try {
 			this.record(await observe(absPath, "read"));
+		} finally {
+			this.#endAsyncRecord();
+		}
+	}
+
+	/** Acknowledge content explicitly read, restored, or successfully written by its owner. */
+	async recordRead(absPath: string): Promise<void> {
+		this.#beginAsyncRecord();
+		try {
+			this.#acknowledgeRead(await observe(absPath, "read"));
 		} finally {
 			this.#endAsyncRecord();
 		}

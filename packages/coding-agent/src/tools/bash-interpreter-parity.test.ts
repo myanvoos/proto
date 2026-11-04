@@ -4,9 +4,14 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { disposeBashSessions } from "../exec/bash-executor";
-import type { ToolSession } from ".";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+
+const pythonInterpreter = (await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true }))
+	.pythonPath!;
+const pythonCommand = `'${pythonInterpreter.replaceAll("'", "'\\''")}'`;
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const textOf = (result: { content: Array<{ type: string; text?: string }> }) =>
@@ -115,15 +120,16 @@ for (const language of ["python3", "node", "bun"] as const) {
 					).toEqual(Buffer.from(stderr));
 					expect(
 						result.details?.execution?.stages?.some(
-							stage => stage.route === (language === "python3" ? "py" : language),
+							stage => stage.route === (language === "python3" ? "external" : language),
 						),
-						`${program.name}: kernel route`,
+						`${program.name}: execution route`,
 					).toBe(true);
 					if (program.name === "file receipt isolation") {
 						expect(await fs.readFile(path.join(kernelCwd, "side-effect.txt"), "utf8")).toBe(
 							await fs.readFile(path.join(nativeCwd, "side-effect.txt"), "utf8"),
 						);
-						expect(textOf(result)).toContain("<kernel> note:");
+						if (language === "python3") expect(textOf(result)).not.toContain("<kernel> note:");
+						else expect(textOf(result)).toContain("<kernel> note:");
 					}
 				}
 			} finally {
@@ -142,31 +148,38 @@ test("kernel displays stay outside pipes, substitutions and merged redirections"
 	using dir = TempDir.createSync("@kernel-display-sideband-");
 	const owner = `display-sideband:${crypto.randomUUID()}`;
 	const settings = new Map<string, unknown>();
-	const bash = new BashTool({
+	const session = {
 		cwd: dir.path(),
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(dir.path(), "artifacts"),
 		getSessionId: () => owner,
 		getEvalSessionId: () => owner,
 		getEvalKernelOwnerId: () => owner,
-	} as unknown as ToolSession);
+	} as unknown as ToolSession;
+	const bash = new BashTool(session);
+	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
 	try {
 		for (const [language, flag, source] of [
-			["python3", "-c", 'print("payload"); display("visible-only"); 42'],
+			[
+				`${pythonCommand} -m proto_harness.kernel main`,
+				"-c",
+				'import proto_harness as harness; print("payload"); harness.display("visible-only"); 42',
+			],
 			["node", "-e", 'console.log("payload"); display("visible-only"); 42'],
 			["bun", "-e", 'console.log("payload"); display("visible-only"); 42'],
 		]) {
 			const command = `${language} ${flag} ${quote(source)}`;
-			const pipeline = await bash.execute("pipe", { command: `${command} 2>&1 | cat > ${language}.out` });
+			const filename = language.includes("proto_harness.kernel") ? "python3" : language;
+			const pipeline = await bash.execute("pipe", { command: `${command} 2>&1 | cat > ${filename}.out` });
 			expect(pipeline.details?.execution?.exitCode).toBe(0);
-			expect(await fs.readFile(path.join(dir.path(), `${language}.out`), "utf8")).toBe("payload\n");
+			expect(await fs.readFile(path.join(dir.path(), `${filename}.out`), "utf8")).toBe("payload\n");
 			expect(textOf(pipeline)).toContain("visible-only");
 			expect(textOf(pipeline)).toContain("42");
 			const substitution = await bash.execute("substitution", {
-				command: `value=$(${command}); printf '<%s>' "$value" > ${language}.sub`,
+				command: `value=$(${command}); printf '<%s>' "$value" > ${filename}.sub`,
 			});
 			expect(substitution.details?.execution?.exitCode).toBe(0);
-			expect(await fs.readFile(path.join(dir.path(), `${language}.sub`), "utf8")).toBe("<payload>");
+			expect(await fs.readFile(path.join(dir.path(), `${filename}.sub`), "utf8")).toBe("<payload>");
 			expect(textOf(substitution)).toContain("visible-only");
 		}
 	} finally {

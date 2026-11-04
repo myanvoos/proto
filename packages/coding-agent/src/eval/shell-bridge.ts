@@ -1,12 +1,10 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
-import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { Socket, TCPSocketListener } from "bun";
 import { resolveFleetRoot } from "../internal-urls";
 import { withExecutionOrigin } from "../jobs/origin";
 import type { ToolSession } from "../tools";
 import { resolveEvalBackends } from "../tools/eval-backends";
-import { readInterpreterSetting } from "./backend-helpers";
 import { isEvalTimeoutControlEvent } from "./bridge-timeout";
 import { cancelEvalCompletionSpeculation, type EvalCompletionInvocationContext } from "./completion-bridge";
 import { formatDisplayOutputForText } from "./display-text";
@@ -14,12 +12,9 @@ import { fsObservationLedgerFor, recordMutationEvents } from "./fs-observations"
 import { bunBackend, namespaceSessionId as jsSessionId, nodeBackend } from "./js";
 import { resolveNodeInterpreter } from "./js/node-runtime";
 import { kernelLaneSessionId, resolveKernelLaneConfiguration } from "./kernel-control";
-import { takeKernelCellTermination } from "./kernel-session-registry";
+import { observeKernelGeneration, takeKernelCellTermination } from "./kernel-session-registry";
 import { KERNEL_INPUT_CHUNK_BYTES } from "./kernel-streams";
-import pythonBackend, { namespaceSessionId as pythonSessionId } from "./py";
-import { type PythonCellRoute, routePythonCell } from "./py/cell-interpreter";
 import { PythonDisplayBudget } from "./py/display";
-import { MIN_KERNEL_PYTHON } from "./py/kernel";
 import { findLiteralCompletionCalls } from "./speculation";
 import { statusEventKey, upsertStatusEvent } from "./status-events";
 import type { EvalDisplayOutput, EvalStatusEvent, KernelInvocation } from "./types";
@@ -40,7 +35,7 @@ export interface KernelShellBridgeHandle {
 	queriedExecutions(): boolean;
 	/** Why the last kernel cell was cancelled by something other than this run (e.g. a force-close). */
 	cellFailure(): string | undefined;
-	dispose(): void;
+	dispose(): void | Promise<void>;
 }
 
 interface RunContext {
@@ -78,14 +73,14 @@ interface SocketState {
 	closed: boolean;
 }
 
-/** Kernel cell languages the shell builtins send: `python`, `node`, and `bun` commands. */
-type CellLanguage = "py" | "node" | "bun";
+/** Only JavaScript commands retain implicit kernel routing. */
+type CellLanguage = "node" | "bun";
 
-const CELL_BACKENDS = { py: pythonBackend, node: nodeBackend, bun: bunBackend };
+const CELL_BACKENDS = { node: nodeBackend, bun: bunBackend };
 
 /** The kernel session a lane's cells of `lang` run in (the id lifecycle records are keyed by). */
 function cellKernelSessionId(lang: CellLanguage, laneSessionId: string): string {
-	return lang === "py" ? pythonSessionId(laneSessionId) : jsSessionId(laneSessionId, lang);
+	return jsSessionId(laneSessionId, lang);
 }
 
 interface CellRequest {
@@ -109,28 +104,6 @@ const OUTPUT_HIGH_WATER_BYTES = 256 * 1024;
 const UTF8_FRAME_DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 const runs = new Map<string, RunContext>();
-const generations = new WeakMap<ToolSession, LRUCache<string, string>>();
-/** Interpreters a session was already told are too old for kernel cells. */
-const tooOldNoted = new WeakMap<ToolSession, Set<string>>();
-
-/** The fallthrough frame for a python command no kernel can run; says once per interpreter why. */
-function pythonFallThrough(context: RunContext, route: PythonCellRoute, request: CellRequest): Record<string, unknown> {
-	if (route.kind !== "external" || !route.tooOld) return { t: "f" };
-	const session = context.session;
-	const label = request.interpreter ?? request.program ?? "python";
-	let noted = tooOldNoted.get(session);
-	if (!noted) {
-		noted = new Set();
-		tooOldNoted.set(session, noted);
-	}
-	if (noted.has(label)) return { t: "f" };
-	noted.add(label);
-	const text = `<kernel> note: ${label} is older than Python ${MIN_KERNEL_PYTHON}, which kernel cells need; it runs as a plain process (no kernel state or helpers)`;
-	for (const output of context.displayBudget.addKernelOutput({ type: "notice", text })) {
-		if (output.type === "notice") appendDisplayText(context, output.text);
-	}
-	return { t: "f" };
-}
 let listener: TCPSocketListener<SocketState> | undefined;
 
 export function registerKernelShellRun(
@@ -514,7 +487,7 @@ function flushOutput(socket: Socket<SocketState>): void {
 function parseRequest(line: string): CellRequest | undefined {
 	const parsed = parseLine(line);
 	if (!parsed || typeof parsed.token !== "string" || typeof parsed.code !== "string") return undefined;
-	if (parsed.lang !== "py" && parsed.lang !== "node" && parsed.lang !== "bun") return undefined;
+	if (parsed.lang !== "node" && parsed.lang !== "bun") return undefined;
 	if (
 		parsed.shellEnv !== undefined &&
 		(parsed.shellEnv === null ||
@@ -569,33 +542,10 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 	try {
 		const backend = CELL_BACKENDS[request.lang];
 		const backends = resolveEvalBackends(session);
-		const enabled = request.lang === "py" ? backends.python : backends.js;
-		const configuration = resolveKernelLaneConfiguration(
-			session,
-			request.lang === "py" ? "python" : request.lang,
-			context.completionContext?.lane,
-		);
+		const enabled = backends.js;
+		const configuration = resolveKernelLaneConfiguration(session, request.lang, context.completionContext?.lane);
 		const remoteTarget = configuration?.target !== undefined && configuration.target.kind !== "local";
-		// A python command runs on the interpreter the shell would pick for it (see routePythonCell).
-		const pythonRoute =
-			enabled && request.lang === "py" && !remoteTarget
-				? await untilAborted(abort.signal, () =>
-						routePythonCell(request, {
-							cwd: configuration?.cwd ?? session.cwd,
-							laneInterpreter: configuration?.interpreter,
-							settingInterpreter: readInterpreterSetting(session, "python.interpreter"),
-							signal: abort.signal,
-						}),
-					)
-				: undefined;
-		abort.signal.throwIfAborted();
-		if (pythonRoute?.kind === "external") {
-			finish(socket, pythonFallThrough(context, pythonRoute, request));
-			return;
-		}
-		// Set only when a python command picked a kernel apart from the lane's default one.
-		const routedInterpreter = pythonRoute?.kind === "kernel" ? pythonRoute.interpreter : undefined;
-		const interpreter = routedInterpreter ?? configuration?.interpreter;
+		const interpreter = configuration?.interpreter;
 		// An explicitly selected interpreter/remote environment is validated at
 		// launch, not against this host's unrelated default Python executable.
 		const selectedRuntime = Boolean(interpreter || remoteTarget);
@@ -642,7 +592,7 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 			{
 				lane: context.completionContext?.lane ?? "main",
 				kind: "kernel",
-				language: request.lang === "py" ? "python" : request.lang,
+				language: request.lang,
 			},
 			() =>
 				backend.execute(request.code, {
@@ -678,21 +628,9 @@ async function handleRequest(socket: Socket<SocketState>, line: string): Promise
 							return;
 						}
 						if (event.op === "kernel-state" && typeof event.generation === "string") {
-							let known = generations.get(session);
-							if (!known) {
-								known = new LRUCache({ max: 32 });
-								generations.set(session, known);
-							}
-							// A lane holds one python kernel per interpreter; each has its own generation.
-							const lane = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
-							const key = routedInterpreter ? `${lane} (${routedInterpreter})` : lane;
-							const previous = known.get(key);
-							if (previous && previous !== event.generation)
-								renderDisplay({
-									type: "notice",
-									text: `<kernel> state lost: ${key} restarted; generation ${previous} → ${event.generation}. Earlier variables are gone.`,
-								});
-							known.set(key, event.generation);
+							const key = `${request.lang}:${context.completionContext?.lane ?? "main"}`;
+							const notice = observeKernelGeneration(session, key, event.generation);
+							if (notice) renderDisplay({ type: "notice", text: notice });
 						}
 						// File-observation correctness needs only mutation identity, not retained rich hunks.
 						if (typeof event.path === "string" && ["write", "delete", "revert"].includes(event.op)) {

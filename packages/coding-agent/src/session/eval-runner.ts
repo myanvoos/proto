@@ -8,15 +8,13 @@ import {
 } from "../eval/declared-state";
 import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
-import { namespaceSessionId as namespacePythonSessionId } from "../eval/py";
 import { type KernelDisplayOutput, normalizePythonDisplayOutputs } from "../eval/py/display";
-import {
-	disposeKernelSessionsByOwner,
-	executePython as executePythonCommand,
-	type PythonResult,
-} from "../eval/py/executor";
+import { disposeKernelSessionsByOwner, type PythonResult } from "../eval/py/executor";
+import { executeFreshPython } from "../eval/py/fresh-executor";
+import { hasPythonStore, releasePythonStore } from "../eval/py/python-store";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { ExtensionRunner } from "../extensibility/extensions";
+import type { ToolSession } from "../tools";
 import { outputMeta } from "../tools/output-meta";
 import type { PythonExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
@@ -27,6 +25,7 @@ export interface EvalRunnerHost {
 	sessionManager: SessionManager;
 	settings: Settings;
 	extensionRunner(): ExtensionRunner | undefined;
+	toolSession(): ToolSession | undefined;
 	isStreaming(): boolean;
 	appendSessionMessage(message: PythonExecutionMessage): void;
 }
@@ -61,7 +60,7 @@ export class EvalRunner {
 		const cwd = this.#host.sessionManager.getCwd();
 		this.assertExecutionAllowed();
 		const abortController = new AbortController();
-		const execution = withDeclaredStateBoundary(this.#kernelOwnerId, async (): Promise<PythonResult> => {
+		const execution = (async (): Promise<PythonResult> => {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_python")) {
 				const hookResult = await extensionRunner.emitUserPython(
@@ -87,18 +86,10 @@ export class EvalRunner {
 					return hookResult.result;
 				}
 			}
-			const sessionId =
-				this.getSessionId() ??
-				defaultEvalSessionId({
-					cwd,
-					getSessionFile: () => this.#host.sessionManager.getSessionFile() ?? null,
-				});
-			const result = await executePythonCommand(code, {
+			const result = await executeFreshPython(code, {
 				cwd,
-				sessionId: namespacePythonSessionId(sessionId),
-				kernelOwnerId: this.#kernelOwnerId,
-				kernelMode: this.#host.settings.get("python.kernelMode"),
-				interpreter: this.#host.settings.get("python.interpreter")?.trim() || undefined,
+				settings: this.#host.settings,
+				toolSession: this.#host.toolSession(),
 				onChunk,
 				onDisplay: options?.onDisplay,
 				signal: abortController.signal,
@@ -106,7 +97,7 @@ export class EvalRunner {
 			this.recordPythonResult(code, result, options);
 			if (!this.#host.isStreaming()) await captureSessionState(this.#host.sessionManager, this.#kernelOwnerId);
 			return result;
-		});
+		})();
 		return await this.trackExecution(execution, abortController);
 	}
 
@@ -227,7 +218,10 @@ export class EvalRunner {
 		if (this.#activeExecutions.size > 0) throw new Error("Cannot release a runtime with active eval execution");
 		return withDeclaredStateBoundary(this.#kernelOwnerId, async () => {
 			if (this.#activeExecutions.size > 0) throw new Error("Cannot release a runtime with admitted eval execution");
-			if (hasDeclaredStateContinuity(this.#kernelOwnerId))
+			if (
+				hasDeclaredStateContinuity(this.#kernelOwnerId) ||
+				hasPythonStore(this.#kernelOwnerId, this.#host.sessionManager)
+			)
 				await captureSessionState(
 					this.#host.sessionManager,
 					this.#kernelOwnerId,
@@ -250,8 +244,10 @@ export class EvalRunner {
 			disposeVmContextsByOwner(this.#kernelOwnerId),
 		]);
 		for (const result of results) if (result.status === "rejected") errors.push(result.reason);
-		if (settled && results.every(result => result.status === "fulfilled"))
+		if (settled && results.every(result => result.status === "fulfilled")) {
 			releaseDeclaredStateOwner(this.#kernelOwnerId);
+			releasePythonStore(this.#kernelOwnerId);
+		}
 		if (errors.length > 0)
 			throw new AggregateError(errors, "Failed to preserve declared state or dispose eval kernels");
 	}

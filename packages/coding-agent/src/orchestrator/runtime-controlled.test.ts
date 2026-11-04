@@ -19,6 +19,7 @@ import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { artifactsDirsFromRegistry } from "../internal-urls/registry-helpers";
 import * as mcpConfig from "../mcp/config";
@@ -29,15 +30,19 @@ import * as sdk from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AuthStorage } from "../session/auth-storage";
 import { extractSessionInit, SessionManager } from "../session/session-manager";
+import { authorizeSessionToolCall } from "../session/tool-call-policy";
 import { getBundledAgent } from "../task/agents";
 import * as executor from "../task/executor";
 import { runStructuredSubagent } from "../task/structured-subagent";
 import type { AgentDefinition } from "../task/types";
-import type { ToolSession } from "../tools";
+import type { Tool, ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
 import { type JobSnapshot, JobsTool } from "../tools/jobs";
+import { ReadTool } from "../tools/read";
 import { OrchestratorRuntime } from "./runtime";
 import { claimWakeTurn } from "./wake-turns";
+
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 
 const OWNER_PREFIX = `orchestrator-controlled-${process.pid}`;
 const usage = {
@@ -173,7 +178,8 @@ function stagedYieldProvider(requestedModels: string[], gates: Map<string, Promi
 }
 
 function cellCommand(language: "py" | "js", code: string): string {
-	const interpreter = language === "js" ? "node" : "python";
+	if (language === "py" && !python.ok) throw new Error(python.reason);
+	const interpreter = language === "js" ? "node" : `'${python.pythonPath}' -m proto_harness.kernel controlled`;
 	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
 }
 
@@ -192,19 +198,33 @@ function controlledEvalTool(settings: Settings): CustomTool {
 		parameters: type({ language: type("'py' | 'js'"), code: type("string"), "timeout?": type("number") }),
 		strict: true,
 		execute: async (toolCallId, params, _onUpdate, context, signal) => {
-			const session = {
+			const tools = new Map<string, Tool>();
+			const session: ToolSession = {
 				cwd: context.sessionManager.getCwd(),
 				hasUI: false,
 				settings,
 				modelRegistry: context.modelRegistry,
-				sessionManager: context.sessionManager,
 				getSessionFile: () => context.sessionManager.getSessionFile() ?? null,
 				getSessionId: () => context.sessionManager.getSessionId(),
 				getAsyncJobOwnerId: () => context.sessionManager.getSessionId(),
 				getEvalSessionId: () => context.sessionManager.getSessionId(),
 				getEvalKernelOwnerId: () => context.sessionManager.getSessionId(),
 				getSessionSpawns: () => "*",
-			} as unknown as ToolSession;
+				toolRegistry: tools,
+				getToolByName: name => tools.get(name),
+				getToolForEvalBridge: name => tools.get(name),
+				getEvalBridgeToolNames: () => [...tools.keys()],
+				beforeEvalToolCall: (tool, id, args, signal) =>
+					authorizeSessionToolCall(
+						undefined,
+						{ type: "toolCall", id, name: tool.name, arguments: args },
+						tool,
+						args,
+						signal,
+					),
+			};
+			tools.set("bash", new BashTool(session));
+			tools.set("read", new ReadTool(session));
 			const { language, code } = params as { language: "py" | "js"; code: string };
 			return new BashTool(session).execute(toolCallId, { command: cellCommand(language, code) }, signal);
 		},
@@ -224,7 +244,8 @@ function parentSession(args: {
 	sessionId?: string;
 }): ToolSession {
 	const sessionId = args.sessionId ?? args.sessionManager.getSessionId();
-	return {
+	const tools = new Map<string, Tool>();
+	const session: ToolSession = {
 		cwd: args.cwd,
 		hasUI: false,
 		settings: args.settings,
@@ -247,7 +268,22 @@ function parentSession(args: {
 		getArtifactsDir: () => (args.file ? path.dirname(args.file) : null),
 		getActiveModelString: () => undefined,
 		getModelString: () => undefined,
-	} as ToolSession;
+		toolRegistry: tools,
+		getToolByName: name => tools.get(name),
+		getToolForEvalBridge: name => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
+		beforeEvalToolCall: (tool, id, args, signal) =>
+			authorizeSessionToolCall(
+				undefined,
+				{ type: "toolCall", id, name: tool.name, arguments: args },
+				tool,
+				args,
+				signal,
+			),
+	};
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
 }
 
 let cleanupFixture: (() => Promise<void>) | undefined;
@@ -1989,11 +2025,7 @@ test("releasing an idle parent runtime preserves a running grandchild and its ow
 		);
 		void (async () => {
 			if (!grandchild && !context.messages.some(entry => entry.role === "toolResult" && entry.toolName === "bash")) {
-				pushToolCall(
-					stream,
-					model,
-					call("declare-state", "bash", { command: cellCommand("py", 'useful = 42; declare_state(["useful"])') }),
-				);
+				pushToolCall(stream, model, call("seed-warm-state", "bash", { command: cellCommand("py", "useful = 42") }));
 				return;
 			}
 			if (grandchild) {
@@ -2048,7 +2080,7 @@ test("releasing an idle parent runtime preserves a running grandchild and its ow
 	const revivedParent = await AgentLifecycleManager.global().ensureLive(parent.id);
 	const bash = revivedParent.getToolByName("bash");
 	if (!bash) throw new Error("Revived parent lost its interpreter tool");
-	const restored = await bash.execute("read-declared-state", { command: cellCommand("py", "print(useful)") });
+	const restored = await bash.execute("read-warm-state", { command: cellCommand("py", "print(useful)") });
 	expect(restored.isError).toBeUndefined();
 	expect(cellText(restored)).toContain("42");
 	await runtime.send(parentOwner, { session: grandchild.id, message: "gated-grandchild-followup" });

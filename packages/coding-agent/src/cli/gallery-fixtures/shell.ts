@@ -102,23 +102,24 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 	},
 
 	bash_kernel_display: {
-		label: "Bash kernel cell with display output and a file mutation",
+		label: "Bash Python with explicit display and atomic file mutation",
 		renderer: "bash",
 		streamingArgs: {
-			command: "python <<'PY'\nimport json\nfrom pathlib import Path\n\ndata = json.loads(Path(\"package.js",
+			command:
+				"python3 <<'PY'\nimport json\nimport proto_harness as harness\n\ndata = json.loads(harness.fs.read_text(\"package.js",
 		},
 		args: {
 			command: [
-				"python <<'PY'",
+				"python3 <<'PY'",
 				"import json",
-				"from pathlib import Path",
+				"import proto_harness as harness",
 				"",
-				'data = json.loads(Path("package.json").read_text())',
+				'data = json.loads(harness.fs.read_text("package.json"))',
 				'deps = data.get("dependencies", {})',
-				'Path("deps.txt").write_text("\\n".join(sorted(deps)))',
+				'harness.fs.write_text("deps.txt", "\\n".join(sorted(deps)))',
 				'print(f"{data[\\"name\\"]} v{data[\\"version\\"]}")',
 				'print(f"{len(deps)} dependencies")',
-				"display(sorted(deps)[:3])",
+				"harness.display(sorted(deps)[:3])",
 				"PY",
 			].join("\n"),
 		},

@@ -1,28 +1,63 @@
 import { afterEach, expect, test } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { disposeBashSessions, executeBash } from "../exec/bash-executor";
 import { convertToLlm } from "../session/messages";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
+import { ReadTool } from "./read";
 
 const owners = new Map<string, string>();
 
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+
 function stubSession(cwd: string): ToolSession {
+	if (!python.pythonPath) throw new Error("Python interpreter unavailable");
+	const bin = path.join(cwd, "test-bin");
+	fsSync.mkdirSync(bin, { recursive: true });
+	for (const name of ["python", "python3"]) {
+		try {
+			fsSync.symlinkSync(python.pythonPath, path.join(bin, name));
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+		}
+	}
 	const owner = owners.get(cwd) ?? `bash-kernel-test:${crypto.randomUUID()}`;
 	owners.set(cwd, owner);
 	const settings = new Map<string, unknown>();
-	return {
+	const tools = new Map<string, BashTool | ReadTool>();
+	const session = {
 		cwd,
-		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
+		settings: {
+			get: (key: string) => settings.get(key),
+			getShellConfig: () => ({ env: { PATH: `${bin}:${process.env.PATH ?? ""}` } }),
+		},
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
 		getSessionId: () => owner,
 		getEvalSessionId: () => `bash-kernel-test:${cwd}`,
 		getEvalKernelOwnerId: () => owner,
 	} as unknown as ToolSession;
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
+}
+
+async function makeBash(cwd: string): Promise<BashTool> {
+	const bash = new BashTool(stubSession(cwd));
+	const selected = await bash.execute("select-native-python", {
+		command: `export PATH=${JSON.stringify(path.join(cwd, "test-bin"))}:$PATH`,
+	});
+	expect(selected.isError).not.toBe(true);
+	return bash;
 }
 
 function textOf(result: { content: Array<{ type: string; text?: string }> }): string {
@@ -43,24 +78,32 @@ afterEach(async () => {
 	owners.clear();
 });
 
-test("heredoc python routes to the kernel and state persists across bash calls", async () => {
+test("explicit named Python kernel persists across heredoc and code calls", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-state-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
-		await bash.execute("set", { command: "python <<'EOF'\nprobe_state = 41\nprint('set-ok')\nEOF" });
-		const second = await bash.execute("use", { command: "python3 - <<'EOF'\nprint('value', probe_state + 1)\nEOF" });
+		const bash = await makeBash(dir);
+		await bash.execute("set", {
+			command: "python -m proto_harness.kernel main <<'EOF'\nprobe_state = 41\nprint('set-ok')\nEOF",
+		});
+		const second = await bash.execute("use", {
+			command: "python3 -m proto_harness.kernel main <<'EOF'\nprint('value', probe_state + 1)\nEOF",
+		});
 		expect(textOf(second)).toContain("value 42");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 }, 60000);
 
-test("heredoc and -c python cells share one kernel session", async () => {
+test("explicit named Python kernel accepts heredoc and code invocations", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-shared-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
-		await bash.execute("seed", { command: "python <<'EOF'\nshared_marker = 'from-heredoc'\nEOF" });
-		const bashResult = await bash.execute("bash", { command: "python -c 'print(\"marker:\", shared_marker)'" });
+		const bash = await makeBash(dir);
+		await bash.execute("seed", {
+			command: "python -m proto_harness.kernel main <<'EOF'\nshared_marker = 'from-heredoc'\nEOF",
+		});
+		const bashResult = await bash.execute("bash", {
+			command: "python -m proto_harness.kernel main -c 'print(\"marker:\", shared_marker)'",
+		});
 		expect(textOf(bashResult)).toContain("marker: from-heredoc");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -71,7 +114,7 @@ test("script paths and --version stay native while -c preserves program argv", a
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-script-"));
 	try {
 		await Bun.write(path.join(dir, "prog.py"), "import sys\nprint('argv', sys.argv[1])\n");
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		expect(textOf(await bash.execute("script", { command: "python3 prog.py hello" }))).toContain("argv hello");
 		expect(textOf(await bash.execute("version", { command: "python3 --version" }))).toContain("Python 3");
 		expect(
@@ -82,7 +125,7 @@ test("script paths and --version stay native while -c preserves program argv", a
 	}
 }, 60000);
 
-test("`python` script paths fall through to python3 on hosts without a `python` binary", async () => {
+test("native command resolution does not alias missing python to python3", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-py3only-"));
 	try {
 		const realPython3 = Bun.which("python3");
@@ -91,18 +134,23 @@ test("`python` script paths fall through to python3 on hosts without a `python` 
 		await fs.mkdir(bin);
 		await fs.symlink(realPython3, path.join(bin, "python3"));
 		await Bun.write(path.join(dir, "prog.py"), "import sys\nprint('argv', sys.argv[1])\n");
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const ran = await bash.execute("py3only", {
-			command: `(export PATH=${JSON.stringify(bin)}; python prog.py hello; echo rc=$?)`,
+			command: `(export PATH=${JSON.stringify(bin)}; python3 prog.py hello; echo rc=$?)`,
 		});
 		expect(textOf(ran)).toContain("argv hello");
 		expect(textOf(ran)).toContain("rc=0");
+		const unaliased = await bash.execute("unaliased", {
+			command: `(export PATH=${JSON.stringify(bin)}; python prog.py hello; echo rc=$?)`,
+		});
+		expect(textOf(unaliased)).toContain("command not found: python");
+		expect(textOf(unaliased)).toContain("rc=127");
 		const empty = path.join(dir, "empty");
 		await fs.mkdir(empty);
 		const missing = await bash.execute("none", {
 			command: `(export PATH=${JSON.stringify(empty)}; python prog.py hello; echo rc=$?)`,
 		});
-		expect(textOf(missing)).toContain("no python or python3 on PATH");
+		expect(textOf(missing)).toContain("command not found: python");
 		expect(textOf(missing)).toContain("rc=127");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -112,7 +160,7 @@ test("`python` script paths fall through to python3 on hosts without a `python` 
 test("routed python composes in pipelines and reports errors with real exit codes", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-pipe-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const piped = await bash.execute("pipe", {
 			command: "python <<'EOF' | rg -c line\nfor i in range(3):\n    print(f'line {i}')\nEOF",
 		});
@@ -128,7 +176,7 @@ test("routed python composes in pipelines and reports errors with real exit code
 test("a piped or redirected `-c` reads the caller's stdin instead of the kernel's", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-stdin-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		// Program bytes must be isolated from the kernel's long-lived control pipe:
 		// reading stdin must neither consume protocol frames nor wait for kernel exit.
 		const piped = await bash.execute("consume", {
@@ -142,11 +190,11 @@ test("a piped or redirected `-c` reads the caller's stdin instead of the kernel'
 		});
 		expect(textOf(redirected)).toContain("parsed 7");
 
-		// `-c` always shares its lane's kernel state, with or without program input.
+		// Ordinary `-c` is fresh regardless of whether stdin was supplied.
 		await bash.execute("set", { command: "python3 -c 'STDIN_GUARD_MARKER = 4242'" });
-		expect(textOf(await bash.execute("get", { command: "python3 -c 'print(STDIN_GUARD_MARKER)'" }))).toContain(
-			"4242",
-		);
+		expect(
+			textOf(await bash.execute("get", { command: "python3 -c 'print(\"STDIN_GUARD_MARKER\" not in globals())'" })),
+		).toContain("True");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -155,7 +203,7 @@ test("a piped or redirected `-c` reads the caller's stdin instead of the kernel'
 test("a kernel cell stops as soon as its pipeline consumer exits", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-sigpipe-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const started = Date.now();
 		const result = await bash.execute("early-close", {
 			command: "python3 -c 'for i in range(2000000): print(i)' | head -1",
@@ -174,7 +222,7 @@ test("a kernel cell stops as soon as its pipeline consumer exits", async () => {
 test("large kernel output reaches shell pipeline consumers without quadratic frame parsing", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-large-pipe-"));
 	try {
-		const result = await new BashTool(stubSession(dir)).execute("large-pipe", {
+		const result = await (await makeBash(dir)).execute("large-pipe", {
 			command: "node -e 'console.log(\"ü\".repeat(8 * 1024 * 1024))' | wc -c",
 			timeout: 10,
 		});
@@ -196,13 +244,14 @@ test("executeBash without a registered bridge falls through to real python", asy
 	}
 }, 30000);
 
-test("kernel cells honor the shell cwd and surface write events", async () => {
+test("explicit Python filesystem operations honor shell cwd and surface mutation events", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-write-"));
 	try {
 		await fs.mkdir(path.join(dir, "sub"));
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const result = await bash.execute("write", {
-			command: "cd sub && python <<'EOF'\nopen('rel.txt', 'w').write('from-kernel\\n')\nprint('wrote')\nEOF",
+			command:
+				"cd sub && python <<'EOF'\nimport proto_harness as harness\nharness.fs.write_text('rel.txt', 'from-kernel\\n')\nprint('wrote')\nEOF",
 		});
 		expect(await Bun.file(path.join(dir, "sub", "rel.txt")).text()).toBe("from-kernel\n");
 		const writes = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
@@ -216,14 +265,19 @@ test("kernel cells honor the shell cwd and surface write events", async () => {
 test("bash timeout interrupts the cell while the kernel survives with state", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-timeout-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
-		await bash.execute("seed", { command: "python -c 'survivor = 7'" });
+		const bash = await makeBash(dir);
+		await bash.execute("seed", { command: "python -m proto_harness.kernel main -c 'survivor = 7'" });
 		const started = performance.now();
 		await bash
-			.execute("slow", { command: "python <<'EOF'\nimport time\ntime.sleep(120)\nEOF", timeout: 2 })
+			.execute("slow", {
+				command: "python -m proto_harness.kernel main <<'EOF'\nimport time\ntime.sleep(120)\nEOF",
+				timeout: 2,
+			})
 			.catch(() => undefined);
 		expect(performance.now() - started).toBeLessThan(15000);
-		const after = await bash.execute("check", { command: "python -c 'print(\"still\", survivor)'" });
+		const after = await bash.execute("check", {
+			command: `${JSON.stringify(python.pythonPath)} -m proto_harness.kernel main -c 'print("still", survivor)'`,
+		});
 		expect(textOf(after)).toContain("still 7");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -233,7 +287,7 @@ test("bash timeout interrupts the cell while the kernel survives with state", as
 test("heredoc node routes to the JS kernel and state persists across bash calls", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-state-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		await bash.execute("set", { command: "node <<'EOF'\nglobalThis.jsProbe = 41;\nconsole.log('set-ok');\nEOF" });
 		const second = await bash.execute("use", { command: "node -e 'console.log(\"value\", jsProbe + 1)'" });
 		expect(textOf(second)).toContain("value 42");
@@ -245,7 +299,7 @@ test("heredoc node routes to the JS kernel and state persists across bash calls"
 test("bun heredoc routes to the JS kernel and state persists across calls", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bunsh-state-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		await bash.execute("set", { command: "bun <<'EOF'\nglobalThis.bunProbe = 41;\nconsole.log('set-ok');\nEOF" });
 		const second = await bash.execute("use", { command: "bun -e 'console.log(\"value\", bunProbe + 1)'" });
 		expect(textOf(second)).toContain("value 42");
@@ -257,7 +311,7 @@ test("bun heredoc routes to the JS kernel and state persists across calls", asyn
 test("a js cell shows its own error with the user's stack but a kernel failure as just the harness message", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-errors-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const thrown = textOf(
 			await bash.execute("user-error", {
 				command: `bun -e 'function userFrame() { throw new TypeError("user boom") } userFrame()'; echo rc=$?`,
@@ -285,7 +339,7 @@ test("a js cell shows its own error with the user's stack but a kernel failure a
 test("heredoc and -e js cells share one kernel session", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-shared-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		await bash.execute("seed", { command: "node <<'EOF'\nglobalThis.jsShared = 'from-heredoc-js'\nEOF" });
 		const bashResult = await bash.execute("bash", { command: "node -e 'console.log(\"marker:\", jsShared)'" });
 		expect(textOf(bashResult)).toContain("marker: from-heredoc-js");
@@ -298,7 +352,7 @@ test("node script paths fall through to the real node with argv", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "jssh-script-"));
 	try {
 		await Bun.write(path.join(dir, "prog.js"), "console.log('argv', process.argv[2]);\n");
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		expect(textOf(await bash.execute("script", { command: "node prog.js hello" }))).toContain("argv hello");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -308,7 +362,7 @@ test("node script paths fall through to the real node with argv", async () => {
 test("kernel bridge capabilities are shell-local and not inherited by child processes", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-env-scope-"));
 	try {
-		const result = await new BashTool(stubSession(dir)).execute("env-scope", {
+		const result = await (await makeBash(dir)).execute("env-scope", {
 			command: [
 				`printf 'shell=%s\n' "$PI_KERNEL_FLEET_ROOT"`,
 				`if test -n "$PI_KERNEL_BRIDGE_ADDR" && test -n "$PI_KERNEL_BRIDGE_TOKEN"; then echo shell-bridge=set; else echo shell-bridge=unset; fi`,
@@ -324,13 +378,14 @@ test("kernel bridge capabilities are shell-local and not inherited by child proc
 	}
 }, 60000);
 
-test("fleet python scripts execute as kernel orchestration", async () => {
+test("fleet Python scripts use explicit orchestration helpers in a fresh process", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-py-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const writeScript = [
 			"cat > fleet://plan.py <<'EOF'",
-			"results = parallel([lambda i=i: i * i for i in range(4)])",
+			"import proto_harness as harness",
+			"results = harness.parallel([lambda i=i: i * i for i in range(4)])",
 			"open('out.txt', 'w').write(','.join(str(value) for value in results) + '\\n')",
 			"print('orchestrated', sum(results))",
 			"EOF",
@@ -343,8 +398,10 @@ test("fleet python scripts execute as kernel orchestration", async () => {
 		expect(textOf(run)).toContain("orchestrated 14");
 		expect(await Bun.file(path.join(dir, "out.txt")).text()).toBe("0,1,4,9\n");
 
-		const after = await bash.execute("after", { command: "python -c 'print(\"kept\", results)'" });
-		expect(textOf(after)).toContain("kept [0, 1, 4, 9]");
+		const after = await bash.execute("after", {
+			command: 'python -c \'print("fresh", "results" not in globals())\'',
+		});
+		expect(textOf(after)).toContain("fresh True");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
@@ -353,7 +410,7 @@ test("fleet python scripts execute as kernel orchestration", async () => {
 test("fleet js scripts execute in the JS kernel", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "fleet-js-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const writeScript = [
 			"cat > fleet://plan.mjs <<'EOF'",
 			// `node` scripts run in real Node, so they use Node's APIs, not Bun's.
@@ -374,7 +431,7 @@ test("fleet js scripts execute in the JS kernel", async () => {
 test("execution metadata ignores timeout-looking successful output", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-success-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const result = await bash.execute("success", { command: "printf 'timeout: 60\\n'" });
 		expect(result.isError ?? false).toBe(false);
 		expect(result.details?.execution?.state).toBe("exited");
@@ -390,7 +447,7 @@ test("execution metadata ignores timeout-looking successful output", async () =>
 test("failed command status outranks checks-passed output", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-failure-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const result = await bash.execute("failure", { command: "printf 'all checks passed\\n'; exit 7" });
 		expect(result.isError).toBe(true);
 		expect(result.details?.execution?.state).toBe("exited");
@@ -405,7 +462,7 @@ test("failed command status outranks checks-passed output", async () => {
 test("actual child timeout reports unknown process state and deadline scope", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-timeout-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const result = await bash.execute("timeout", { command: "sleep 120", timeout: 1 });
 		expect(result.isError).toBe(true);
 		expect(result.details?.execution?.state).toBe("unknown");
@@ -484,7 +541,7 @@ test("raw output artifact and execution metadata survive replay", async () => {
 test("running Bash updates carry execution state separately from output", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-meta-running-"));
 	try {
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const updates: Array<{ state?: string }> = [];
 		await bash.execute("running", { command: "printf 'all checks passed\\n'; sleep 0.1" }, undefined, update => {
 			updates.push({ state: update.details?.execution?.state });
@@ -495,22 +552,22 @@ test("running Bash updates carry execution state separately from output", async 
 	}
 }, 30000);
 
-test("heredoc file edits compose through bash and expose one structured file mutation", async () => {
+test("explicit heredoc filesystem edits expose each committed atomic mutation", async () => {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pysh-file-edit-"));
 	try {
 		await fs.mkdir(path.join(dir, "sub"));
 		await Bun.write(path.join(dir, "sub", "target.txt"), "before\n");
-		const bash = new BashTool(stubSession(dir));
+		const bash = await makeBash(dir);
 		const result = await bash.execute("file-edit", {
 			command: [
 				"cd sub && python <<'PYEOF' && cat target.txt",
-				"from pathlib import Path",
-				'target = Path("target.txt")',
-				"source = target.read_text()",
+				"import proto_harness as harness",
+				'target = "target.txt"',
+				"source = harness.fs.read_text(target)",
 				'assert source.count("before") == 1',
-				'target.write_text(source.replace("before", "intermediate"))',
+				'harness.fs.write_text(target, source.replace("before", "intermediate"))',
 				'CONTENT = "after\\n"',
-				"target.write_text(CONTENT)",
+				"harness.fs.write_text(target, CONTENT)",
 				"PYEOF",
 			].join("\n"),
 		});
@@ -519,9 +576,11 @@ test("heredoc file edits compose through bash and expose one structured file mut
 		expect(await Bun.file(path.join(dir, "sub", "target.txt")).text()).toBe("after\n");
 		expect(textOf(result)).toContain("after");
 		const writes = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
-		expect(writes).toHaveLength(1);
+		expect(writes).toHaveLength(2);
 		expect(writes[0]?.diff).toMatch(/^-\d+\|before$/m);
-		expect(writes[0]?.diff).toMatch(/^\+\d+\|after$/m);
+		expect(writes[0]?.diff).toMatch(/^\+\d+\|intermediate$/m);
+		expect(writes[1]?.diff).toMatch(/^-\d+\|intermediate$/m);
+		expect(writes[1]?.diff).toMatch(/^\+\d+\|after$/m);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}

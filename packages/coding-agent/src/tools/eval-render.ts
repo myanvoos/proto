@@ -751,6 +751,23 @@ export function highlightShellWithEmbeddedCode(
 	return lines;
 }
 
+/** Rich displays share the same bounded, width-aware tree on shell and cell cards. */
+export function renderJsonDisplayLines(
+	jsonOutputs: readonly unknown[],
+	theme: Theme,
+	expanded: boolean,
+	width: number,
+): string[] {
+	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
+	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
+	const treeScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
+	return jsonOutputs.flatMap((value, index) => {
+		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen, width);
+		const body = tree.truncated ? [...tree.lines, theme.fg("dim", "…")] : tree.lines;
+		return jsonOutputs.length > 1 ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
+	});
+}
+
 /**
  * Render one kernel cell (header + code preview + output + Status hunks + JSON
  * display trees) exactly as the eval tool's per-cell path does. Shared so the
@@ -796,15 +813,7 @@ export function renderKernelCellLines(
 	const otherEvents = agentEvents.length > 0 ? allEvents.filter(e => e.op !== "agent") : allEvents;
 	const agentLines = agentEvents.length > 0 ? renderAgentProgressEvents(agentEvents, theme, width, spinnerFrame) : [];
 
-	const treeDepth = expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
-	const treeLineCap = expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
-	const treeScalarLen = expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-	const labelOutputs = jsonOutputs.length > 1;
-	const jsonLines = jsonOutputs.flatMap((value, index) => {
-		const tree = renderJsonTreeLines(value, theme, treeDepth, treeLineCap, treeScalarLen, width);
-		const body = tree.truncated ? [...tree.lines, theme.fg("dim", "…")] : tree.lines;
-		return labelOutputs ? [theme.fg("dim", `display[${index + 1}]`), ...body] : body;
-	});
+	const jsonLines = renderJsonDisplayLines(jsonOutputs, theme, expanded, width);
 
 	const outputContent = formatCellOutputLines(cell, expanded, previewLines, theme, width);
 	const outputLines = [...outputContent.lines];

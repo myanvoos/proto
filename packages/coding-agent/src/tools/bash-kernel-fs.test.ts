@@ -3,23 +3,40 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
+import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
-import type { ToolSession } from ".";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
+import type { Tool, ToolSession } from ".";
 import { BashTool, type BashToolDetails } from "./bash";
+import { ReadTool } from "./read";
+
+const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+if (!availability.ok || !availability.pythonPath) throw new Error(availability.reason ?? "Python unavailable");
+const PYTHON = JSON.stringify(availability.pythonPath);
+const TEMP_ROOT = await fs.realpath(os.tmpdir());
 
 const KERNEL_OWNER = `eval-fs-diff-test:${process.pid}`;
 
 function stubSession(cwd: string, skills?: ToolSession["skills"]): ToolSession {
 	const settings = new Map<string, unknown>();
-	return {
+	const tools = new Map<string, Tool>();
+	const session = {
 		cwd,
 		skills,
 		settings: { get: (key: string) => settings.get(key), getShellConfig: () => ({ env: {} }) },
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
-		getEvalSessionId: () => "eval-fs-diff-test",
+		getEvalSessionId: () => `fs-test:${cwd}`,
 		getEvalKernelOwnerId: () => KERNEL_OWNER,
+		getSessionId: () => KERNEL_OWNER,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
 	} as unknown as ToolSession;
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
 }
 
 type CellInput = {
@@ -30,7 +47,8 @@ type CellInput = {
 };
 
 function cellCommand(language: CellInput["language"], code: string): string {
-	const interpreter = language === "py" ? "python" : language;
+	const interpreter = language === "py" ? `${PYTHON} -m proto_harness.kernel main --interpreter ${PYTHON}` : language;
+	if (language === "py") code = `import proto_harness as harness\n${code}`;
 	return `${interpreter} <<'__PROTO_CELL__'\n${code}\n__PROTO_CELL__`;
 }
 
@@ -41,10 +59,14 @@ function textOf(result: { content: Array<{ type: string; text?: string }> }): st
 		.join("\n");
 }
 
-function expectCellComplete(result: { isError?: boolean; details?: BashToolDetails }): void {
+function expectCellComplete(result: {
+	isError?: boolean;
+	details?: BashToolDetails;
+	content: Array<{ type: string; text?: string }>;
+}): void {
 	expect(result.isError ?? false).toBe(false);
 	expect(result.details?.execution?.state).toBe("exited");
-	expect(result.details?.execution?.exitCode).toBe(0);
+	expect(result.details?.execution?.exitCode, textOf(result)).toBe(0);
 }
 
 async function executeCell(
@@ -65,179 +87,140 @@ async function executeCell(
 	);
 }
 
+retainFsObservationLedger(KERNEL_OWNER, KERNEL_OWNER);
+
 afterAll(async () => {
 	await Promise.all([disposeKernelSessionsByOwner(KERNEL_OWNER), disposeVmContextsByOwner(KERNEL_OWNER)]);
+	releaseFsObservationLedger(KERNEL_OWNER, KERNEL_OWNER);
 });
 
-test("kernel audit hook reports plain open() writes outside the walker root", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-hook-outside-"));
-	const outside = path.join(os.tmpdir(), `eval-hook-out-${process.pid}-${Date.now()}.txt`);
+test("explicit filesystem writes report mutations outside the working directory", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-hook-outside-"));
+	const outside = path.join(TEMP_ROOT, `eval-hook-out-${process.pid}-${Date.now()}.txt`);
 	try {
-		const tool = new BashTool(stubSession(dir));
-		const code = [
-			`with open(${JSON.stringify(outside)}, "w") as f:`,
-			'    f.write("brand new line\\n")',
-			'print("done")',
-		].join("\n");
-		const result = await executeCell(tool, "eval-hook-outside-test", {
+		const result = await executeCell(new BashTool(stubSession(dir)), "eval-hook-outside-test", {
 			language: "py",
-			code,
+			code: `harness.fs.write_text(${JSON.stringify(outside)}, "brand new line\\n")`,
 			timeout: 60,
 		});
-
 		expectCellComplete(result);
-		const cellEvents = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
-		const event = cellEvents.find(e => e.path === outside);
-		expect(event, "audit hook emits a write event for a plain open() outside session cwd").toBeDefined();
-		expect(String(event?.diff)).toContain("+1|brand new line");
+		const events = (result.details?.statusEvents ?? []).filter(
+			event => event.op === "write" && event.path === outside,
+		);
+		expect(events).toHaveLength(1);
+		expect(String(events[0]?.diff)).toContain("+1|brand new line");
+		expect(await Bun.file(outside).text()).toBe("brand new line\n");
 	} finally {
 		await fs.rm(outside, { force: true });
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("kernel audit hook reports each written file exactly once per cell", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-hook-dedupe-"));
+test("explicit filesystem writes report each committed operation but not reads", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-hook-dedupe-"));
 	try {
-		const tool = new BashTool(stubSession(dir));
-		const code = [
-			"# plain append via open()",
-			'with open("plain.txt", "w") as f:',
-			'    f.write("original line\\n")',
-			'with open("plain.txt", "a") as f:',
-			'    f.write("appended by plain open\\n")',
-			"# read-mode open must not be recorded",
-			'open("plain.txt").close()',
-			'print("done")',
-		].join("\n");
-		const result = await executeCell(tool, "eval-hook-dedupe-test", {
+		const result = await executeCell(new BashTool(stubSession(dir)), "eval-hook-dedupe-test", {
 			language: "py",
-			code,
+			code: [
+				'harness.fs.write_text("plain.txt", "original line\\n")',
+				'text = harness.fs.read_text("plain.txt")',
+				'harness.fs.write_text("plain.txt", text + "appended by explicit edit\\n")',
+				'harness.fs.read_text("plain.txt")',
+			].join("\n"),
 			timeout: 60,
 		});
-
 		expectCellComplete(result);
-		const cellEvents = (result.details?.statusEvents ?? []).filter(event => event.op === "write");
-
-		const plain = cellEvents.filter(event => event.path === path.join(dir, "plain.txt"));
-		expect(plain.length, "plain open() write is reported exactly once (hook + walker dedupe)").toBe(1);
-		expect(String(plain[0]?.diff)).toContain("appended by plain open");
-		expect(String(plain[0]?.diff)).toContain("original line");
-		expect(plain, "one structured mutation event is emitted per path per cell").toHaveLength(1);
+		const events = (result.details?.statusEvents ?? []).filter(
+			event => event.op === "write" && event.path === path.join(dir, "plain.txt"),
+		);
+		expect(events).toHaveLength(2);
+		expect(String(events[0]?.diff)).toContain("original line");
+		expect(String(events[1]?.diff)).toContain("appended by explicit edit");
+		expect(await Bun.file(path.join(dir, "plain.txt")).text()).toBe("original line\nappended by explicit edit\n");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("a file written twice in one cell reports one event with the cumulative diff", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-flush-base-"));
+test("two atomic edits retain their separate committed diffs", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-flush-base-"));
 	try {
 		await Bun.write(path.join(dir, "b.txt"), "orig\n");
-		const tool = new BashTool(stubSession(dir));
-		const code = [
-			'open("a.txt", "w").write("alpha\\nbeta\\n")',
-			'with open("a.txt", "a") as f:',
-			'    f.write("gamma\\n")',
-			'open("b.txt", "w").write("orig\\none\\n")',
-			'with open("b.txt", "a") as f:',
-			'    f.write("two\\n")',
-			'print("done")',
-		].join("\n");
-		const result = await executeCell(tool, "eval-flush-base-test", {
+		const result = await executeCell(new BashTool(stubSession(dir)), "eval-flush-base-test", {
 			language: "py",
-			code,
+			code: [
+				'harness.fs.write_text("a.txt", "alpha\\nbeta\\n")',
+				'harness.fs.write_text("a.txt", harness.fs.read_text("a.txt") + "gamma\\n")',
+				'harness.fs.read_text("b.txt")',
+				'harness.fs.write_text("b.txt", "orig\\none\\n")',
+				'harness.fs.write_text("b.txt", harness.fs.read_text("b.txt") + "two\\n")',
+			].join("\n"),
 			timeout: 60,
 		});
-
 		expectCellComplete(result);
 		const eventsFor = (name: string) =>
 			(result.details?.statusEvents ?? []).filter(
 				event => event.op === "write" && event.path === path.join(dir, name),
 			);
-
 		const a = eventsFor("a.txt");
-		expect(a.length, "created-then-appended file reports one cumulative event").toBe(1);
+		expect(a).toHaveLength(2);
 		expect(String(a[0]?.diff)).toContain("+1|alpha");
-		expect(String(a[0]?.diff)).toContain("+3|gamma");
-
+		expect(String(a[1]?.diff)).toContain("+3|gamma");
 		const b = eventsFor("b.txt");
-		expect(b.length, "preexisting written-then-appended file reports one cumulative event").toBe(1);
+		expect(b).toHaveLength(2);
 		expect(String(b[0]?.diff)).toContain("+2|one");
-		expect(String(b[0]?.diff)).toContain("+3|two");
+		expect(String(b[1]?.diff)).toContain("+3|two");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("kernel audit hook reports deletes once with diff", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-hook-delete-"));
+test("native Python deletes stay native without harness mutation events", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-hook-delete-"));
 	try {
 		await Bun.write(path.join(dir, "doomed.txt"), "doomed content line\n");
-		const tool = new BashTool(stubSession(dir));
-		const code = `import os\nos.remove(${JSON.stringify(path.join(dir, "doomed.txt"))})\nprint("done")`;
-		const result = await executeCell(tool, "eval-hook-delete-test", {
+		const result = await executeCell(new BashTool(stubSession(dir)), "eval-hook-delete-test", {
 			language: "py",
-			code,
+			code: 'import os\nos.remove("doomed.txt")\nprint("done")',
 			timeout: 60,
 		});
-
 		expectCellComplete(result);
-		const cellEvents = result.details?.statusEvents ?? [];
-		const deletes = cellEvents.filter(event => event.op === "delete" && event.path === path.join(dir, "doomed.txt"));
-		expect(deletes.length, "delete is reported exactly once (hook + walker dedupe)").toBe(1);
-		expect(String(deletes[0]?.diff)).toContain("-1|doomed content line");
+		expect((result.details?.statusEvents ?? []).filter(event => event.op === "delete")).toEqual([]);
+		expect(await Bun.file(path.join(dir, "doomed.txt")).exists()).toBe(false);
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 
-test("kernel audit hook skips cache dirs, bytecode, and unchanged rewrites", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-hook-noise-"));
+test("native Python writes do not install hidden filesystem tracking", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-hook-noise-"));
 	try {
 		await Bun.write(path.join(dir, "touched.txt"), "stable content\n");
-		const tool = new BashTool(stubSession(dir));
-		const code = [
-			'os.makedirs(".cache", exist_ok=True)',
-			'with open(".cache/noise.bin", "wb") as f:',
-			'    f.write(b"x")',
-			'with open("module.pyc", "wb") as f:',
-			'    f.write(b"x")',
-			"# rewrite identical bytes: mtime changes, sha does not",
-			'f = open("touched.txt", "r+")',
-			"f.seek(0)",
-			'f.write("stable content\\n")',
-			"f.close()",
-			"# positive control: a real change is still reported",
-			'with open("changed.txt", "w") as f:',
-			'    f.write("real change\\n")',
-			'print("done")',
-		].join("\n");
-		const result = await executeCell(tool, "eval-hook-noise-test", {
+		const result = await executeCell(new BashTool(stubSession(dir)), "eval-hook-noise-test", {
 			language: "py",
-			code,
+			code: [
+				"import os",
+				'os.makedirs(".cache", exist_ok=True)',
+				'open(".cache/noise.bin", "wb").write(b"x")',
+				'open("module.pyc", "wb").write(b"x")',
+				'open("touched.txt", "w").write("stable content\\n")',
+				'open("changed.txt", "w").write("real change\\n")',
+			].join("\n"),
 			timeout: 60,
 		});
-
 		expectCellComplete(result);
-		const cellEvents = result.details?.statusEvents ?? [];
-		const reported = cellEvents
-			.filter(event => event.op === "write" || event.op === "delete")
-			.map(event => String(event.path));
 		expect(
-			reported,
-			"pruned dirs, bytecode, and content-identical rewrites stay unreported; only real changes appear",
-		).toEqual([path.join(dir, "changed.txt")]);
-		const changed = cellEvents.find(event => event.op === "write" && event.path === path.join(dir, "changed.txt"));
-		expect(String(changed?.diff)).toContain("+1|real change");
-		const touched = cellEvents.find(event => event.op === "write" && event.path === path.join(dir, "touched.txt"));
-		expect(touched?.diff, "content-identical rewrite carries no diff rows").toBeUndefined();
+			(result.details?.statusEvents ?? []).filter(event => event.op === "write" || event.op === "delete"),
+		).toEqual([]);
+		expect(await Bun.file(path.join(dir, "changed.txt")).text()).toBe("real change\n");
+		expect(await Bun.file(path.join(dir, "touched.txt")).text()).toBe("stable content\n");
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
 test("js kernel fs tracker reports raw fs writes outside the walker root", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-hook-outside-"));
-	const outside = path.join(os.tmpdir(), `eval-js-hook-out-${process.pid}-${Date.now()}.txt`);
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-hook-outside-"));
+	const outside = path.join(TEMP_ROOT, `eval-js-hook-out-${process.pid}-${Date.now()}.txt`);
 	try {
 		const tool = new BashTool(stubSession(dir));
 		const code = [
@@ -264,8 +247,8 @@ test("js kernel fs tracker reports raw fs writes outside the walker root", async
 });
 
 test("a js kernel Bun.write emits one deduped event with diff", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-helper-"));
-	const outside = path.join(os.tmpdir(), `eval-js-helper-${process.pid}-${Date.now()}.txt`);
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-helper-"));
+	const outside = path.join(TEMP_ROOT, `eval-js-helper-${process.pid}-${Date.now()}.txt`);
 	try {
 		const tool = new BashTool(stubSession(dir));
 		const code = [`await Bun.write(${JSON.stringify(outside)}, "Bun wrote this\\n");`, 'print("done")'].join("\n");
@@ -288,8 +271,8 @@ test("a js kernel Bun.write emits one deduped event with diff", async () => {
 });
 
 test("a js kernel file written twice reports one event with the cumulative diff", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-flush-base-"));
-	const outside = path.join(os.tmpdir(), `eval-js-flush-base-${process.pid}-${Date.now()}.txt`);
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-flush-base-"));
+	const outside = path.join(TEMP_ROOT, `eval-js-flush-base-${process.pid}-${Date.now()}.txt`);
 	try {
 		await Bun.write(path.join(dir, "b.txt"), "orig\n");
 		const tool = new BashTool(stubSession(dir));
@@ -328,7 +311,7 @@ test("a js kernel file written twice reports one event with the cumulative diff"
 
 for (const language of ["node", "bun"] as const) {
 	test(`${language} receives shell-resolved skills activated after the kernel starts`, async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-skill-"));
+		const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-skill-"));
 		try {
 			const skillDir = path.join(dir, "example-skill");
 			await Bun.write(path.join(skillDir, "SKILL.md"), "# Example skill\n");
@@ -371,8 +354,8 @@ for (const language of ["node", "bun"] as const) {
 }
 
 test("js kernel fs tracker reports deletes once with diff", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-delete-"));
-	const outside = path.join(os.tmpdir(), `eval-js-delete-${process.pid}-${Date.now()}.txt`);
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-delete-"));
+	const outside = path.join(TEMP_ROOT, `eval-js-delete-${process.pid}-${Date.now()}.txt`);
 	try {
 		await Bun.write(outside, "doomed js line\n");
 		const tool = new BashTool(stubSession(dir));
@@ -397,8 +380,8 @@ test("js kernel fs tracker reports deletes once with diff", async () => {
 });
 
 test("js kernel fs tracker covers Bun.write and prunes cache dirs", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-bunwrite-"));
-	const outside = path.join(os.tmpdir(), `eval-js-bunwrite-${process.pid}-${Date.now()}.txt`);
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-bunwrite-"));
+	const outside = path.join(TEMP_ROOT, `eval-js-bunwrite-${process.pid}-${Date.now()}.txt`);
 	try {
 		await Bun.write(path.join(dir, "touched.txt"), "stable content\n");
 		const pastSeconds = Date.now() / 1000 - 2;
@@ -437,14 +420,14 @@ test("js kernel fs tracker covers Bun.write and prunes cache dirs", async () => 
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
-test("a second raw write wholly replaces the file the kernel itself wrote", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-write-guard-"));
+test("a second explicit write wholly replaces the file the kernel itself wrote", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-write-guard-"));
 	try {
 		const tool = new BashTool(stubSession(dir));
 		const code = [
-			'open("guard.txt", "w").write("v1")',
-			'open("guard.txt", "w").write("v2")',
-			'print("CONTENT", Path("guard.txt").read_text())',
+			'harness.fs.write_text("guard.txt", "v1")',
+			'harness.fs.write_text("guard.txt", "v2")',
+			'print("CONTENT", harness.fs.read_text("guard.txt"))',
 		].join("\n");
 		const result = await executeCell(tool, "eval-fs-diff-test", {
 			language: "py",
@@ -459,13 +442,10 @@ test("a second raw write wholly replaces the file the kernel itself wrote", asyn
 		await fs.rm(dir, { recursive: true, force: true });
 	}
 });
-test("stale-write guard stays armed past the read-seen cap via FIFO eviction", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-guard-evict-"));
+test("explicit stale-write guard retains newest reads beyond its observation cap", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-guard-evict-"));
 	try {
-		// 8192 dummy reads saturate _FS_READ_SEEN_MAX; the guarded file is read
-		// last, so with eviction its record survives and an external mutation
-		// between cells must trip the guard. Without eviction the record is
-		// silently refused and the write succeeds unchecked.
+		// The newest explicit read remains guarded after older observations exceed the ledger cap.
 		await Promise.all(
 			Array.from({ length: 8192 }, (_, i) =>
 				Bun.write(path.join(dir, `dummy-${String(i).padStart(4, "0")}.txt`), "d\n"),
@@ -473,17 +453,19 @@ test("stale-write guard stays armed past the read-seen cap via FIFO eviction", a
 		);
 		await Bun.write(path.join(dir, "guarded.txt"), "original\n");
 		const tool = new BashTool(stubSession(dir));
-		const readCell = [
-			"from pathlib import Path",
-			"for i in range(8192):",
-			'    Path(f"dummy-{i:04d}.txt").read_text()',
-			'Path("guarded.txt").read_text()',
-			"print('read-done')",
-		].join("\n");
-		const readResult = await executeCell(tool, "eval-guard-evict-read", {
+		// Stay within each authenticated run's request bound while exercising the session ledger cap.
+		for (let offset = 0; offset < 8192; offset += 2048) {
+			const readResult = await executeCell(tool, `eval-guard-evict-read-${offset}`, {
+				language: "py",
+				code: `for i in range(${offset}, ${offset + 2048}):\n    harness.fs.read_text(f"dummy-{i:04d}.txt")`,
+				timeout: 120,
+			});
+			expectCellComplete(readResult);
+		}
+		const readResult = await executeCell(tool, "eval-guard-evict-read-newest", {
 			language: "py",
-			code: readCell,
-			timeout: 120,
+			code: 'harness.fs.read_text("guarded.txt")\nprint("read-done")',
+			timeout: 60,
 		});
 		expectCellComplete(readResult);
 		expect(textOf(readResult)).toContain("read-done");
@@ -493,7 +475,7 @@ test("stale-write guard stays armed past the read-seen cap via FIFO eviction", a
 		const writeCell = [
 			"def check(fn):",
 			"    try:",
-			'        open(fn, "w").write("v2")',
+			'        harness.fs.write_text(fn, "v2")',
 			'        return "ok"',
 			"    except Exception as err:",
 			'        return type(err).__name__ + ": " + str(err)[:200]',
@@ -512,12 +494,11 @@ test("stale-write guard stays armed past the read-seen cap via FIFO eviction", a
 	}
 }, 60000);
 
-test("pre-mutation snapshots stop retaining text past the aggregate capture budget", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-capture-budget-"));
+test("large explicit edits retain independent per-operation mutation receipts", async () => {
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-capture-budget-"));
 	try {
 		const chunk = `${"x".repeat(1000)}\n`.repeat(4300);
-		// Four saturating snapshots (4 x ~4.3 MB > 16 MB budget) plus a fifth file
-		// whose pre-mutation content must not be retained.
+		// Earlier large atomic edits must not suppress a later file's independent receipt.
 		await Promise.all([
 			...Array.from({ length: 4 }, (_, i) => Bun.write(path.join(dir, `big-${i}.txt`), chunk)),
 			Bun.write(path.join(dir, "changed.txt"), "original\n"),
@@ -526,9 +507,9 @@ test("pre-mutation snapshots stop retaining text past the aggregate capture budg
 		const cell = [
 			"from pathlib import Path",
 			"for i in range(4):",
-			'    p = Path(f"big-{i}.txt")',
-			'    p.write_text("x\\n" + p.read_text())',
-			'open("changed.txt", "w").write("x")',
+			'    p = f"big-{i}.txt"',
+			'    harness.fs.write_text(p, "x\\n" + harness.fs.read_text(p))',
+			'harness.fs.write_text("changed.txt", "x")',
 			"print('cell-done')",
 		].join("\n");
 		const result = await executeCell(tool, "eval-capture-budget", { language: "py", code: cell, timeout: 120 });
@@ -538,17 +519,14 @@ test("pre-mutation snapshots stop retaining text past the aggregate capture budg
 		const forPath = (name: string) =>
 			cellEvents.filter(event => event.op === "write" && path.resolve(String(event.path)) === path.join(dir, name));
 		const changed = forPath("changed.txt");
-		expect(changed.length, "over-budget changed file is reported exactly once").toBe(1);
-		expect(
-			changed[0]?.diff,
-			"over-budget snapshot carries no diff instead of a fake one against empty",
-		).toBeUndefined();
+		expect(changed.length, "the later edit is reported exactly once").toBe(1);
+		expect(String(changed[0]?.diff), "earlier edits do not erase a later edit's baseline").toContain("-1|original");
 		expect(changed[0]?.chars).toBe(1);
-		expect(typeof changed[0]?.sha).toBe("string");
+		expect(await Bun.file(path.join(dir, "changed.txt")).text()).toBe("x");
 		for (let i = 0; i < 4; i++) {
 			const big = forPath(`big-${i}.txt`);
 			expect(big.length, `big-${i} is reported exactly once`).toBe(1);
-			expect(String(big[0]?.diff), "in-budget snapshot still diffs").toContain("+1|x");
+			expect(String(big[0]?.diff), "each large edit has its own diff").toContain("+1|x");
 		}
 	} finally {
 		await fs.rm(dir, { recursive: true, force: true });
@@ -556,7 +534,7 @@ test("pre-mutation snapshots stop retaining text past the aggregate capture budg
 }, 60000);
 
 test("js capture budget stops retaining text past the aggregate budget but keeps sha dedupe", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "eval-js-budget-"));
+	const dir = await fs.mkdtemp(path.join(TEMP_ROOT, "eval-js-budget-"));
 	const outside = `${dir}-outside`;
 	try {
 		await fs.mkdir(outside, { recursive: true });
@@ -620,7 +598,7 @@ for (const [language, code] of [
 		"py",
 		[
 			"import time",
-			'open("live.txt", "w").write("first\\n")',
+			'harness.fs.write_text("live.txt", "first\\n")',
 			'print("wrote")',
 			"time.sleep(0.4)",
 			'print("end")',
@@ -650,7 +628,7 @@ for (const [language, code] of [
 	],
 ] as const) {
 	test(`${language} write hunks stream before the cell finishes`, async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), `eval-live-${language}-`));
+		const dir = await fs.mkdtemp(path.join(TEMP_ROOT, `eval-live-${language}-`));
 		try {
 			const updates: Array<{ output: string; writes: number }> = [];
 			const result = await executeCell(

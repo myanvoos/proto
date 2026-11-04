@@ -42,6 +42,9 @@ test.skipIf(process.platform === "win32")(
 			XDG_DATA_HOME: path.join(root, "data"),
 			XDG_CACHE_HOME: path.join(root, "cache"),
 			PROTO_DEEP_FOCUSED_ROOT: root,
+			...(process.env.PROTO_COMPILED_PYTHON_TEST_BIN
+				? { PROTO_COMPILED_PYTHON_TEST_BIN: process.env.PROTO_COMPILED_PYTHON_TEST_BIN }
+				: {}),
 			PROTO_DAEMON_PROJECT_DIR: path.join(root, "project"),
 			PROTO_DAEMON_RUNTIME_DIR: path.join(root, "run"),
 			PROTO_DAEMON_IDLE_GRACE_MS: "60000",
@@ -58,6 +61,7 @@ test.skipIf(process.platform === "win32")(
 			XDG_DATA_HOME: true,
 			XDG_CACHE_HOME: true,
 			PROTO_DEEP_FOCUSED_ROOT: true,
+			PROTO_COMPILED_PYTHON_TEST_BIN: true,
 			PROTO_DAEMON_PROJECT_DIR: true,
 			PROTO_DAEMON_RUNTIME_DIR: true,
 			PROTO_DAEMON_IDLE_GRACE_MS: true,

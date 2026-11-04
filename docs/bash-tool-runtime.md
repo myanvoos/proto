@@ -38,31 +38,102 @@ The bridge maps successful text content to stdout and tool-error text to stderr;
 
 Without positional JSON, `protolens` parses its stdin as the argument object: `printf '%s' '{"path":"src"}' | protolens read`. A single positional JSON object takes precedence over piped stdin; `--json` cannot be combined with positional arguments. For a single-string device, bare stdin may instead be the plain payload. Non-empty text output ends with a newline so a following shell command starts on its own line. Shell settlement aborts outstanding tool dispatches, including deadline cancellation, rather than leaving detached tool work running.
 
-## Persistent interpreter cells
+## Native Python processes
 
-The kernel bridge handles supported `python`/`python3`, `node`, and `bun` stdin and inline-code invocations as Bash kernel cells; see [Kernel-cell reference](#kernel-cell-reference) for the exact forms, API, and fallback rules. External fallback preserves stdin bytes even when the source is not UTF-8, leaving decoding and syntax errors to the interpreter. Empty `PATH` components search the shell's working directory, just as they do for other shell commands.
+Every ordinary `python`/`python3` command starts a real, fresh native process: `-c`, stdin/heredocs, script paths, `-m`, versioned/absolute executable paths, aliases, `env`, shebangs, and Python launched by another program. The shell chooses the executable normally; Proto does not substitute its configured or managed interpreter. Empty `PATH` components search the shell's working directory.
 
-A bridge request belongs to its shell run from the start of backend availability checks. Cancellation or run disposal during those checks returns exit status `130` rather than launching a late cell or falling through to an external interpreter. Disposing one run does not stop the bridge for other live runs; disconnected clients cancel their own pending cell.
+Native `argv`, stdin/stdout/stderr bytes, exit status, signals, `atexit`, imports, threads, and interpreter teardown belong to that process. Names and imports do not persist between commands. There is no Python shell builtin, implicit routing, injected helper namespace, AST rewriting, magic syntax, automatic package installation, or rerun fallback. User `$` Python submissions (`$$` excludes the result from model context) and `AgentSession.executePython()` are fresh too. `!`/`!!` submit shell commands, not Python.
 
-Inline-code invocations stream program stdin while the cell is running: the producer need not close before the consumer starts, and total input is not capped at 1 MiB. Transport chunks and in-flight buffers are bounded and backpressured. Python `sys.stdin.buffer` / `sys.stdout.buffer` and JavaScript `process.stdin` / `process.stdout` preserve arbitrary bytes through pipes and file redirection, including invalid UTF-8 and NUL. Text APIs still perform their normal encoding/decoding. Final-expression values, explicit displays, and harness notes remain visible as presentation sidebands but never enter stdout or stderr. Ordinary unassigned binary writes are safe in pipes and redirects without suppressing their return values. Model-visible Bash capture is text; use pipes, redirection, or artifact values to retain arbitrary bytes. Stdin-only interpreter invocations consume stdin as source code; `-c` / `-e` keeps source separate from program data.
+Agent-shell runs add a small `PYTHONPATH` startup hook. It detects CPython inside the interpreter, chains the project's existing `sitecustomize`, and exposes the staged `proto_harness` package without modifying installed Python. Plain startup does not load the tool/model/serialization stack. Native `-I`, `-E`, and `-S` opt out of automatic detection; no fallback interception overrides them.
 
-Kernel stdout, stderr, and the final exit frame share one framed response stream; stdout/stderr frames preserve their destination through native redirection. Binary output uses byte-preserving frames; rich display metadata remains a separate channel, never binary pipeline payload. The bridge retains unwritten UTF-8 bytes across socket backpressure and closes only after the final frame is written, so slow readers do not receive truncated JSON or lose the command's exit status. The native reader scans incoming bytes incrementally rather than rescanning a growing frame, keeping large kernel output practical in shell pipelines.
+## Explicit Python harness API
 
-## Kernel-cell reference
+```bash
+python <<'PYTHON'
+import proto_harness as harness
+
+result = harness.tool.read({"path": "README.md"})
+print(result)
+PYTHON
+```
+
+Capabilities are lazy package attributes, never implicit globals:
+
+- `harness.tool.<name>(args)`, `harness.completion(...)`, `harness.agent(...)`, `harness.parallel(...)`, and `harness.pipeline(...)`: tools, model calls, and orchestration.
+- `harness.symbols(...)`, `harness.block_range(...)`, `harness.display(...)`, artifact helpers, `harness.output(...)`, `harness.executions(...)`, progress, budget, and cancellation helpers.
+- `harness.fs.read_text/read_bytes/write_text/write_bytes/replace`: atomic, permission-checked host-file edits with cross-tool/process stale-read protection.
+- `harness.store`: session-owned rich values across fresh runs. `harness.kernel(name)`: optional named persistent execution.
+
+Ordinary Python `Path`, `open`, and `os` operations remain native and unpatched. Use `harness.fs` for protected edits:
+
+```python
+import proto_harness as harness
+
+path = "src/example.py"
+text = harness.fs.read_text(path)
+old = 'MODE = "old"'
+assert text.count(old) == 1
+harness.fs.replace(path, old, 'MODE = "new"')
+```
+
+A `harness.StaleWriteError` requires a fresh read and a newly derived edit. Every helper call uses host-owned, run/session-bound authority and the normal tool schema, extension approval, permissions, spawn, admission, cancellation, and turn-budget policies. Importing the package is not a permissions bypass. Run authority is bounded and revoked on completion/abort. Do not export transport credentials to detached work; use [explicit delegation](#scoped-access-from-ordinary-scripts).
+
+## Explicit named Python kernels
+
+A named kernel deliberately retains variables, functions, classes, imports, and native module caches. It is not a fresh process: `atexit`, threads, and other process-lifetime resources belong to the warm interpreter. Helpers still require an explicit import:
+
+```bash
+python <<'PYTHON'
+import proto_harness as harness
+
+analysis = harness.kernel("analysis")
+result = analysis.run("import proto_harness as harness; total = 40; print(total)")
+assert result["exitCode"] == 0, result
+print(result["output"], end="")
+PYTHON
+
+python <<'PYTHON'
+import proto_harness as harness
+
+result = harness.kernel("analysis").run("total += 2; print(total)")
+assert result["exitCode"] == 0, result
+print(result["output"], end="")
+PYTHON
+```
+
+`harness.kernel(name, interpreter=None, cwd=None, target=None)` returns a handle with `run(code)`, `exec(file)`, `status()`, `stop()`, and `restart()`. Execution results include `output`, `exitCode`, and timeout/cancellation fields. `exec` reads the file in the kernel's filesystem. `stop` closes the runtime and forgets configuration; `restart` explicitly discards the namespace and starts the selected environment. Different names can call one another; self/ancestor dependencies are refused rather than deadlocked. Errors never cause automatic replay.
+
+Use the explicit CLI for streaming shell I/O:
+
+```bash
+python -m proto_harness.kernel analysis -c 'print("explicit warm call")'
+printf 'payload' | python -m proto_harness.kernel io -c 'import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())'
+python -m proto_harness.kernel analysis --file /absolute/path/to/report.py
+```
+
+Without `-c` or `--file`, stdin supplies code; with either option, piped stdin is program input. The CLI reuses the named environment configuration unless `--interpreter` or `--cwd` explicitly overrides it; it does not substitute the calling process's interpreter. Remote execution uses the configured target cwd, not the host invocation directory. Match interpreter/cwd/target when accessing a kernel from another surface. Configuring a name or lane never reroutes ordinary Python commands.
+
+Warm synchronous code runs on the main thread and supports normal `asyncio.run()`; explicit top-level await uses the warm event loop. Warm-only inspection and retention are explicit: `harness.defs()`, `harness.kernel_state()`, and `harness.retain_task(...)`. Python has no manual selected-data codec adapter; use the rich store or automatic exact-boundary graphs.
+
+### Residency and continuity
+
+Named Python namespaces are captured automatically as one rich graph; no `declare_state` opt-in. Aliases, cycles, functions, closures, classes, and shared references are preserved within a 64 MiB encoded payload limit. Graph serialization is trusted and session-local, not an untrusted pickle import format. Interpreter, format, environment, and imported-module compatibility are checked before restore. Unsupported live files, sockets, threads, tasks, subprocesses, and similar resources refuse capture rather than being dropped or approximated.
+
+Exact immutable manifests bind captures to session-history boundaries before transitions are acknowledged. Historical captures remain with their branches, without a last-N window or nearest-earlier fallback. User forks restore independent graphs; context-only rewind does not roll computation back. External filesystem/process effects are not rolled back. Missing, incompatible, unsafe, or uncertain state is never replaced silently by older or fresh state; reset explicitly chooses to discard it.
+
+`python.kernelMemoryBudgetBytes` defaults to the smaller of 25% of physical RAM and 4 GiB. Idle kernels park least-recently-used first only after safe durable capture; running, unsafe, and unmeasurable kernels are not silently evicted. `python.kernelMaxResidentCount` defaults to 64 as a separate process-count safety limit, not execution concurrency. Private-memory accounting is neither summed RSS nor a global process-memory guarantee; inspect actual residency/refusal reasons.
+
+Supported local POSIX environments use a sterile, single-threaded forkserver per interpreter, with user libraries loaded only in children after fork. Other supported launch environments report their actual mode. This does not claim verified Linux/remote performance.
+
+## JavaScript kernel-cell reference
 
 ### Compatibility philosophy
 
-**Native semantics within a cell. Persistent state between cells. Harness presentation outside program I/O.**
-
-The kernel is an additive interpreter, not a notebook dialect. Ordinary programs keep their language semantics, argument vectors, byte streams, and exit statuses. Python `asyncio.run()` and main-module pickling work in ordinary synchronous cells; JavaScript declarations keep the selected interpreter's native binding behavior rather than being demoted to persistent assignments. Node lexical scope and temporal dead zones are preserved; Bun follows its own native source transforms, including its optimization-dependent class hoisting. Persistence, top-level await, tool calls, and rich displays add capabilities without requiring source workarounds. Differential regressions compare real interpreters with cells through the actual Bash route, including redirected bytes, file effects, and exit status; separate tests defend the additive features.
-
-A persistent interpreter is deliberately **not a fresh OS process**. Bindings and explicitly retained async resources survive cells; `atexit` and Python thread/executor lifetimes belong to the kernel process rather than to each invocation. Python cells run synchronously without a host event loop unless they use top-level await. Ordinary cell-owned asyncio work settles before completion; `retain_task(task)` opts into background lifetime. JavaScript completion waits for referenced work; `retainTask(resource)` unrefs a resource to retain it across cells. Use a real subprocess when process isolation or interpreter teardown is itself the contract. Runtime errors never cause automatic replay through a fresh process: side effects may already have happened.
-
-When the kernel bridge is available, Bash routes supported interpreter invocations to the retained language runtimes instead of spawning a fresh interpreter. Each recognized interpreter invocation is one cell; a single Bash command may contain several cells alongside ordinary shell syntax. The former structured cell fields (`language`, `code`, `title`, `timeout`, and `reset`) are not Bash parameters: the interpreter command supplies the language and source, and the enclosing Bash call supplies the timeout.
+JavaScript retains native language semantics within cells, persistent state between cells, and harness presentation outside program I/O. Node and Bun have separate heaps. Native declaration behavior, lexical scope, temporal dead zones, and interpreter-specific transforms are preserved. Referenced async work settles before completion; `retainTask(resource)` unrefs work intended to survive. Process-lifetime resources belong to the retained runtime. Errors never cause automatic fresh-process replay.
 
 ### Reproducing compatibility checks
 
-From the repository root, compare native interpreters with the real Bash/kernel route, then exercise the compiled worker and its native addon in an isolated home:
+The source parity suite exercises the actual Bash route. A separately built compiled CLI can exercise the stdio supervisor without claiming actual SSH/container coverage:
 
 ```bash
 bun test packages/coding-agent/src/tools/bash-interpreter-parity.test.ts
@@ -71,75 +142,31 @@ PROTO_COMPILED_KERNEL_TEST_BIN="$PWD/packages/coding-agent/dist/proto" \
   bun test packages/coding-agent/src/tools/bash-compiled-kernel.test.ts
 ```
 
-The compiled test is opt-in so a stale `dist` binary cannot affect normal source tests. It checks exact program bytes, native self-spawn through `process.execPath`, callback completion, sideband display, and state reuse through the same stdio supervisor used for remote kernels. It does not provision or test an actual SSH/container target.
+The compiled check is opt-in so stale distribution binaries do not affect source tests.
 
 ### Cell forms and API
 
-Recognized cell forms are:
+Non-PTY `node`/`nodejs` and `bun` commands with stdin source or `-e CODE` run as retained cells; internal fleet scripts are supported too. Other forms use native processes. Arguments populate `process.argv`; use `--` before arguments beginning with `-`. Inline code reads program input from `process.stdin`; source-on-stdin uses stdin as code. Input and stdout/stderr remain byte-preserving and backpressured through pipes and redirection.
 
-- `python`/`python3` with source on stdin, normally a quoted heredoc or a pipeline.
-- `python -c '...' [args...]`, `node -e '...' [args...]`, or `bun -e '...' [args...]`. Program arguments stay in the kernel and populate native `sys.argv` / `process.argv`; JS `--` separates arguments from interpreter options.
-- `python fleet://<name>.py` for a script staged under the internal `fleet://` URL.
-- Ordinary script paths, `-m`, unsupported interpreter flags, and calls made without a bridge use an external interpreter. Supported stdin (`-`) and internal fleet scripts also accept program arguments.
+The existing JavaScript prelude remains: `tool`, `completion`, `agent`, `parallel`, `pipeline`, `symbols`, `blockRange`, `display`, `env`, `output`, `defs`, `kernelState`, `declareState`, `saveState`, `loadState`, artifacts, events, progress, and budget. Async helpers use one trailing options object. Top-level await and bare return remain supported. File APIs retain stale-write guards and mutation receipts. The 15-minute idle reap protects active cells, in-flight bridges, resets/replacements, and unsafe declared generations. Safely captured declared data restores before later execution; undeclared bindings do not. Reset discards bindings/declarations; unsafe or uncommitted declared state is never silently replaced after runtime loss.
 
-A Python cell runs on the interpreter the shell itself would run for the command word. A Python 3 named by version (`python3.13`) or path (`.venv/bin/python`) dispatches to the same kernel builtin with that interpreter; one that does not exist fails exactly as the shell reports it. Bare `python`/`python3` follows the cell's own `PATH`, such as an activated venv or an exported `PATH`, when it selects a different interpreter than the host's `PATH`. An untouched shell, or a lane pinned with `protolens context --resource kernel --op start/reset --interpreter`, keeps the lane default: the pinned or `python.interpreter` setting, then project `.venv`/`venv`, then the managed environment, then `PATH`. A lane holds one Python kernel per interpreter, identified by the resolved binary plus its virtual environment, since a venv's `bin/python` symlinks to its base interpreter. An interpreter that is the default kernel's own maps to that kernel. An interpreter older than Python 3.10 cannot host the runner: the command runs as a plain process, and the session is told why once per interpreter.
+### Filesystem paths and rich output
 
-For example:
-
-```bash
-python <<'PY'
-from pathlib import Path
-print(Path("package.json").read_text())
-PY
-
-node -e 'console.log("one persistent JavaScript cell")'
-```
-
-Every enabled runtime receives the cell prelude. Python helpers are synchronous and use keyword options; JavaScript bridge helpers are asynchronous where applicable and use one trailing options object. The shared API is:
-
-- `display(value)` and `print(...)` for ordinary and rich output.
-- `env(...)`, `output(...)`, and `tool.<name>(args)` for environment, agent/task-output, and normal session-tool access. `output()` reads agent/task outputs; use `read artifact://...` for Bash artifacts.
-- Python `symbols(path?, code?=None, lang?=None)`, `defs()`, and `block_range(path, line)` for bounded source inspection. Both runtimes expose `defs()` and `kernel_state()` / `kernelState()` for binding provenance and safe runtime inspection.
-- `completion(...)` for a stateless tool-free model call; `agent(...)` for a policy-checked subagent; and `parallel(...)`/`pipeline(...)` for bounded fan-out.
-- `declare_state(names)` / `declareState(names)` for [declared session continuity](#declared-session-state), and `save_state`/`load_state` / `saveState`/`loadState` for explicit selected-data files.
-- `log(message)`, `phase(title)`, and `budget` for progress and the live turn budget.
-
-`agent()` availability follows the current spawn policy, and `parallel()`/`pipeline()` width follows `orchestrator.maxConcurrency` (`0` means unbounded). Ordinary Python cells support `asyncio.run()` without an active host loop; top-level-`await` cells use the retained event loop and follow Python's normal restrictions on nested loop runners; JavaScript supports top-level `await` and bare `return`. The prelude also includes the stale-write guard and filesystem mutation/status tracking used by kernel edits; read before localized replacement and let the guard reject stale writes. The guard covers every destructive operation in both kernels — write-mode opens, `os.replace`/`rename`, `os.truncate` and `os.remove`/`unlink` — so the atomic write idiom is refused just like a direct overwrite when the file changed since the kernel read it. It is armed by the kernel's own reads; host-side observations (shell builtins and redirects, the read tool) only extend it to paths the kernel has never read and never refresh an existing record, because the kernel still holds the content it read. Each net-mutated path also prints one compact `<kernel> note:` line in the cell's own output, in Python and JavaScript alike.
-
-### Filesystem paths in cells
-
-Raw Python/JavaScript file APIs and path-taking kernel helpers use ordinary filesystem paths. Read internal resources with `tool.read`, or let bash resolve literal URI arguments and `env` values before execution. Cell source and heredoc bodies are not rewritten.
-
-For a local Python cell, this bash input passes a resolved skill file without embedding its host path in code:
+Raw file APIs use filesystem paths; embedded source/heredoc bodies do not resolve internal URLs. Use `harness.tool.read` in Python or `tool.read` in JavaScript for internal resources, or pass a Bash-resolved path via `env`. Import native modules explicitly in fresh Python:
 
 ```json
-{"command":"python -c 'print(Path(os.environ[\"INPUT\"]).read_text())'","env":{"INPUT":"skill://example/notes.md"}}
+{"command":"python -c 'import os; from pathlib import Path; print(Path(os.environ[\"INPUT\"]).read_text())'","env":{"INPUT":"skill://example/notes.md"}}
 ```
 
-JavaScript cells can consume the same resolved environment value with `env("INPUT")`. In remote kernels, raw file APIs address the target while tool calls and bash-resolved paths address the host; transfer content explicitly instead of treating host paths as remote paths.
-
-### Rich output
-
-`display()` accepts JSON-compatible values, Markdown/text, and image values. Python MIME bundles support `application/json`, `text/markdown`, `text/plain`, HTML-to-Markdown conversion, PNG/JPEG images, and structured status events; common PIL, pandas, Plotly, and Matplotlib displays therefore remain available. Matplotlib figures render off-screen through the `Agg` backend. JavaScript object results become structured JSON and image records become image content.
-
-Only program stdout/stderr enter Bash byte streams. Display text, final-expression values, JSON, images, filesystem receipts, and kernel status events stay on a separate presentation channel for rendering and replay, including with `2>&1`, pipes, redirects, and command substitutions. JSON display text included in the model-visible stream is capped at 8,000 characters per value; the structured result retains the value. Output truncation and artifact spill follow the Bash `OutputSink` rules described below.
-
-### State and reset
-
-- Python `python.kernelMode: session` (the default) reuses a kernel by session, normalized working directory, and interpreter; `per-call` starts and shuts down a fresh Python kernel for every cell. JavaScript uses a retained session-scoped VM. Python and JavaScript state are isolated from each other.
-- Variables, imports, definitions, and explicitly retained async work survive later cells in the same retained runtime. Work completed before a cell error may remain. Separate workers have separate runtime ownership and namespaces even though they use the same Bash/kernel-cell surface.
-- Python `%reset` clears the user namespace and durable declarations, then re-injects the prelude. Explicit `context` kernel reset/close likewise discards bindings/declarations; reset retains the selected environment unless overridden. Bash has no structured per-cell `reset` field. The discoverable `context` tool provides kernel start, inspect, reset, close and keepalive operations, plus whole-lane inspection/reset, from outside the executing cell.
-- The 15-minute idle reap protects active cells, resets/replacements, in-flight bridges and dirty/unsafe declared-state generations. After a safely captured generation is released, the next cell starts its matching interpreter and restores declared data before running user code; unselected bindings are not restored. If a kernel dies after uncommitted computation, the next execution refuses to substitute older or fresh state; an explicit reset is the choice to discard it. Death during execution leaves completion uncertain and never replays the cell. Check partial external side effects before retrying.
-
-Interactive terminal input is not supported by routed cells. For inline-code invocations, pipe or redirect program data and read `sys.stdin` / `process.stdin`; stdin-only invocations still interpret their stdin as code. Shell exports, inline assignments and tool `env` overrides reach the cell, and stderr remains redirectable separately.
+`harness.display(value)` in Python and `display(value)` in JavaScript emit presentation sidebands, not stdout/stderr. Python supports JSON, text/Markdown, HTML-to-Markdown, images, and common PIL/pandas/Plotly/Matplotlib representations. JavaScript object results become structured JSON. JavaScript and explicit warm-Python final-expression values also remain sidebands; fresh Python does not display unprinted expressions. Pipes, redirects, and substitutions receive only program bytes. Model-visible JSON display text is capped at 8,000 characters per value; structured data remains available. Bash capture is text; use files/artifacts for arbitrary binary data.
 
 ### Timeouts and cancellation
 
-The enclosing Bash `timeout` (see [CWD validation and timeout resolution](#3-cwd-validation-and-timeout-resolution)) is the only model-facing deadline for a kernel cell; a cell has no separate structured timeout field. If the command deadline or caller abort interrupts a Python cell, the runner receives `SIGINT` and normally remains reusable; if it cannot settle, the kernel is shut down and recreated. Interrupting JavaScript force-kills its VM. Unsafely lost or uncommitted declared state is not replaced with an older snapshot or a silently fresh namespace; explicitly reset when choosing to discard it. The Bash shell session is likewise quarantined after a cancelled or timed-out run.
+The enclosing Bash timeout governs the invocation and owned helper work. Fresh Python uses process cancellation. Named Python receives an interrupt and may remain reusable if it settles; otherwise its process shuts down. JavaScript interruption force-kills its VM. Lost/uncertain warm state is never replayed or replaced with an older snapshot. A cancelled/timed-out persistent shell is quarantined too.
 
 ## Explicit kernel lifecycle and targets
 
-Use `protolens context` from the Brush shell (or call the discoverable `context` tool directly) to manage a named language/lane without entering that kernel's execution queue:
+`protolens context` controls kernels without entering their execution queue:
 
 ```bash
 protolens context '{"resource":"kernel","op":"list"}'
@@ -150,47 +177,52 @@ protolens context '{"resource":"kernel","op":"reset","language":"python","lane":
 protolens context '{"resource":"kernel","op":"close","language":"python","lane":"analysis","force":true}'
 ```
 
-The paths above must already exist. Execute subsequent interpreter cells with the matching Bash `lane`. Configuration belongs to the owner session and language/lane; changing an existing configuration requires `reset`, not silent replacement. Reset discards variables but retains the selected environment unless explicitly overridden. Close releases the runtime and forgets its lane configuration; subsequent implicit cells use local defaults, so explicitly start/configure a remote lane again before reuse. Closing busy work requires explicit `force:true`, which cancels it. Inspect/list and forced close remain available during an executing cell. Keepalive is a bounded lease (at most one hour), not an immortal kernel; owner disposal still closes owned runtimes.
+Python `lane:"analysis"` controls the same owner/name identity as `harness.kernel("analysis")`, under `python:`, when interpreter/cwd/target match. It does not pin or route ordinary Python. Specify `interpreter` to disambiguate environments. JavaScript lanes still select routed Node/Bun cells. Configuration changes require reset; reset retains the environment unless overridden, close forgets it. Busy close requires `force:true`. Inspect/list and forced close remain available during execution. Keepalive is a bounded lease of at most one hour, not immortality; owner disposal still closes owned runtimes.
 
-Python and Bun kernels support local, existing-container, and SSH targets; Node kernels run on the local host only (use `bun` or `python` for SSH/container targets):
+Python and Bun support local, existing-container, and SSH targets; Node is local-only:
 
 ```bash
 protolens context '{"resource":"kernel","op":"start","language":"python","lane":"container","target":{"kind":"container","engine":"docker","container":"devbox","cwd":"/work","interpreter":"python3"}}'
 protolens context '{"resource":"kernel","op":"start","language":"bun","lane":"remote","target":{"kind":"ssh","host":"builder","cwd":"/work","hostCommand":["proto"]}}'
 ```
 
-Containers must already be running under Docker or Podman. SSH uses existing noninteractive authentication/host configuration. Both target kinds require POSIX `sh`, `setsid -w`, and an absolute existing target working directory. The target needs its Python interpreter; Bun kernels need an installed compatible Proto CLI (`hostCommand`) using the same Bun version as the parent. The transport does not provision machines, install packages, silently run locally on failure, or forward ambient parent credentials. Target work retains persistent cells, binary streams, parent-session tool callbacks, and cancellation; shutdown cleans up owned target process groups.
+Paths/interpreters must exist. Containers must be running; SSH uses existing noninteractive authentication. Targets require POSIX `sh`, `setsid -w`, and an absolute existing cwd. Bun needs a compatible installed Proto CLI (`hostCommand`) with the parent's Bun version. Proto does not provision environments, install dependencies, forward ambient credentials, or fall back locally. Shutdown cleans up owned target process groups.
 
-**Filesystem boundary:** kernel file APIs, interpreter paths, and target `cwd` address the target. Brush commands around that cell and parent-session tools still run on the parent host. Artifact publication's `path` also addresses the parent. To upload a target file, read its bytes in the target kernel and publish the value; to download, read artifact pages and write the decoded bytes on the target. Bridge-backed `symbols(path)` and `block_range` read source through the target runtime, then send its text to the parent AST parser; target paths are not parent paths. Pass target source as `symbols(code=...)` when it is already in memory. Internal filesystem URLs such as `local://` are not mapped into remote kernels; use target-local paths. Nothing implicitly synchronizes workspaces.
+**Filesystem boundary:** native file APIs, script paths, interpreter paths, and target cwd address the target. Session tools, `harness.fs`, artifact `path` publication, and Bash-resolved paths address the host. Python `harness.symbols(path)`/`harness.block_range(path, line)` read host files; use absolute host paths from remote code or pass target text to `harness.symbols(code=source, lang="python")`. JavaScript bridge-backed source helpers read target source before host parsing. Internal URLs are not target mounts. Transfer target bytes as artifact values rather than treating host paths as remote paths. The Python API and serializer are staged self-contained with the compiled CLI; target interpreters and user dependencies remain the target's responsibility.
 
 ## Live tool and background-job events
 
-Python `start_tool(name, args)` / JavaScript `await startTool(name, args)` returns an owned execution handle without waiting for its final result. Consume `tool_events(handle, cursor=0, limit=128, wait_ms=30000)` or `for await (const event of toolEvents(handle, {cursor, limit, waitMs}))` while work runs:
+Python `harness.start_tool(name, args)` / JavaScript `await startTool(name, args)` returns an owned execution handle without waiting for its final result. Consume `harness.tool_events(handle, cursor=0, limit=128, wait_ms=30000)` or `for await (const event of toolEvents(handle, {cursor, limit, waitMs}))` while work runs:
 
 ```python
-job = start_tool("bash", {"command": "printf 'ready\\n'; exit 7", "async": True})
-for event in tool_events(job):
+import proto_harness as harness
+
+job = harness.start_tool("bash", {"command": "printf 'ready\\n'; exit 7", "async": True})
+for event in harness.tool_events(job):
     print(event)
-dispose_tool(job)
+harness.dispose_tool(job)
 ```
 
 Events contain `executionId`, monotonic `sequence`, `kind`, `data`, and `terminal`. Updates and tool `result` are distinct; terminal `complete` follows settlement of owned managed background jobs, so an async Bash launch acknowledgement is not mistaken for completion. The final job result, including nonzero exit status, is available in job settlement data. Bounded retention makes overflow visible through `gap` events; resume using the last consumed sequence as `cursor` rather than assuming a complete transcript. Oversized payloads carry explicit omission metadata; retain bulk data as artifact values instead of treating the event feed as an unbounded result store.
 
-Breaking an iterator does not cancel work. Use `cancel_tool(handle, wait_ms=...)` / `await cancelTool(handle, {waitMs})`; then `dispose_tool(handle)` / `await disposeTool(handle)` after settlement to release retained events. Cancelling the event execution also cancels its owned descendant jobs, not unrelated sibling work. Session disposal cancels owned subscriptions and work. A noncooperative callback is not falsely reported stopped merely because cancellation was requested.
+Breaking an iterator does not cancel work. Use `harness.cancel_tool(handle, wait_ms=...)` / `await cancelTool(handle, {waitMs})`; then `harness.dispose_tool(handle)` / `await disposeTool(handle)` after settlement to release retained events. Cancelling the event execution also cancels its owned descendant jobs, not unrelated sibling work. Session disposal cancels owned subscriptions and work. A noncooperative callback is not falsely reported stopped merely because cancellation was requested.
 
 ## Immutable artifact values and rich completions
 
-Use `publish_artifact(value, kind="json")` / `await publishArtifact(value, {kind:"json"})` to retain data without copying it into every model-visible result. `kind="text"` stores text; `kind="binary"` accepts native Python bytes or JavaScript `Uint8Array`, or base64 with `encoding="base64"`. `path` snapshots a parent-host file rather than creating a live reference.
+Use `harness.publish_artifact(value, kind="json")` / `await publishArtifact(value, {kind:"json"})` to retain data without copying it into every model-visible result. `kind="text"` stores text; `kind="binary"` accepts native Python bytes or JavaScript `Uint8Array`, or base64 with `encoding="base64"`. `path` snapshots a parent-host file rather than creating a live reference.
 
 The returned reference contains `type`, `version`, `uri`, `owner`, `mimeType`, byte count, and SHA-256. Files use the existing `artifact://` store. Handles are immutable, verified, and session-owned: changing the source file does not change the snapshot; tampered or foreign handles fail. Kernel reset preserves them, but session disposal revokes them. Restoring handle metadata in another session does not grant access.
 
-`read_artifact(ref, offset=0, length=..., encoding="utf8")` / `await readArtifact(ref, {offset,length,encoding})` returns `{ref,offset,bytes,eof,encoding,data}`. Reads are bounded to 1 MiB per page; offsets and lengths are bytes, not text characters. UTF-8 pages end on a character boundary, so `bytes` can be less than `length`; continue at `offset + bytes`. Bytes that are not valid UTF-8 fail with an error; read binary data with `encoding="base64"`. `ref` may also be the bare `artifact://<id>` URI of an artifact this session published. `resolve_artifact(ref)` / `await resolveArtifact(ref)` validates the handle without returning its payload. Use explicit pages for large transfers.
+`harness.read_artifact(ref, offset=0, length=..., encoding="utf8")` / `await readArtifact(ref, {offset,length,encoding})` returns `{ref,offset,bytes,eof,encoding,data}`. Reads are bounded to 1 MiB per page; offsets and lengths are bytes, not text characters. UTF-8 pages end on a character boundary, so `bytes` can be less than `length`; continue at `offset + bytes`. Bytes that are not valid UTF-8 fail with an error; read binary data with `encoding="base64"`. `ref` may also be the bare `artifact://<id>` URI of an artifact this session published. `harness.resolve_artifact(ref)` / `await resolveArtifact(ref)` validates the handle without returning its payload. Use explicit pages for large transfers.
 
-`completion()` still accepts a string, and now also accepts a reference or an array of text/media parts and references:
+`harness.completion()` / JavaScript `completion()` accepts a string, and now also accepts a reference or an array of text/media parts and references:
 
 ```python
-image = publish_artifact(Path("plot.png").read_bytes(), kind="binary", mime_type="image/png")
-answer = completion([
+from pathlib import Path
+import proto_harness as harness
+
+image = harness.publish_artifact(Path("plot.png").read_bytes(), kind="binary", mime_type="image/png")
+answer = harness.completion([
     {"type": "text", "text": "Describe the trend and flag uncertainty."},
     image,
 ])
@@ -203,14 +235,16 @@ A tier selector (`tiny`, `smol`, `default`, `slow`) follows the same `retry.fall
 
 ## Scoped access from ordinary scripts
 
-External interpreters do not automatically receive prelude objects or `protolens`. Use explicit delegation rather than relying on private kernel transport credentials: it supplies thin Python/JavaScript clients with a revocable, expiring capability.
+Ordinary agent-shell Python scripts can explicitly import `proto_harness` during their authenticated run. Independently managed scripts do not inherit prelude objects or `protolens`. For clients whose lifetime must be managed separately, use delegation: it supplies thin Python/JavaScript clients with a revocable, expiring capability, without exporting private runtime credentials.
 
 ```python
-lease = delegate([
+import proto_harness as harness
+
+lease = harness.delegate([
     {"tool": "__completion__"},
     {"tool": "__runtime__", "operations": ["artifact_publish", "artifact_read", "artifact_resolve"]},
 ], ttl_ms=60000, max_concurrent=2, max_requests=20)
-launch_delegated(lease, name="report", application="python3", args=["report.py"])
+harness.launch_delegated(lease, name="report", application="python3", args=["report.py"])
 ```
 
 In the ordinary `report.py` script:
@@ -223,49 +257,58 @@ reference = session.publish_artifact({"heading": result})
 print(reference)
 ```
 
-`delegate` returns a lease snapshot and the packaged client paths. Python uses keyword options; JavaScript uses `{ttlMs,maxConcurrent,maxRequests,expose}`. JavaScript scripts import `SessionClient` from the returned client module and call `await SessionClient.fromEnv()`. Grants name exact tools, optionally exact `args.op` operations; special runtime grants permit artifact operations only, not recursive delegation. Execution, control, and agent tools are not delegable; artifact path publication is also denied. Use explicit data values and the managed launcher instead. Calls use the normal session tool/model policies.
+`harness.delegate` returns a lease snapshot and the packaged client paths. Python uses keyword options; JavaScript uses `{ttlMs,maxConcurrent,maxRequests,expose}`. JavaScript scripts import `SessionClient` from the returned client module and call `await SessionClient.fromEnv()`. Grants name exact tools, optionally exact `args.op` operations; special runtime grants permit artifact operations only, not recursive delegation. Execution, control, and agent tools are not delegable; artifact path publication is also denied. Use explicit data values and the managed launcher instead. Calls use the normal session tool/model policies.
 
-`launch_delegated` / `launchDelegated` runs through the existing managed-process supervisor on the parent host and explicitly supplies that lease. For a manually launched script, request `expose=True` / `expose:true` and pass the returned launch environment; never print the capability file or token. Credentials are not automatically exported to arbitrary commands. `delegations()` lists leases; `revoke_delegation(lease)` / `await revokeDelegation(lease)` revokes future calls, cancels in-flight calls, and stops owned launched processes. Expiry and session disposal do the same. Request/concurrency limits are enforced and calls are never implicitly retried. This scopes bridge authority; it is not an OS/filesystem sandbox for code running as the same user.
+`harness.launch_delegated` / `launchDelegated` runs through the existing managed-process supervisor on the parent host and explicitly supplies that lease. For a manually launched script, request `expose=True` / `expose:true` and pass the returned launch environment; never print the capability file or token. Credentials are not automatically exported to arbitrary commands. `harness.delegations()` lists leases; `harness.revoke_delegation(lease)` / `await revokeDelegation(lease)` revokes future calls, cancels in-flight calls, and stops owned launched processes. Expiry and session disposal do the same. Request/concurrency limits are enforced and calls are never implicitly retried. This scopes bridge authority; it is not an OS/filesystem sandbox for code running as the same user.
 
-## Selected data persistence
+## Python rich store
 
-Save only explicit bindings, then restore them into a later Python, Node, or Bun kernel:
-
-```python
-summary = {"passed": 12, "failed": 0}
-payload = b"\x00\x80\xff"
-save_state("report-state.json", ["summary", "payload"])
-```
-
-After an explicit kernel reset, in a later cell:
+Fresh-process locals and imports disappear at exit. Save deliberate session values in `harness.store`:
 
 ```python
-load_state("report-state.json")
+import proto_harness as harness
+
+shared = []
+with harness.store.transaction() as store:
+    store["left"] = shared
+    store["right"] = shared
 ```
 
-JavaScript equivalents are `await saveState(path, ["summary", "payload"])` and `await loadState(path, {collision:"reject"})`. Python uses `load_state(path, collision="reject")`; explicit `"overwrite"` permits replacing colliding mutable user bindings. JavaScript restores through live binding setters so existing closures observe the restored value; `const`, imports, and prelude/reserved bindings cannot be overwritten. Read-only collisions reject the entire restore before any binding changes.
+In another fresh run with the same compatible environment:
 
-Snapshots are versioned, atomic files containing bounded acyclic plain data, bytes, and artifact-reference metadata; the recorded language and interpreter are provenance only. Python, Node, and Bun kernels restore each other's snapshots. Within a language every byte type round-trips; across languages Python `bytes`/`bytearray` restore as a JavaScript `Buffer`, and `Buffer`/`Uint8Array`/`ArrayBuffer` restore as Python `bytes`. Python integers beyond ±(2^53−1) restore exactly in Python and fail to load in JavaScript instead of rounding. Binding names must be valid, non-reserved identifiers in the loading language. Selection addresses published top-level kernel bindings, including JavaScript lexical bindings; it cannot address variables local to user-defined functions. Restore validates the entire snapshot and every collision before changing any binding. Unsupported objects, functions, getters/proxies, shared mutable aliases (including shared JavaScript backing memory), cycles, nonfinite values, resources, and malformed metadata fail explicitly; they are not pickled or reconstructed by executing code. Saving a replacement that fails validation preserves the previous snapshot. Snapshots do not retain closures, running tasks, open handles, the interpreter heap, or exactly-once side effects. A snapshot path is on the kernel target; artifact ownership still belongs to the parent session.
+```python
+import proto_harness as harness
+
+assert harness.store["left"] is harness.store["right"]
+harness.store["left"].append("retained")
+harness.store.commit()
+```
+
+Assignments/deletions commit automatically; in-place mutations need `commit()`. `transaction()` batches mutations into one commit, not an external side-effect transaction. The whole mapping is one graph so shared references survive. Commits use revision compare-and-swap; a competing writer produces a conflict rather than overwriting its graph. Use `refresh()` and explicitly reapply the intended edit. Store graphs have the same 64 MiB encoded limit and environment/resource restrictions as named warm snapshots.
+
+## Selected data files and JavaScript declared state
+
+JavaScript selected-data files remain distinct from rich Python graphs and automatic history continuity. JavaScript uses `await saveState(path, ["summary", "payload"])` and `await loadState(path, {collision:"reject"})`. Python uses `harness.store` or named-kernel graph snapshots instead; the old Python selected-file codec and its helpers are removed.
+
+The selected-data codec accepts bounded acyclic plain values, bytes, and artifact metadata, not rich graphs or live resources. Files are versioned and atomic with a 16 MiB encoded limit. JavaScript continues to read compatible historical selected-data files, rejecting integers beyond ±(2^53−1) rather than rounding them. Names must be valid non-reserved top-level bindings. Explicit `collision:"overwrite"` may replace mutable JavaScript bindings through live setters; `const`, imports, and reserved names reject the entire restore before mutation.
 
 ### Declared session state
 
-Manual `save_state`/`saveState` files are separate from automatic session continuity. To preserve useful data through supported user forks, temporal navigation and host restart, explicitly declare the top-level names:
+Python named namespaces are captured automatically, as described under [residency and continuity](#residency-and-continuity). JavaScript retains its existing explicit data-only declaration:
 
-```python
-summary = {"passed": 12, "failed": 0}
-payload = b"\x00\x80\xff"
-declare_state(["summary", "payload"])
+```javascript
+const summary = {passed: 12, failed: 0};
+const payload = new Uint8Array([0, 128, 255]);
+declareState(["summary", "payload"]);
 ```
 
-JavaScript uses synchronous `declareState(["summary", "payload"])`. The declaration replaces the selected-name list; `declare_state([])` / `declareState([])` clears it. Declaration validates the current values without invoking custom getters/proxy traps. Later mutations are captured at completed model-turn boundaries and after direct Python submissions; a selected binding deleted or changed to an unsupported value causes capture to fail visibly. An arbitrary intermediate message/cell is not automatically a durable temporal boundary.
+`declareState(names)` replaces the selected-name list; `declareState([])` clears it. Values are validated without custom getter/proxy execution. Unsupported/deleted selected bindings fail capture visibly. Completed model-turn boundaries are durable; arbitrary intermediate cells/messages are not.
 
-Manifests reuse the safe selected-data codec, with a 16 MiB encoded limit per kernel, 4,096 names, 100,000 nodes and depth 64. They are immutable, versioned and tied to the exact session entry, language/runtime, lane, cwd, interpreter and target. Their payloads bypass ordinary lossy transcript truncation through durable blobs. All reachable historical manifests remain available with their branches; there is no recent-turn cutoff or nearest-earlier fallback.
+JavaScript manifests use the selected-data codec: 16 MiB encoded per kernel, 4,096 names, 100,000 nodes, depth 64. Immutable manifests bind the exact session entry, runtime, lane, cwd, interpreter, and target, using durable blobs outside lossy transcript truncation. All reachable historical manifests remain with branches; there is no recent-turn cutoff or nearest-earlier fallback. Restore requires a matching environment and validates before destructive navigation. Corrupt or missing exact state refuses transition; safe parking retains immutable metadata without reviving the runtime.
 
-Unlike manual cross-language snapshot files, automatic continuity requires the same interpreter implementation/version/executable and matching lane/target/environment. The destination validates compatibility before destructive temporal navigation and restores lazily before executing its first cell. Corrupt or missing exact manifests refuse the transition. Runtime release/normal close similarly refuses unsafe declared state before teardown; parked metadata receipts carry the immutable view forward without reviving kernels.
+JavaScript declaration is data continuity, not heap cloning: shared mutable aliases/cycles, custom objects, retained resources, closures, imports, undeclared bindings, live descendants, and external effects are not restored. Multiple declared physical namespaces colliding on the same lane/environment refuse capture; use distinct lanes. `retainTask` resources prevent a declared boundary. Artifact metadata never grants access by itself. Forked declared data is independent; context-only rewind does not roll computation back.
 
-This is **data continuity, not heap or resource cloning**. Selected shared mutable aliases/cycles, custom objects and resources are rejected rather than approximated. Explicit live sharing remains supported, but multiple declared physical namespaces that collide on the same language/lane/environment refuse temporal capture; use distinct named lanes instead. Live retained Python tasks/user threads and JavaScript `retainTask` resources prevent a declared boundary. Imports, closures, arbitrary identity, undeclared values, live descendants, files and external process state are not restored. An artifact-reference value does not by itself transfer artifact access. User fork creates independent declared data in a new root; model context-only `checkpoint`/`rewind(report)` leaves current values untouched. Explicit reset/close remains the way to discard a namespace.
-
-See [declared state at temporal boundaries](./session-operations.md#declared-state-at-temporal-boundaries) for transition semantics and [interpreter resource policy and measurements](./interactive-memory.md#interpreters-subprocesses-and-provider-state) for admission, safe eviction and the measured macOS scope.
+See [session operations](./session-operations.md#declared-state-at-temporal-boundaries) and [interpreter resource policy](./interactive-memory.md#interpreters-subprocesses-and-provider-state).
 
 ## Kernel orchestration helpers
 
@@ -286,13 +329,15 @@ See [declared state at temporal boundaries](./session-operations.md#declared-sta
 
 Settled rows retain input ordering and contain `status`, `index`, actual `stage`, and either `value` or `error` (`name`, `message`, `stack`). Status is `fulfilled`, `rejected`, `timed_out`, or `cancelled`. Without `settled`, failure throws `BatchError` with all `.results`; observer failures are retained in `.callback_errors` / `.callbackErrors`. Successful sibling results are not discarded.
 
-Python callbacks are zero-argument thunks or single-value stages; call `task_signal().check()` inside cooperative loops. JavaScript thunks receive `(index, signal)` and stages `(value, index, signal)`. Helpers drain work and observers before returning: a noncooperative callback can overrun its deadline, but is not falsely reported stopped while side effects continue. Streaming deadlines cover the whole item across stages; barrier deadlines apply separately to each stage-item. Host concurrency ceilings still apply.
+Python callbacks are zero-argument thunks or single-value stages; call `harness.task_signal().check()` inside cooperative loops. JavaScript thunks receive `(index, signal)` and stages `(value, index, signal)`. Helpers drain work and observers before returning: a noncooperative callback can overrun its deadline, but is not falsely reported stopped while side effects continue. Streaming deadlines cover the whole item across stages; barrier deadlines apply separately to each stage-item. Host concurrency ceilings still apply.
 
 ```python
-rows = pipeline([1, 2, 3], lambda n: n * 2, lambda n: {"answer": n + 1},
+import proto_harness as harness
+
+rows = harness.pipeline([1, 2, 3], lambda n: n * 2, lambda n: {"answer": n + 1},
                 streaming=True, settled=True, concurrency=2,
                 checkpoint="workflow-checkpoints", key="double-plus-one-v1", resume=True)
-display(rows)
+harness.display(rows)
 ```
 
 Checkpoints contain only completed, strictly JSON-compatible results, not interpreter heaps, closures, open resources, errors, or running callbacks. Checkpointed `parallel` requires unique stable string `keys`; `pipeline` can derive keys from canonical JSON input. Change the workflow `key` when code or semantics change. Failed stages rerun only on an explicitly requested subsequent invocation; there is no automatic retry. Resume survives kernel restarts, but is not an exactly-once side-effect transaction. Each item/stage checkpoint uses atomic file replacement and a versioned identity envelope; corrupt or oversized checkpoints produce errors.
@@ -315,17 +360,19 @@ These settings apply to model-generated `bash` calls containing a standalone, qu
 
 ### Completion speculation
 
-`kernel.speculation.enabled` prelaunches eligible top-level `completion()` calls with literal arguments as their source becomes complete. Python keyword options and JavaScript literal options objects are supported. For example:
+`kernel.speculation.enabled` prelaunches eligible top-level `harness.completion()` calls after `import proto_harness as harness`, or JavaScript `completion()` calls, with literal arguments as their source becomes complete. Python keyword options and JavaScript literal options objects are supported. For example:
 
 ```bash
 python <<'PY'
-summary = completion("Summarize the purpose of speculative execution.", model="smol")
-title = completion("Give a short title for a document about speculative execution.")
+import proto_harness as harness
+
+summary = harness.completion("Summarize the purpose of speculative execution.", model="smol")
+title = harness.completion("Give a short title for a document about speculative execution.")
 print(summary, title)
 PY
 ```
 
-The completed cell runs normally. A matching real completion invocation can claim its already-running result rather than make another request. Identical calls remain separate stochastic samples, not one memoized answer. Claiming is scoped to the originating call and runtime invocation, with model/options and finalized input matching; it is not a session-wide arguments-only cache.
+The finalized Python process or JavaScript cell runs normally. A matching real completion invocation can claim its already-running result rather than make another request. Identical calls remain separate stochastic samples, not one memoized answer. Claiming is scoped to the originating call and runtime invocation, with model/options and finalized input matching; it is not a session-wide arguments-only cache.
 
 At most two speculative requests launch per outer bash call, including invalidated attempts; normal execution can make additional requests for calls without a reusable result. Changes to relevant input fields or candidates invalidate pending work; changing `cwd`, `env`, `pty`, or `async` does not silently reuse an incompatible result. Unclaimed work is cancelled when the call/turn is retired or the session is aborted/disposed; work already claimed by normal execution follows its runtime lifetime.
 
@@ -449,7 +496,7 @@ That means print mode and non-UI RPC/tool contexts never use the local PTY overl
 Session-level bang-command executions pass the captured session id as `sessionKey` (`target.sessionId` in `BashRunner`).
 
 Tool-call executions pass `sessionKey: this.session.getSessionId?.()`, when available. In both surfaces, a session key isolates shell reuse per session; without one, reuse falls back to shell config/snapshot/env.
-Non-PTY Brush calls queue by session and lane; omitted lane and `main` are identical. Overlap no longer silently switches to a fresh shell. Named lanes isolate shell and Python/JavaScript state while allowing independent execution. A cancelled queued caller never executes its command. Managed background jobs run in their own shell lane (`async:<jobId>` by default), but their Python/JavaScript cells stay in the session's kernel (or the explicit lane's kernel) instead of starting a kernel per job. Kernel `tool.bash` calls without a lane receive a fresh bridge lane to avoid waiting on their own calling cell. Do not request the calling lane from a nested tool call.
+Non-PTY Brush calls queue by session and lane; omitted lane and `main` are identical. Named lanes isolate shell and JavaScript kernel state while allowing independent execution. Ordinary Python remains fresh in every lane; named Python state is selected explicitly by `harness.kernel(name)`. A cancelled queued caller never executes. Managed background jobs use their own shell lane (`async:<jobId>` by default), but JavaScript cells reuse the main or explicit lane's kernel. Nested kernel `tool.bash` calls without a lane receive a fresh bridge lane to avoid self-waiting. Do not request the calling shell lane from a nested call.
 
 ## Bundled `jq` compatibility
 
@@ -641,7 +688,7 @@ This component is wired by `CommandController.handleBashCommand()` and fed from 
 - [`src/exec/direnv.ts`](../packages/coding-agent/src/exec/direnv.ts) — direnv/devenv environment loading used by executor preflight.
 - [`src/tools/bash-interactive.ts`](../packages/coding-agent/src/tools/bash-interactive.ts) — PTY runtime, overlay UI, input normalization, and interactive `TERM` setup.
 - [`src/tools/bash-embedded-code.ts`](../packages/coding-agent/src/tools/bash-embedded-code.ts) — recognizes embedded Python/JavaScript cell forms and source spans.
-- [`src/eval/shell-bridge.ts`](../packages/coding-agent/src/eval/shell-bridge.ts) — routes Bash cells to the retained Python/JavaScript runtimes and drains structured output.
+- [`src/eval/shell-bridge.ts`](../packages/coding-agent/src/eval/shell-bridge.ts) — routes JavaScript cells to retained runtimes and drains structured output; ordinary Python executes natively.
 - [`src/session/streaming-output.ts`](../packages/coding-agent/src/session/streaming-output.ts) — `OutputSink`, `TailBuffer`, truncation/artifact spill, and summary metadata.
 - [`src/tools/output-meta.ts`](../packages/coding-agent/src/tools/output-meta.ts) — truncation metadata shape + notice injection wrapper.
 - [`src/session/agent-session.ts`](../packages/coding-agent/src/session/agent-session.ts) — session-level `executeBash`, message recording, abort lifecycle.

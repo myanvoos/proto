@@ -4,8 +4,6 @@ import type { ToolSession } from "../tools";
 import type { ExecutorBackendResult } from "./backend";
 import { bunBackend } from "./js";
 import { disposeVmContextsByOwner } from "./js/context-manager";
-import { disposeKernelSessionsByOwner } from "./py/executor";
-import { checkPythonKernelAvailability } from "./py/kernel";
 import { type KernelShellBridgeHandle, registerKernelShellRun } from "./shell-bridge";
 
 const KERNEL_OWNER = `shell-bridge-test:${process.pid}`;
@@ -48,7 +46,7 @@ async function connectBridge(bridge: KernelShellBridgeHandle) {
 }
 
 afterEach(() => vi.restoreAllMocks());
-afterAll(() => Promise.all([disposeVmContextsByOwner(KERNEL_OWNER), disposeKernelSessionsByOwner(KERNEL_OWNER)]));
+afterAll(() => disposeVmContextsByOwner(KERNEL_OWNER));
 
 // A real socket regression can leave the peer open forever; fake timers cannot
 // drive kernel TCP readiness, so this is an integration-test fail-safe only.
@@ -347,26 +345,19 @@ function stdoutOf(response: string): string {
 		.join("");
 }
 
-const pythonAvailable = (await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true })).ok;
-
-test.skipIf(!pythonAvailable)(
-	"Python displays remain visible outside program stdout",
-	async () => {
-		const bridge = registerKernelShellRun(stubSession());
-		const client = await connectBridge(bridge);
-		try {
-			const code = 'print("before"); display({"a": 1}); display("plain string"); print("after")';
-			client.socket.write(`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "py", code })}\n`);
-			expect(stdoutOf(await within(client.response, 60_000))).toBe("before\nafter\n");
-			expect(bridge.drainDisplayText()).toEqual(['display[1]:\n{\n  "a": 1\n}', "plain string"]);
-			expect(bridge.drainJsonOutputs()).toEqual([{ a: 1 }]);
-		} finally {
-			client.socket.destroy();
-			bridge.dispose();
-		}
-	},
-	90_000,
-);
+test("the implicit shell bridge refuses Python instead of executing a hidden persistent cell", async () => {
+	const bridge = registerKernelShellRun(stubSession());
+	const client = await connectBridge(bridge);
+	try {
+		client.socket.write(
+			`${JSON.stringify({ token: bridge.env.PI_KERNEL_BRIDGE_TOKEN, lang: "py", code: "marker = 1" })}\n`,
+		);
+		expect(await within(client.response)).toBe('{"t":"f"}\n');
+	} finally {
+		client.socket.destroy();
+		await bridge.dispose();
+	}
+});
 
 for (const streams of [true, false]) {
 	test(`a backend that ${streams ? "streams" : "only returns"} displays renders each display exactly once`, async () => {

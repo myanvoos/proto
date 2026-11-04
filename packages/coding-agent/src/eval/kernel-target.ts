@@ -106,8 +106,9 @@ export function remoteKernelEnv(env: Record<string, string | undefined> = {}): R
 	for (const [name, value] of Object.entries(env)) {
 		// Parent-only paths and broad loopback credentials must never be sent remotely.
 		if (
-			name === "PI_TOOL_BRIDGE_URL" ||
-			name === "PI_TOOL_BRIDGE_TOKEN" ||
+			name === "PI_PYTHON_HARNESS_URL" ||
+			name === "PI_PYTHON_HARNESS_TOKEN" ||
+			name === "PI_PYTHON_HARNESS_PATH" ||
 			name === "PI_SESSION_FILE" ||
 			name === "PI_ARTIFACTS_DIR"
 		)

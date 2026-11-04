@@ -8,9 +8,8 @@ import { type CappedEventDiff, capEventDiff } from "../utils/diff";
  * (`cat > file`, `>>`, `&>`). The native shell captures the before/after text
  * of every redirection target it opened, so a shell write reports exactly like
  * a kernel cell write: one status event carrying the hunk for the TUI, plus one
- * compact model-visible note line. Wording matches the kernel trackers
- * (eval/js/shared/fs-tracker.ts, eval/py/prelude.py) so both write paths read
- * the same in a transcript.
+ * compact model-visible note line. Wording matches the JavaScript tracker
+ * (eval/js/shared/fs-tracker.ts) so both write paths read the same in a transcript.
  */
 export interface BashFileMutationReport {
 	statusEvents: EvalStatusEvent[];

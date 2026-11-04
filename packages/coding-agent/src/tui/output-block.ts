@@ -1,6 +1,7 @@
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
 import {
+	estimateRenderCacheSize,
 	getWidthConfigEpoch,
 	padding,
 	replaceTabs,
@@ -47,14 +48,17 @@ type BlockRow =
 
 const SEPARATOR_CELLS = 12;
 const OUTPUT_BLOCK_CACHE_MAX = 4096;
-const OUTPUT_BLOCK_CACHE_MAX_SIZE = 24 * 1024 * 1024;
+const OUTPUT_BLOCK_CACHE_MAX_SIZE = 10 * 1024 * 1024;
 const OUTPUT_BLOCK_CACHE_MAX_ENTRY_SIZE = 4 * 1024 * 1024;
 
 const outputBlockCache = new LRUCache<string, string[]>({
 	max: OUTPUT_BLOCK_CACHE_MAX,
 	maxSize: OUTPUT_BLOCK_CACHE_MAX_SIZE,
 	maxEntrySize: OUTPUT_BLOCK_CACHE_MAX_ENTRY_SIZE,
-	sizeCalculation: (lines, key) => key.length + lines.reduce((size, line) => size + line.length, 0),
+	sizeCalculation: (lines, key) => estimateRenderCacheSize(key, lines),
+	ttl: 60_000,
+	ttlAutopurge: true,
+	updateAgeOnGet: true,
 });
 const outputBlockThemeIds = new WeakMap<object, number>();
 let nextOutputBlockThemeId = 1;
@@ -204,7 +208,7 @@ export class CachedOutputBlock {
 	#cache?: RenderCache;
 
 	render(options: OutputBlockOptions, theme: Theme): readonly string[] {
-		const key = this.#buildKey(options);
+		const key = this.#buildKey(options, theme);
 		if (this.#cache?.key === key) return this.#cache.lines;
 		const sharedKey = `${outputBlockThemeId(theme)}:${TERMINAL.imageProtocol}:${key.toString(16)}`;
 		const shared = outputBlockCache.get(sharedKey);
@@ -222,8 +226,9 @@ export class CachedOutputBlock {
 		this.#cache = undefined;
 	}
 
-	#buildKey(options: OutputBlockOptions): bigint {
+	#buildKey(options: OutputBlockOptions, theme: Theme): bigint {
 		const h = new Hasher();
+		h.u32(outputBlockThemeId(theme));
 		h.u32(options.width);
 		h.u32(getWidthConfigEpoch());
 		h.u32(normalizeContentPaddingLeft(options.contentPaddingLeft));

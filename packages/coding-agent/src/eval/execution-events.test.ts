@@ -5,8 +5,11 @@ import * as path from "node:path";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 import { AsyncJobManager } from "../async/job-manager";
+import { Settings } from "../config/settings";
+import { authorizeSessionToolCall } from "../session/tool-call-policy";
 import type { Tool, ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
+import { ReadTool } from "../tools/read";
 import {
 	disposeSessionExecutionEvents,
 	type ExecutionEvent,
@@ -17,19 +20,49 @@ import {
 } from "./execution-events";
 
 const ok: AgentToolResult = { content: [{ type: "text", text: "finished" }] };
+const fixtureStarts = new WeakMap<ToolSession, PromiseWithResolvers<void>>();
 
-function sessionWith(execute: AgentTool["execute"], manager?: AsyncJobManager): ToolSession {
-	const tool = {
+function sessionWith(execute: AgentTool["execute"], manager?: AsyncJobManager, cwd = os.tmpdir()): ToolSession {
+	const tools = new Map<string, Tool>();
+	const session: ToolSession = {
+		cwd,
+		hasUI: false,
+		settings: Settings.isolated({ "async.enabled": true }),
+		asyncJobManager: manager,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getArtifactsDir: () => path.join(cwd, "artifacts"),
+		getEvalSessionId: () => `execution-events:${cwd}`,
+		getEvalKernelOwnerId: () => `execution-events:${cwd}`,
+		toolRegistry: tools,
+		getToolByName: name => tools.get(name),
+		getToolForEvalBridge: name => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
+		beforeEvalToolCall: (tool, id, args, signal) =>
+			authorizeSessionToolCall(
+				undefined,
+				{ type: "toolCall", id, name: tool.name, arguments: args },
+				tool,
+				args,
+				signal,
+			),
+	};
+	tools.set("fixture", {
 		name: "fixture",
 		label: "fixture",
-		description: "",
+		description: "Emit controlled execution updates",
 		parameters: { type: "object", properties: {} },
-		execute,
-	};
-	return {
-		asyncJobManager: manager,
-		getToolByName: (name: string) => (name === "fixture" ? tool : undefined),
-	} as unknown as ToolSession;
+		execute: (...args) => {
+			try {
+				return execute.apply(tools.get("fixture")!, args);
+			} finally {
+				fixtureStarts.get(session)?.resolve();
+			}
+		},
+	});
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return session;
 }
 
 async function start(
@@ -38,7 +71,14 @@ async function start(
 	tool = "fixture",
 	args = {},
 ): Promise<ExecutionEventHandle> {
-	return (await runExecutionEvents({ op: "events_start", tool, args }, { session, signal })) as ExecutionEventHandle;
+	const started = Promise.withResolvers<void>();
+	if (tool === "fixture") fixtureStarts.set(session, started);
+	const handle = (await runExecutionEvents(
+		{ op: "events_start", tool, args },
+		{ session, signal },
+	)) as ExecutionEventHandle;
+	if (tool === "fixture") await started.promise;
+	return handle;
 }
 
 async function read(
@@ -304,16 +344,7 @@ test("managed monitor events and nested jobs are live and their delivery remains
 test("real async Bash streams before completion and reports the final failed command rather than background admission", async () => {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "execution-events-bash-"));
 	const manager = new AsyncJobManager({ retentionMs: 0 });
-	const session = {
-		cwd,
-		asyncJobManager: manager,
-		settings: { get: (key: string) => key === "async.enabled", getShellConfig: () => ({ env: {} }) },
-		getArtifactsDir: () => path.join(cwd, "artifacts"),
-		getEvalSessionId: () => `execution-events:${cwd}`,
-		getEvalKernelOwnerId: () => `execution-events:${cwd}`,
-	} as unknown as ToolSession;
-	const bash = new BashTool(session);
-	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
+	const session = sessionWith(async () => ok, manager, cwd);
 	try {
 		const handle = await start(session, undefined, "bash", {
 			async: true,
@@ -350,16 +381,7 @@ test("real async Bash streams before completion and reports the final failed com
 test("real async Bash cancellation reaps its shell descendants before reporting completion", async () => {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "execution-events-cancel-"));
 	const manager = new AsyncJobManager({ retentionMs: 0 });
-	const session = {
-		cwd,
-		asyncJobManager: manager,
-		settings: { get: (key: string) => key === "async.enabled", getShellConfig: () => ({ env: {} }) },
-		getArtifactsDir: () => path.join(cwd, "artifacts"),
-		getEvalSessionId: () => `execution-events-cancel:${cwd}`,
-		getEvalKernelOwnerId: () => `execution-events-cancel:${cwd}`,
-	} as unknown as ToolSession;
-	const bash = new BashTool(session);
-	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
+	const session = sessionWith(async () => ok, manager, cwd);
 	try {
 		const handle = await start(session, undefined, "bash", {
 			async: true,

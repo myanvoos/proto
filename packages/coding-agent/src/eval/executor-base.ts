@@ -6,18 +6,16 @@ import {
 	executionMetadataForResult,
 } from "../session/execution-metadata";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
-import type { ToolSession } from "../tools";
 import {
 	resolveOutputArtifactMaxBytes,
 	resolveOutputMaxColumns,
 	resolveOutputSinkHeadBytes,
 } from "../tools/output-meta";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEvent } from "./bridge-timeout";
-import type { EvalCompletionInvocationContext } from "./completion-bridge";
 import type { FsObservation } from "./fs-observations";
 import type { JsStatusEvent } from "./js/shared/types";
+import type { KernelToolRequestCallback } from "./kernel-base";
 import { type KernelDisplayOutput, PythonDisplayBudget } from "./py/display";
-import { registerPyToolBridge } from "./py/tool-bridge";
 import type { KernelInvocation } from "./types";
 
 export type CancelledErrorClass = new (timedOut: boolean) => Error & { timedOut: boolean };
@@ -39,15 +37,9 @@ interface KernelExecutorBaseOptions {
 	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
 	signal?: AbortSignal;
 	onStatus?: (event: JsStatusEvent) => void;
-	emitStatus?: (event: JsStatusEvent) => void;
-	toolSession?: ToolSession;
-	/** Host-side cwd for tool-bridge calls from this run; omit for remote targets (paths there name target files). */
-	bridgeCwd?: string;
-	bridgeSessionId?: string;
 	artifactId?: string;
 	artifactPath?: string;
 	fsObservations?: FsObservation[];
-	completionContext?: EvalCompletionInvocationContext;
 }
 
 interface KernelExecutionResult {
@@ -79,6 +71,7 @@ export interface GenericKernel<TEnv> {
 			shellEnv?: Record<string, string>;
 			invocation?: KernelInvocation;
 			stdin?: ReadableStream<Uint8Array>;
+			onToolRequest?: KernelToolRequestCallback;
 			onStream?: (text: string, stream: "stdout" | "stderr") => Promise<void> | void;
 			onBytes?: (bytes: Uint8Array, stream: "stdout" | "stderr") => Promise<void> | void;
 			fsObservations?: FsObservation[];
@@ -274,70 +267,24 @@ export function createCancelledKernelResult(output: string): KernelExecutionResu
 	};
 }
 
-const MANAGED_KERNEL_ENV_KEYS = [
-	"PI_SESSION_FILE",
-	"PI_ARTIFACTS_DIR",
-	"PI_TOOL_BRIDGE_URL",
-	"PI_TOOL_BRIDGE_TOKEN",
-	"PI_TOOL_BRIDGE_SESSION",
-] as const;
-
 interface ManagedKernelEnvOptions {
 	sessionFile?: string;
 	artifactsDir?: string;
-	bridgeSessionId?: string;
-	bridge?: { url: string; token: string };
-}
-interface ManagedKernelEnvPolicy {
-	sparse?: boolean;
 }
 
-export function buildManagedKernelEnvPatch(options: ManagedKernelEnvOptions): Record<string, string | null>;
-export function buildManagedKernelEnvPatch(
-	options: ManagedKernelEnvOptions,
-	policy: { sparse: true },
-): Record<string, string | undefined>;
-export function buildManagedKernelEnvPatch(
-	options: ManagedKernelEnvOptions,
-	policy?: ManagedKernelEnvPolicy,
-): KernelEnvPatch {
-	if (policy?.sparse) {
-		const patch: Record<string, string | undefined> = {};
-		if (options.sessionFile) patch.PI_SESSION_FILE = options.sessionFile;
-		if (options.artifactsDir) patch.PI_ARTIFACTS_DIR = options.artifactsDir;
-		if (options.bridge) {
-			patch.PI_TOOL_BRIDGE_URL = options.bridge.url;
-			patch.PI_TOOL_BRIDGE_TOKEN = options.bridge.token;
-			patch.PI_TOOL_BRIDGE_SESSION = options.bridgeSessionId ?? "";
-		}
-		return patch;
-	}
+export function buildManagedKernelEnvPatch(options: ManagedKernelEnvOptions): Record<string, string | null> {
 	return {
 		PI_SESSION_FILE: options.sessionFile ?? null,
 		PI_ARTIFACTS_DIR: options.artifactsDir ?? null,
-		PI_TOOL_BRIDGE_URL: options.bridge?.url ?? null,
-		PI_TOOL_BRIDGE_TOKEN: options.bridge?.token ?? null,
-		PI_TOOL_BRIDGE_SESSION: options.bridge && options.bridgeSessionId ? options.bridgeSessionId : null,
 	};
 }
 
-export function buildManagedKernelEnv(
-	options: ManagedKernelEnvOptions,
-	policy?: ManagedKernelEnvPolicy,
-): Record<string, string> | undefined {
-	const patch = policy?.sparse
-		? buildManagedKernelEnvPatch(options, { sparse: true })
-		: buildManagedKernelEnvPatch(options);
+export function buildManagedKernelEnv(options: ManagedKernelEnvOptions): Record<string, string> | undefined {
 	const env: Record<string, string> = {};
-	let hasKeys = false;
-	for (const key of MANAGED_KERNEL_ENV_KEYS) {
-		const value = patch[key];
-		if (typeof value === "string") {
-			env[key] = value;
-			hasKeys = true;
-		}
+	for (const [key, value] of Object.entries(buildManagedKernelEnvPatch(options))) {
+		if (typeof value === "string") env[key] = value;
 	}
-	return hasKeys ? env : undefined;
+	return Object.keys(env).length ? env : undefined;
 }
 
 export function attachSessionOwner(
@@ -401,6 +348,7 @@ interface ExecuteWithKernelBaseParams<
 	formatKernelTimeoutAnnotation: (executionTimeoutMs: number | undefined, kernelKilled: boolean) => string;
 	formatTimeoutAnnotation: (executionTimeoutMs: number | undefined) => string | undefined;
 
+	onToolRequest?: KernelToolRequestCallback;
 	resolveDeadlineMs?: (options: TOptions | undefined) => number | undefined;
 }
 
@@ -486,24 +434,7 @@ export async function executeWithKernelBase<
 		return displayBudget.addKernelOutput(output);
 	};
 
-	const emitStatus: (event: JsStatusEvent) => void =
-		options?.emitStatus ?? (event => collectDisplay({ type: "status", event }));
 	const runId = `${runIdPrefix}-${crypto.randomUUID()}`;
-
-	const unregisterBridge =
-		options?.toolSession && options?.bridgeSessionId
-			? registerPyToolBridge(options.bridgeSessionId, runId, {
-					toolSession: options.toolSession,
-					cwd: options.bridgeCwd,
-					signal: options.signal,
-					shieldedSignal: abortShield.signal,
-					emitStatus,
-					completionContext: options?.completionContext,
-					abortRequested: () => {
-						return abortShield.abortRequested;
-					},
-				})
-			: null;
 
 	try {
 		const remainingMs = getRemainingTimeoutMs(deadlineMs);
@@ -521,6 +452,7 @@ export async function executeWithKernelBase<
 			shellEnv: options?.shellEnv,
 			invocation: options?.invocation,
 			stdin: options?.stdin,
+			onToolRequest: params.onToolRequest,
 			onStream: options?.onStream,
 			onBytes: options?.onBytes,
 			id: runId,
@@ -579,7 +511,6 @@ export async function executeWithKernelBase<
 		await sink.dispose();
 		resultReady = true;
 		if (releaseRequested) releaseOutput();
-		unregisterBridge?.();
 		abortShield.dispose?.();
 	}
 }

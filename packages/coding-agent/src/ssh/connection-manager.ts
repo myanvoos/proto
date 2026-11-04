@@ -1,6 +1,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { $which, getRemoteHostDir, getSshControlDir, isEnoent, logger, postmortem, ptree } from "@oh-my-pi/pi-utils";
+import {
+	$which,
+	getRemoteHostDir,
+	getSshControlDir,
+	isEnoent,
+	logger,
+	postmortem,
+	ptree,
+	unixSocketPathFits,
+} from "@oh-my-pi/pi-utils";
 import { buildSshTarget, sanitizeHostName } from "./utils";
 
 export interface SSHConnectionTarget {
@@ -30,9 +39,10 @@ const CONTROL_SOCKET_NAME_BYTES = 40 + ".sock".length;
 const MUX_TEMP_SUFFIX_BYTES = 1 + 16;
 
 export function controlPathFitsBudget(controlDir: string, platform: SshPlatform): boolean {
-	const sunPathLimit = platform === "darwin" ? 104 : 108;
-	const worstCase = Buffer.byteLength(controlDir) + 1 + CONTROL_SOCKET_NAME_BYTES + MUX_TEMP_SUFFIX_BYTES;
-	return worstCase < sunPathLimit;
+	return unixSocketPathFits(
+		path.join(controlDir, "x".repeat(CONTROL_SOCKET_NAME_BYTES + MUX_TEMP_SUFFIX_BYTES)),
+		platform,
+	);
 }
 
 export function sshControlFallbackDir(canonicalDir: string, uid: number, tmpBase = "/tmp"): string {

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,6 +7,8 @@ import type { Server } from "bun";
 import { AsyncJobManager } from "../async";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import * as pythonHarnessBridge from "../eval/py/harness-bridge";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
 
@@ -56,6 +58,8 @@ function startCompletionServer(holdFirst = false): CompletionServer {
 }
 
 const kernelOwners = new Set<string>();
+const python = await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true });
+const PYTHON = JSON.stringify(python.pythonPath);
 
 function makeSession(cwd: string, baseUrl: string, settings: Map<string, unknown>): ToolSession {
 	const kernelOwner = `spec-owner:${cwd}`;
@@ -113,7 +117,6 @@ function settings(): Map<string, unknown> {
 		["eval.js", true],
 		["kernel.speculation.enabled", true],
 		["kernel.assertPreflight.enabled", false],
-		["python.kernelMode", "per-call"],
 	]);
 }
 
@@ -131,11 +134,11 @@ test("Python BashTool claims two distinct literal completion occurrences from pa
 	try {
 		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
 		const bash = new BashTool(session);
-		const partialCommand = `python <<'PY'\na = completion("same")\n`;
+		const partialCommand = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("same")\n`;
 		const partialJson = JSON.stringify({ command: partialCommand }).slice(0, -1);
 		await bash.observeStreamedInput("python-outer", partialJson);
 		await waitForRequests(completion.requests, 1);
-		const command = `${partialCommand}b = completion("same")\nprint(a, b)\nPY`;
+		const command = `${partialCommand}b = harness.completion("same")\nprint(a, b)\nPY`;
 		await bash.observeStreamedInput("python-outer", JSON.stringify({ command }));
 		await waitForRequests(completion.requests, 2);
 		completion.release();
@@ -167,7 +170,7 @@ test("settled BashTool execution aborts speculative work for its completed call"
 			return await fetch(input, init);
 		};
 		const bash = new BashTool(session);
-		const speculative = `python <<'PY'\na = completion("cleanup")\nprint(a)\nPY`;
+		const speculative = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("cleanup")\nprint(a)\nPY`;
 		await bash.observeStreamedInput("cleanup-outer", JSON.stringify({ command: speculative }).slice(0, -1));
 		await waitForRequests(completion.requests, 1);
 		await bash.execute("cleanup-outer", { command: "true" });
@@ -191,7 +194,7 @@ test("auto-backgrounded BashTool execution claims its streamed completion after 
 		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, sessionSettings);
 		session.asyncJobManager = manager;
 		const bash = new BashTool(session);
-		const command = `python <<'PY'\na = completion("background")\nprint(a)\nPY`;
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("background")\nprint(a)\nPY`;
 		await bash.observeStreamedInput("auto-bg-outer", JSON.stringify({ command }).slice(0, -1));
 		await waitForRequests(completion.requests, 1);
 		const started = await bash.execute("auto-bg-outer", { command });
@@ -241,7 +244,7 @@ test("late cwd invalidates a pending future instead of claiming it", async () =>
 	try {
 		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
 		const bash = new BashTool(session);
-		const command = `python <<'PY'\na = completion("late")\nprint(a)\nPY`;
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("late")\nprint(a)\nPY`;
 		const partialJson = JSON.stringify({ command }).slice(0, -1);
 		await bash.observeStreamedInput("late-outer", partialJson);
 		await waitForRequests(completion.requests, 1);
@@ -266,7 +269,7 @@ test("cancelling a streamed call disposes its future before final execution", as
 	try {
 		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
 		const bash = new BashTool(session);
-		const command = `python <<'PY'\na = completion("cancel")\nprint(a)\nPY`;
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("cancel")\nprint(a)\nPY`;
 		const partialJson = JSON.stringify({ command }).slice(0, -1);
 		await bash.observeStreamedInput("cancel-outer", partialJson);
 		await waitForRequests(completion.requests, 1);
@@ -290,7 +293,7 @@ test("revisions cap early launches at two for one outer call", async () => {
 	try {
 		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
 		const bash = new BashTool(session);
-		const command = `python <<'PY'\na = completion("cap")\nprint(a)\nPY`;
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("cap")\nprint(a)\nPY`;
 		await bash.observeStreamedInput("cap-outer", JSON.stringify({ command }).slice(0, -1));
 		await waitForRequests(completion.requests, 1);
 		await bash.observeStreamedInput("cap-outer", JSON.stringify({ command, cwd: dir }));
@@ -323,7 +326,7 @@ test("aborting final execution aborts its speculative request", async () => {
 			return await fetch(input, init);
 		};
 		const bash = new BashTool(session);
-		const command = `python <<'PY'\na = completion("abort")\nprint(a)\nPY`;
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("abort")\nprint(a)\nPY`;
 		await bash.observeStreamedInput("abort-outer", JSON.stringify({ command }).slice(0, -1));
 		await waitForRequests(completion.requests, 1);
 		const controller = new AbortController();
@@ -349,7 +352,7 @@ test("execution flushes a coalesced final prefix before claiming speculation", a
 	try {
 		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, settings());
 		const bash = new BashTool(session);
-		const command = `python <<'PY'\na = completion("coalesced")\nprint(a)\nPY`;
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\na = harness.completion("coalesced")\nprint(a)\nPY`;
 		const earlyRaw = JSON.stringify({ command });
 		const finalRaw = JSON.stringify({ command, cwd: dir });
 		const earlyObservation = bash.observeStreamedInput("coalesced-outer", earlyRaw);
@@ -362,6 +365,93 @@ test("execution flushes a coalesced final prefix before claiming speculation", a
 		expect(await finalObservation).toBeUndefined();
 		bash.cancelStreamedInput("coalesced-outer");
 	} finally {
+		await completion.server.stop(true);
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test("Python-only Bash tears down unclaimed speculation after a native error before the helper call", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-spec-python-only-"));
+	const completion = startCompletionServer(true);
+	let aborted = 0;
+	try {
+		const values = settings();
+		values.set("eval.js", false);
+		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, values);
+		session.fetch = async (input, init) => {
+			init?.signal?.addEventListener(
+				"abort",
+				() => {
+					aborted++;
+				},
+				{ once: true },
+			);
+			return await fetch(input, init);
+		};
+		const bash = new BashTool(session);
+		const command = `${PYTHON} <<'PY'\nimport proto_harness as harness\ninput()\nharness.completion("unclaimed")\nPY`;
+		await bash.observeStreamedInput("unclaimed-python", JSON.stringify({ command }).slice(0, -1));
+		await waitForRequests(completion.requests, 1);
+		const result = await bash.execute("unclaimed-python", { command });
+		expect(outputText(result)).toContain("EOFError");
+		expect(aborted).toBe(1);
+		expect(completion.requests).toHaveLength(1);
+	} finally {
+		completion.release();
+		await completion.server.stop(true);
+		await fs.rm(dir, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test("background Python bridge registration failure settles the job and releases its speculative ownership", async () => {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bash-spec-register-failure-"));
+	const completion = startCompletionServer(true);
+	const manager = new AsyncJobManager({});
+	let aborted = 0;
+	let registration: { mockRestore(): void } | undefined;
+	try {
+		const values = settings();
+		values.set("eval.js", false);
+		values.set("bash.autoBackground.enabled", true);
+		values.set("bash.autoBackground.thresholdMs", 0);
+		const session = makeSession(dir, `http://127.0.0.1:${completion.server.port}/v1`, values);
+		session.asyncJobManager = manager;
+		session.fetch = async (input, init) => {
+			init?.signal?.addEventListener(
+				"abort",
+				() => {
+					aborted++;
+				},
+				{ once: true },
+			);
+			return await fetch(input, init);
+		};
+		const bash = new BashTool(session);
+		const literalCommand = `${PYTHON} <<'PY'\nimport proto_harness as harness\nanswer = harness.completion("registration retry")\nprint(answer)\nPY`;
+		await bash.observeStreamedInput("registration-python", JSON.stringify({ command: literalCommand }).slice(0, -1));
+		await waitForRequests(completion.requests, 1);
+		registration = vi
+			.spyOn(pythonHarnessBridge, "registerPythonHarnessRun")
+			.mockRejectedValueOnce(new Error("capability registration failed"));
+		const started = await bash.execute("registration-python", { command: literalCommand });
+		const failed = manager.getJob(started.details!.async!.jobId)!;
+		await failed.promise;
+		expect(failed.status).toBe("failed");
+		expect(failed.errorText).toBe("capability registration failed");
+		expect(aborted).toBe(1);
+		registration.mockRestore();
+		registration = undefined;
+		completion.release();
+		const retry = await bash.execute("registration-python", { command: literalCommand });
+		const completed = manager.getJob(retry.details!.async!.jobId)!;
+		await completed.promise;
+		expect(completed.status).toBe("completed");
+		expect(completed.resultText).toContain("sample-2");
+		expect(completion.requests).toHaveLength(2);
+	} finally {
+		registration?.mockRestore();
+		completion.release();
+		await manager.dispose();
 		await completion.server.stop(true);
 		await fs.rm(dir, { recursive: true, force: true });
 	}

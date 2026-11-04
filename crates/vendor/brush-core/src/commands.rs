@@ -381,7 +381,13 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 		}
 		if !sys::fs::contains_path_separator(&self.command_name) {
 			let path = if let Some(path_dirs) = &self.path_dirs {
-				pathsearch::search_for_executable(path_dirs.iter(), self.command_name.as_str()).next()
+				pathsearch::search_for_executable(
+					path_dirs
+						.iter()
+						.map(|entry| self.shell.working_dir().join(entry)),
+					self.command_name.as_str(),
+				)
+				.next()
 			} else {
 				self
 					.shell

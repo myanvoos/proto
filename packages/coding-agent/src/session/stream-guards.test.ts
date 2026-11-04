@@ -12,6 +12,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type SettingPath, Settings } from "../config/settings";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import type { StreamedKernelFailure } from "../eval/speculation";
 import type { ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
@@ -214,6 +215,8 @@ function pushSingleToolPrefix(
 	});
 }
 
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+
 describe("streamed kernel loop guard", () => {
 	test("aborts before a huge streamed suffix, executes no partial call, and resumes with the assertion diagnostic", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "proto-stream-guards-"));
@@ -236,9 +239,9 @@ describe("streamed kernel loop guard", () => {
 			...Array.from({ length: 60 }, (_, index) => `${suffixMarker}${index}-${"x".repeat(2_000)}`),
 		].join("\n");
 		const commandPrefix = `${[
-			"python - <<'PY'",
-			"from pathlib import Path",
-			'text = Path("anchor.txt").read_text()',
+			`'${python.pythonPath}' - <<'PY'`,
+			"import proto_harness as harness",
+			'text = harness.fs.read_text("anchor.txt")',
 			'assert text.count("old") == 1',
 			trailingLiteral,
 		].join("\n")}\n`;
@@ -266,7 +269,7 @@ describe("streamed kernel loop guard", () => {
 				abortObserved.resolve();
 				if (signal.aborted) return;
 				suffixEmitted = true;
-				const suffixSource = `'''\nPath(${JSON.stringify(mutationPath)}).write_text(${JSON.stringify(suffixMarker + "x".repeat(100_000))})\nPY\n`;
+				const suffixSource = `'''\nharness.fs.write_text(${JSON.stringify(mutationPath)}, ${JSON.stringify(suffixMarker + "x".repeat(100_000))})\nPY\n`;
 				const completeCommand = commandPrefix + suffixSource;
 				const complete = toolCall(toolCallId, `{"command":${JSON.stringify(completeCommand)}}`, completeCommand);
 				stream.push({
@@ -454,7 +457,7 @@ describe("streamed kernel loop guard", () => {
 	test("ignores an assertion failure once a preceding sibling bash call is present", async () => {
 		const firstId = "sibling-before-assertion";
 		const secondId = "assertion-after-sibling";
-		const prefix = '{"command":"python - <<\'PY\'\\nassert False\\n';
+		const prefix = `{"command":${JSON.stringify(`'${python.pythonPath}' - <<'PY'\nassert False\n`).slice(0, -1)}`;
 		const suffix = "-suffix";
 		const prefixSeen = deferred<string>();
 		const failure = deferred<StreamedKernelFailure>();

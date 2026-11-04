@@ -1,72 +1,103 @@
 import { expect, test } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { PythonKernel } from "./kernel";
 
-async function runPython(body: string): Promise<void> {
-	const source = `import runpy\nns = runpy.run_path(${JSON.stringify(`${import.meta.dir}/runner.py`)})\n${body}`;
-	const proc = Bun.spawn(["python3", "-c", source], { stdout: "pipe", stderr: "pipe" });
-	const [stderr, code] = await Promise.all([new Response(proc.stderr).text(), proc.exited]);
-	expect(code, stderr).toBe(0);
-}
-
-test("shell quoting cannot turn following Python strings into magic commands", async () => {
-	await runPython(String.raw`
-transform = ns['transform_cell']
-source = '!echo "unterminated\ntext = """\n!not_a_command\n%not_a_magic\n"""\nif True:\n    !echo done'
-translated = transform(source)
-seen = []
-scope = {'__proto_shell': seen.append}
-exec(translated, scope)
-assert seen == ['echo "unterminated', 'echo done'], seen
-assert scope['text'] == '\n!not_a_command\n%not_a_magic\n'
-`);
+test("shell-like syntax is rejected before any Python or shell side effects", async () => {
+	using directory = TempDir.createSync("@python-native-syntax-");
+	const kernel = await PythonKernel.start({ cwd: directory.path() });
+	try {
+		const output: string[] = [];
+		const result = await kernel.execute(
+			'open("must-not-run", "w").write("bad")\n!echo "unterminated\ntext = """\n!not_a_command\n%not_a_magic\n"""',
+			{
+				onChunk: text => {
+					output.push(text);
+				},
+			},
+		);
+		expect(result.status).toBe("error");
+		expect(output.join("")).toContain("SyntaxError");
+		expect(await Bun.file(directory.join("must-not-run")).exists()).toBe(false);
+	} finally {
+		await kernel.shutdown();
+	}
 });
 
-test("displayed large Python integers are exact while booleans stay booleans", async () => {
-	await runPython(`
-value = ns['_safe_display_json']({'ids': [9007199254740993, -9007199254740993, 42, True]})
-assert value == {'ids': ['9007199254740993', '-9007199254740993', 42, True]}, value
-assert type(value['ids'][-1]) is bool
-`);
+test("explicit rich display preserves large integers exactly while booleans remain booleans", async () => {
+	using directory = TempDir.createSync("@python-display-integers-");
+	const kernel = await PythonKernel.start({ cwd: directory.path() });
+	const displays: unknown[] = [];
+	try {
+		const result = await kernel.execute(
+			"import proto_harness as harness\nharness.display({'ids': [9007199254740993, -9007199254740993, 42, True]})",
+			{
+				onDisplay: output => {
+					if (output.type === "json") displays.push(output.data);
+				},
+			},
+		);
+		expect(result.status).toBe("ok");
+		expect(displays).toEqual([{ ids: ["9007199254740993", "-9007199254740993", 42, true] }]);
+	} finally {
+		await kernel.shutdown();
+	}
 });
 
-test("pip bootstraps a missing module without translating pip arguments", async () => {
-	await runPython(`
-run = ns['_run_pip']
-g = run.__globals__
-calls = []
-g['_has_pip'] = lambda: False
-g['_bootstrap_pip'] = lambda: calls.append('bootstrap') or 0
-g['_run_installer'] = lambda argv, on_text=None: calls.append(argv) or 0
-g['_emit_status'] = lambda *a, **kw: None
-args = ['--isolated', '--proxy', 'install', 'list']
-run(args, '--isolated --proxy install list')
-assert calls == ['bootstrap', [g['sys'].executable, '-m', 'pip', *args]], calls
-`);
+test("pip magic is unsupported rather than bootstrapping or translating installer arguments", async () => {
+	using directory = TempDir.createSync("@python-native-pip-");
+	const kernel = await PythonKernel.start({ cwd: directory.path() });
+	try {
+		const result = await kernel.execute(
+			'open("must-not-bootstrap", "w").write("bad")\n%pip --isolated --proxy install list',
+		);
+		expect(result).toMatchObject({ status: "error", error: { name: "SyntaxError" } });
+		expect(await Bun.file(directory.join("must-not-bootstrap")).exists()).toBe(false);
+	} finally {
+		await kernel.shutdown();
+	}
 });
 
-for (const guarded of [false, true]) {
-	test(`${guarded ? "procfs-less guarded" : "ordinary"} installer cancellation kills descendants before returning`, async () => {
-		await runPython(`
-import os, signal, subprocess, sys, tempfile
-run = ns[${guarded ? "'_run_guarded_installer'" : "'_run_installer'"}]
-g = run.__globals__
-g['_procfs_usable'] = lambda: True
-with tempfile.TemporaryDirectory() as directory:
-    pid_file = os.path.join(directory, 'child.pid')
-    child = 'import time; time.sleep(60)'
-    parent = 'import subprocess,sys,time; p=subprocess.Popen([sys.executable,"-c",' + repr(child) + ']); open(' + repr(pid_file) + ',"w").write(str(p.pid)); print("ready",flush=True); time.sleep(60)'
-    def interrupt(proc, on_text=None):
-        assert proc.stdout.readline().strip() == b'ready'
-        raise KeyboardInterrupt()
-    g['_stream_process_output'] = interrupt
-    try:
-        run([sys.executable, '-c', parent], None, None)
-        raise AssertionError('cancel did not propagate')
-    except KeyboardInterrupt:
-        pass
-    pid = int(open(pid_file).read())
-    # A killed child can remain an unreaped zombie briefly; ps distinguishes it from live work.
-    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat='], capture_output=True)
-    assert not result.stdout.strip() or result.stdout.strip().startswith(b'Z'), result.stdout
-`);
-	});
+for (const shell of [false, true]) {
+	test(`${shell ? "shell-wrapped" : "direct"} subprocess cancellation kills descendants before returning`, async () => {
+		using directory = TempDir.createSync("@python-process-cancel-");
+		const kernel = await PythonKernel.start({ cwd: directory.path() });
+		const controller = new AbortController();
+		const ready = Promise.withResolvers<void>();
+		try {
+			const result = kernel.execute(
+				`import os, subprocess, sys, time
+child = "import time; time.sleep(60)"
+parent = "import subprocess, sys, time; child = subprocess.Popen([sys.executable, '-c', " + repr(child) + "]); open('child.pid', 'w').write(str(child.pid)); print('ready', flush=True); time.sleep(60)"
+argv = [sys.executable, "-c", parent]
+${shell ? 'import shlex; argv = ["/bin/sh", "-c", shlex.join(argv)]' : ""}
+process = subprocess.Popen(argv)
+while not os.path.exists("child.pid"):
+    time.sleep(0.005)
+print("ready", flush=True)
+process.wait()`,
+				{
+					signal: controller.signal,
+					onChunk: text => {
+						if (text.includes("ready")) ready.resolve();
+					},
+				},
+			);
+			await Promise.race([
+				ready.promise,
+				result.then(outcome => {
+					throw new Error(`Process exited before readiness: ${JSON.stringify(outcome)}`);
+				}),
+			]);
+			controller.abort(new Error("cancel owned subprocess tree"));
+			expect(await result).toMatchObject({ status: "error", cancelled: true });
+			const pid = Number(await Bun.file(directory.join("child.pid")).text());
+			const check = Bun.spawn(["/bin/ps", "-p", String(pid), "-o", "stat="], { stdout: "pipe", stderr: "pipe" });
+			const state = (await new Response(check.stdout).text()).trim();
+			await check.exited;
+			expect(state === "" || state.startsWith("Z"), `descendant ${pid} remained alive (${state})`).toBe(true);
+		} finally {
+			controller.abort();
+			await kernel.shutdown();
+		}
+	}, 20_000);
 }

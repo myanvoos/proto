@@ -4,7 +4,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { workerHostEntry } from "@oh-my-pi/pi-utils";
+import { withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
 
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../launch/client";
 import { daemonBrokerEndpoint } from "../launch/paths";
@@ -238,9 +238,19 @@ test("a full-TUI fork is discoverable under its new filename and crash restart r
 	try {
 		const host = await ensureSessionHost(projectDir, sessionFile, { client, env: hostEnv, interactive: { argv } });
 		backend = await RpcNodeBackend.connect(host.socket);
+		const initialIdle = Promise.withResolvers<void>();
+		const stopInitialObserver = await backend.subscribe(backend.root.target.nodeId, update => {
+			if (update.type === "event" && update.event.type === "agent_end" && update.event.isTerminal !== false)
+				initialIdle.resolve();
+		});
 		try {
 			await initialComplete;
+			// Extension agent_end runs before prompt cleanup; only the subscriber event or
+			// an idle snapshot proves that a new client prompt can claim the session.
+			if ((await backend.snapshot(backend.root.target.nodeId)).isStreaming)
+				await withTimeout(initialIdle.promise, PROBE_TIMEOUT_MS, "Initial CLI prompt did not release admission");
 		} finally {
+			stopInitialObserver();
 			clearTimeout(watchTimeout);
 			watchAbort.abort();
 		}

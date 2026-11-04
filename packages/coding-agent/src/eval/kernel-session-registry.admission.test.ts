@@ -142,7 +142,7 @@ test("a crashed Python kernel is reaped despite its unknown busy status and free
 	}
 }, 20_000);
 
-test("JS and per-call Python share owner admission and return capacity after confirmed disposal", async () => {
+test("Python residency is independent of JS owner admission and JS capacity returns after disposal", async () => {
 	const owner = `admission:${crypto.randomUUID()}`;
 	const settings = await Settings.loadReadOnly({ cwd: process.cwd(), agentDir: process.cwd(), inMemory: true });
 	const session: ToolSession = {
@@ -155,8 +155,9 @@ test("JS and per-call Python share owner admission and return capacity after con
 	const reservations = Array.from({ length: kernelAdmission.maxKernelsPerOwner }, () =>
 		kernelAdmission.reserve(owner),
 	);
-	const js = () =>
+	const js = (reset = false) =>
 		executeInVmContext({
+			reset,
 			runtime: "bun",
 			sessionKey: owner,
 			sessionId: owner,
@@ -167,20 +168,20 @@ test("JS and per-call Python share owner admission and return capacity after con
 			filename: "admission.js",
 			runState: {},
 		});
-	const python = () =>
-		executePython("print(6 * 7)", { sessionId: owner, kernelOwnerId: owner, kernelMode: "per-call" });
+	const python = (code: string) => executePython(code, { sessionId: owner, kernelOwnerId: owner });
 	try {
 		await expect(js()).rejects.toThrow("Interpreter limit");
-		await expect(python()).rejects.toThrow("Interpreter limit");
+		expect((await python("counter = 40")).exitCode).toBe(0);
 		reservations[0]();
 		await js();
-		await expect(python()).rejects.toThrow("Interpreter limit");
+		const whileJsIsFull = await python("print(counter + 2)");
+		expect(whileJsIsFull.exitCode).toBe(0);
+		expect(whileJsIsFull.output.trim()).toBe("42");
 		await disposeVmContextsByOwner(owner);
-		for (let call = 0; call < 2; call++) {
-			const result = await python();
-			expect(result.exitCode).toBe(0);
-			expect(result.output.trim()).toBe("42");
-		}
+		await js(true);
+		const afterJsDisposal = await python("print(counter + 3)");
+		expect(afterJsDisposal.exitCode).toBe(0);
+		expect(afterJsDisposal.output.trim()).toBe("43");
 	} finally {
 		await Promise.all([disposeVmContextsByOwner(owner), disposeKernelSessionsByOwner(owner)]);
 		for (const release of reservations) release();

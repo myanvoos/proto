@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Run ordinary Python commands and `$`/`$$` submissions as fresh native processes; import `proto_harness` explicitly for host APIs and opt into persistence with named kernels or `harness.store`.
+- Remove `python.kernelMode`, injected Python helpers, manual Python `save_state`/`load_state`, notebook magics and the legacy tool bridge; use explicit harness APIs, native package management and named-kernel controls instead.
+
+### Added
+
+- Preserve supported Python object graphs, including shared references, cycles, closures and classes, across compatible named-kernel parking, session forks and temporal navigation.
+- Configure Python private-memory residency with safe idle parking and a shared per-interpreter fork server, without evicting busy or unsafely captured state.
+- Use permission-checked filesystem, tool, agent, completion and display APIs from ordinary Python, scripts and the explicit named-kernel CLI.
+
+### Fixed
+
+- Preserve rich Python displays and precise named-kernel cancellation causes without redirecting ordinary program bytes or replaying failed programs.
+- Refuse oversized or unsupported Python snapshots before teardown and reject corrupt or incompatible state rather than silently restoring an older namespace.
+- Keep stale-write protection armed after shell reads or deletions until an explicit read acknowledges the changed file.
+- Run focused Python submissions in the selected session and preserve native-store interpreter and virtualenv identity across forks.
+- Preserve named-script results across forks without retaining an internal file handle.
+- Read agent outputs from fresh and target-backed Python through the authenticated host protocol, preserving published content and superseded-run warnings.
+- Keep completion invocation identities isolated to their Python request and resolve explicit kernel interpreters in the correct environment.
+
+### Changed
+
+- Replace π branding in terminal titles and Poimandres status lines with `p`.
+
+- Reduce long-session memory use with smaller, idle-expiring rendering caches and release decoded history caches when agents park.
+
 ## [20.0.2] - 2026-11-04
 
 ### Fixed

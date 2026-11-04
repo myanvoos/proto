@@ -6,9 +6,14 @@ import { AsyncJobManager } from "../async";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { handleKernelControl } from "../eval/kernel-control";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { disposeBashSessions } from "../exec/bash-executor";
-import type { ToolSession } from ".";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
+
+const pythonInterpreter = (await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true }))
+	.pythonPath!;
+const pythonCommand = `'${pythonInterpreter.replaceAll("'", "'\\''")}'`;
 
 async function fixture(run: (session: ToolSession, manager: AsyncJobManager) => Promise<void>) {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-cell-termination-"));
@@ -30,6 +35,8 @@ async function fixture(run: (session: ToolSession, manager: AsyncJobManager) => 
 		getEvalSessionId: () => owner,
 		getEvalKernelOwnerId: () => owner,
 	} as unknown as ToolSession;
+	const bash = new BashTool(session);
+	session.getToolByName = name => (name === "bash" ? (bash as Tool) : undefined);
 	try {
 		await run(session, manager);
 	} finally {
@@ -55,12 +62,12 @@ function text(result: { content: Array<{ type: string; text?: string }> }) {
 const hungCell = {
 	node: `node -e 'globalThis.survivor = 1; console.log("long cell start"); await new Promise(() => {})'`,
 	bun: `bun -e 'globalThis.survivor = 1; console.log("long cell start"); await new Promise(() => {})'`,
-	python: `python -c 'survivor = 1\nprint("long cell start", flush=True)\nimport threading\nthreading.Event().wait()'`,
+	python: `${pythonCommand} -m proto_harness.kernel kx -c 'survivor = 1\nprint("long cell start", flush=True)\nimport threading\nthreading.Event().wait()'`,
 };
 const survivorProbe = {
 	node: `node -e 'console.log(typeof globalThis.survivor)'`,
 	bun: `bun -e 'console.log(typeof globalThis.survivor)'`,
-	python: `python -c 'print(type(globals().get("survivor")).__name__)'`,
+	python: `${pythonCommand} -m proto_harness.kernel kx -c 'print(type(globals().get("survivor")).__name__)'`,
 };
 const freshSurvivor = { node: "undefined", bun: "undefined", python: "NoneType" };
 

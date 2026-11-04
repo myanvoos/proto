@@ -1548,6 +1548,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getAsyncJobOwnerId: () => sessionManager.getSessionId?.() ?? resolvedAgentId,
 			getToolByName: name => session?.getToolByName(name),
 			getToolForEvalBridge: name => session?.getToolForEvalBridge(name),
+			beforeEvalToolCall: (tool, toolCallId, args, signal) => {
+				if (!session) throw new Error("Session tool admission is not ready");
+				return session.beforeEvalToolCall(tool, toolCallId, args, signal);
+			},
 			getEvalBridgeToolNames: () => session?.getEvalBridgeToolNames() ?? [],
 			agentRegistry,
 
@@ -3123,6 +3127,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const sessionFile = sessionManager.getSessionFile();
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionFile);
 		session = new AgentSession({
+			evalToolSession: toolSession,
 			rootExtensionEnvironment,
 			setToolUIContext,
 			createIndependentFork: async manager => {

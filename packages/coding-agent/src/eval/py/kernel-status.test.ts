@@ -1,9 +1,50 @@
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { registerArtifactsDir } from "../../internal-urls/registry-helpers";
+import type { Tool, ToolSession } from "../../tools";
+import { BashTool } from "../../tools/bash";
+import { ReadTool } from "../../tools/read";
+import { releaseFsObservationLedger, retainFsObservationLedger } from "../fs-observations";
 import { disposeKernelSessionsByOwner, executePython } from "./executor";
+import { registerPythonHarnessRun } from "./harness-bridge";
 import { checkPythonKernelAvailability, type KernelDisplayOutput, PythonKernel } from "./kernel";
+
+function harnessSession(cwd: string, owner = `status-harness:${crypto.randomUUID()}`) {
+	const tools = new Map<string, Tool>();
+	const session = {
+		cwd,
+		settings: { get: () => undefined, getShellConfig: () => ({ env: {} }) },
+		getSessionId: () => owner,
+		getEvalSessionId: () => owner,
+		getEvalKernelOwnerId: () => owner,
+		getSessionFile: () => null,
+		getSessionSpawns: () => null,
+		getToolForEvalBridge: (name: string) => tools.get(name),
+		getEvalBridgeToolNames: () => [...tools.keys()],
+	} as unknown as ToolSession;
+	tools.set("bash", new BashTool(session));
+	tools.set("read", new ReadTool(session));
+	return { session, tools, owner };
+}
+
+async function harnessKernel(cwd: string) {
+	const fixture = harnessSession(cwd);
+	retainFsObservationLedger(fixture.owner, fixture.owner);
+	const capability = await registerPythonHarnessRun(fixture.session);
+	const kernel = await PythonKernel.start({ cwd, env: capability.env });
+	return {
+		...fixture,
+		kernel,
+		async dispose() {
+			await kernel.shutdown();
+			await capability.dispose();
+			releaseFsObservationLedger(fixture.owner, fixture.owner);
+		},
+	};
+}
 
 describe("PythonKernel status probe", () => {
 	test("output coerces numbered IDs and explains bash artifact lookup", async () => {
@@ -11,22 +52,26 @@ describe("PythonKernel status probe", () => {
 		const artifactsDir = path.join(tempDir.path(), "artifacts");
 		await fs.mkdir(artifactsDir, { recursive: true });
 		await Bun.write(path.join(artifactsDir, "8.md"), "numbered agent output\n");
+		const unregister = registerArtifactsDir(artifactsDir);
 		const ownerId = `test-owner:${crypto.randomUUID()}`;
 		const options = {
+			toolSession: harnessSession(tempDir.path(), ownerId).session,
 			cwd: tempDir.path(),
-			artifactsDir,
 			sessionId: `test-session:${crypto.randomUUID()}`,
 			kernelOwnerId: ownerId,
-			kernelMode: "session" as const,
 			timeoutMs: 10_000,
 		};
 
 		try {
-			const numbered = await executePython("print(output(8))", options);
+			const numbered = await executePython(
+				"import proto_harness as harness\n" + "print(harness.output(8))",
+				options,
+			);
 			expect(numbered.output).toContain("numbered agent output");
 
 			const missing = await executePython(
-				"try:\n    output(9)\nexcept Exception as error:\n    print(type(error).__name__)\n    print(error)",
+				"import proto_harness as harness\n" +
+					"try:\n    harness.output(9)\nexcept Exception as error:\n    print(type(error).__name__)\n    print(error)",
 				options,
 			);
 			expect(missing.output).toContain("FileNotFoundError");
@@ -35,6 +80,7 @@ describe("PythonKernel status probe", () => {
 			expect(missing.output).toContain('tool.read({"path": "artifact://9:A-B"})');
 		} finally {
 			await disposeKernelSessionsByOwner(ownerId);
+			unregister();
 		}
 	});
 
@@ -78,20 +124,20 @@ describe("PythonKernel status probe", () => {
 			cwd: tempDir.path(),
 			sessionId,
 			kernelOwnerId: ownerId,
-			kernelMode: "session" as const,
 			timeoutMs: 10_000,
 		};
 
 		try {
 			const crashed = await executePython(
-				[
-					"import os",
-					"with open('effects.txt', 'a') as effects:",
-					"    effects.write('once\\n')",
-					"    effects.flush()",
-					"print('before crash', flush=True)",
-					"os._exit(17)",
-				].join("\n"),
+				"import proto_harness as harness\n" +
+					[
+						"import os",
+						"with open('effects.txt', 'a') as effects:",
+						"    effects.write('once\\n')",
+						"    effects.flush()",
+						"print('before crash', flush=True)",
+						"os._exit(17)",
+					].join("\n"),
 				options,
 			);
 
@@ -101,7 +147,10 @@ describe("PythonKernel status probe", () => {
 			expect(crashed.output).toContain("not replayed");
 			expect(await Bun.file(effectsPath).text()).toBe("once\n");
 
-			const next = await executePython("print(21 * 2)", options);
+			await expect(executePython("print('must not silently recover')", options)).rejects.toThrow(
+				"Declared state was lost",
+			);
+			const next = await executePython("print(21 * 2)", { ...options, reset: true });
 			expect(next.exitCode).toBe(0);
 			expect(next.output.trim()).toBe("42");
 			expect(await Bun.file(effectsPath).text()).toBe("once\n");
@@ -147,11 +196,10 @@ describe("PythonKernel status probe", () => {
 		const ownerId = `test-owner:${crypto.randomUUID()}`;
 		const sessionId = `test-session:${crypto.randomUUID()}`;
 		const run = (code: string) =>
-			executePython(code, {
+			executePython(`import proto_harness as harness\n${code}`, {
 				cwd: process.cwd(),
 				sessionId,
 				kernelOwnerId: ownerId,
-				kernelMode: "session",
 			});
 		try {
 			expect((await run("owner_disposal_probe = 7")).exitCode).toBe(0);
@@ -163,7 +211,12 @@ describe("PythonKernel status probe", () => {
 			await disposeKernelSessionsByOwner(ownerId);
 
 			// Fresh kernel on next call: prior state is gone.
-			const fresh = await run("owner_disposal_probe");
+			const fresh = await executePython("owner_disposal_probe", {
+				cwd: process.cwd(),
+				sessionId,
+				kernelOwnerId: ownerId,
+				reset: true,
+			});
 			expect(fresh.output).toContain("NameError");
 		} finally {
 			await disposeKernelSessionsByOwner(ownerId);
@@ -205,8 +258,9 @@ test("child stderr is returned in the agent-visible Python cell result", async (
 	if (!availability.ok) return;
 
 	const result = await executePython(
-		'import subprocess; result = subprocess.run(["bash", "-c", "echo CHILD_ERR >&2"])',
-		{ cwd: process.cwd(), kernelMode: "per-call" },
+		"import proto_harness as harness\n" +
+			'import subprocess; result = subprocess.run(["bash", "-c", "echo CHILD_ERR >&2"])',
+		{ cwd: process.cwd() },
 	);
 	expect(result.output).toContain("CHILD_ERR");
 }, 15_000);
@@ -215,10 +269,12 @@ test("invalid UTF-8 stdout is reported without replacement-character corruption"
 	const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 	if (!availability.ok) return;
 
-	const result = await executePython('import os; written = os.write(1, b"\\xff")', {
-		cwd: process.cwd(),
-		kernelMode: "per-call",
-	});
+	const result = await executePython(
+		"import proto_harness as harness\n" + 'import os; written = os.write(1, b"\\xff")',
+		{
+			cwd: process.cwd(),
+		},
+	);
 	expect(result.output).toContain("\\xff");
 	expect(result.output).not.toContain("�");
 }, 15_000);
@@ -232,22 +288,26 @@ test("same-metadata external edits still trigger the Python stale-write guard", 
 	const fixedTime = new Date(1_700_000_000_000);
 	await Bun.write(target, "OLD1");
 	await fs.utimes(target, fixedTime, fixedTime);
-	const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+	const fixture = await harnessKernel(tempDir.path());
+	const kernel = fixture.kernel;
 	try {
-		await kernel.execute(`open(${JSON.stringify(target)}).read()`);
+		await kernel.execute(`import proto_harness as harness; harness.fs.read_text(${JSON.stringify(target)})`);
 		await Bun.write(target, "EVIL");
 		await fs.utimes(target, fixedTime, fixedTime);
 		const output: string[] = [];
-		const result = await kernel.execute(`open(${JSON.stringify(target)}, "w").write("MINE")`, {
-			onChunk: chunk => {
-				output.push(chunk);
+		const result = await kernel.execute(
+			`import proto_harness as harness; harness.fs.write_text(${JSON.stringify(target)}, "MINE")`,
+			{
+				onChunk: chunk => {
+					output.push(chunk);
+				},
 			},
-		});
+		);
 		expect(result.status).toBe("error");
 		expect(output.join("")).toContain("StaleWriteError");
 		expect(await Bun.file(target).text()).toBe("EVIL");
 	} finally {
-		await kernel.shutdown().catch(() => {});
+		await fixture.dispose();
 	}
 }, 15_000);
 
@@ -260,37 +320,26 @@ test("host-observed content hashes detect timestamp-preserving edits before Pyth
 	const fixedTime = new Date(1_700_000_000_000);
 	await Bun.write(target, "OLD1");
 	await fs.utimes(target, fixedTime, fixedTime);
-	const stat = await fs.stat(target, { bigint: true });
-	const sha = new Bun.CryptoHasher("sha256")
-		.update(await Bun.file(target).bytes())
-		.digest("hex")
-		.slice(0, 16);
-	const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+	const fixture = await harnessKernel(tempDir.path());
+	const kernel = fixture.kernel;
 	try {
-		await kernel.execute("pass", {
-			fsObservations: [
-				{
-					path: target,
-					kind: "read",
-					mtimeNs: stat.mtimeNs.toString(),
-					size: Number(stat.size),
-					sha,
-				},
-			],
-		});
+		await fixture.tools.get("read")!.execute("host-read", { path: target });
 		await Bun.write(target, "EVIL");
 		await fs.utimes(target, fixedTime, fixedTime);
 		const output: string[] = [];
-		const result = await kernel.execute(`open(${JSON.stringify(target)}, "w").write("MINE")`, {
-			onChunk: chunk => {
-				output.push(chunk);
+		const result = await kernel.execute(
+			`import proto_harness as harness; harness.fs.write_text(${JSON.stringify(target)}, "MINE")`,
+			{
+				onChunk: chunk => {
+					output.push(chunk);
+				},
 			},
-		});
+		);
 		expect(result.status).toBe("error");
 		expect(output.join("")).toContain("StaleWriteError");
 		expect(await Bun.file(target).text()).toBe("EVIL");
 	} finally {
-		await kernel.shutdown().catch(() => {});
+		await fixture.dispose();
 	}
 }, 15_000);
 
@@ -298,9 +347,8 @@ test("oversized Python result frames are rejected before JSON parsing", async ()
 	const availability = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
 	if (!availability.ok) return;
 
-	const result = await executePython('"x" * 40_000_000', {
+	const result = await executePython("import proto_harness as harness\n" + '"x" * 40_000_000', {
 		cwd: process.cwd(),
-		kernelMode: "per-call",
 	});
 	expect(result.output).toContain("frame exceeded");
 	expect(result.output.length).toBeLessThan(100_000);
@@ -311,8 +359,9 @@ test("UTF-16 surrogate frames are reassembled before reaching the output client"
 	if (!availability.ok) return;
 
 	const result = await executePython(
-		'import sys; sys.stdout.write("\\ud83d"); sys.stdout.flush(); sys.stdout.write("\\ude00"); sys.stdout.flush()',
-		{ cwd: process.cwd(), kernelMode: "per-call" },
+		"import proto_harness as harness\n" +
+			'import sys; sys.stdout.write("\\ud83d"); sys.stdout.flush(); sys.stdout.write("\\ude00"); sys.stdout.flush()',
+		{ cwd: process.cwd() },
 	);
 	expect(result.output).toBe("😀");
 }, 15_000);
@@ -324,14 +373,14 @@ test("late partial Python prints are evicted visibly instead of leaking per-cell
 	const kernel = await PythonKernel.start({ cwd: process.cwd() });
 	const outputs = Array.from({ length: 70 }, () => [] as string[]);
 	try {
-		await kernel.execute("import asyncio; late_partial_gate = asyncio.Event()");
+		await kernel.execute("import asyncio; import proto_harness as harness; late_partial_gate = asyncio.Event()");
 		for (let index = 0; index < outputs.length; index++) {
 			await kernel.execute(
 				[
 					`async def late_partial_${index}():`,
 					"    await late_partial_gate.wait()",
 					`    print("PARTIAL_${index}", end="")`,
-					`retain_task(asyncio.create_task(late_partial_${index}()))`,
+					`harness.retain_task(asyncio.create_task(late_partial_${index}()))`,
 					"await asyncio.sleep(0)",
 				].join("\n"),
 				{
@@ -361,57 +410,58 @@ test("serializes concurrent cells and keeps filesystem attribution with the orig
 	const aDisplays: KernelDisplayOutput[] = [];
 	const bDisplays: KernelDisplayOutput[] = [];
 	const ready = Promise.withResolvers<void>();
-	const kernel = await PythonKernel.start({ cwd });
+	const fixture = harnessSession(cwd);
+	const options = { cwd, sessionId: fixture.owner, kernelOwnerId: fixture.owner, toolSession: fixture.session };
 
 	try {
-		const runA = kernel.execute(
+		const runA = executePython(
 			[
-				"import asyncio",
+				"import asyncio; import proto_harness as harness",
 				"from pathlib import Path",
 				`release = Path(${JSON.stringify(release)})`,
 				`order = Path(${JSON.stringify(order)})`,
-				'order.write_text("A-start\\n")',
+				'harness.fs.write_text(order, "A-start\\n")',
 				'print("A-ready", flush=True)',
 				"while not release.exists():",
 				"    await asyncio.sleep(0.01)",
-				`Path(${JSON.stringify(aFile)}).write_text("A")`,
-				'order.write_text(order.read_text() + "A-end\\n")',
+				`harness.fs.write_text(${JSON.stringify(aFile)}, "A")`,
+				'harness.fs.write_text(order, harness.fs.read_text(order) + "A-end\\n")',
 			].join("\n"),
 			{
+				...options,
 				onChunk: chunk => {
 					if (chunk.includes("A-ready")) ready.resolve();
 				},
-				onDisplay: output => {
-					aDisplays.push(output);
+				emitStatus: event => {
+					aDisplays.push({ type: "status", event });
 				},
 			},
 		);
 		await ready.promise;
 
-		const runB = kernel.execute(
+		const runB = executePython(
 			[
 				"from pathlib import Path",
 				`order = Path(${JSON.stringify(order)})`,
-				`Path(${JSON.stringify(bFile)}).write_text("B")`,
-				'order.write_text(order.read_text() + "B\\n")',
+				`harness.fs.write_text(${JSON.stringify(bFile)}, "B")`,
+				'harness.fs.write_text(order, harness.fs.read_text(order) + "B\\n")',
 			].join("\n"),
 			{
-				onDisplay: output => {
-					bDisplays.push(output);
+				...options,
+				emitStatus: event => {
+					bDisplays.push({ type: "status", event });
 				},
 			},
 		);
 
-		// Status replies cross the process boundary and give the old concurrent scheduler ample turns
-		// without guessing a wall-clock delay. A serialized runner keeps B queued through every probe.
-		for (let probe = 0; probe < 20 && !(await Bun.file(bFile).exists()); probe++) {
-			await kernel.requestStatus();
-		}
+		// The second cell cannot cross A's explicit release barrier; final disk order
+		// also detects interleaved writes without depending on a timing threshold.
+		expect(await Bun.file(bFile).exists()).toBe(false);
 		await Bun.write(release, "go");
 
 		expect(await Promise.all([runA, runB])).toEqual([
-			expect.objectContaining({ status: "ok", cancelled: false }),
-			expect.objectContaining({ status: "ok", cancelled: false }),
+			expect.objectContaining({ exitCode: 0, cancelled: false }),
+			expect.objectContaining({ exitCode: 0, cancelled: false }),
 		]);
 		expect(await Bun.file(order).text()).toBe("A-start\nA-end\nB\n");
 
@@ -423,7 +473,7 @@ test("serializes concurrent cells and keeps filesystem attribution with the orig
 		expect(writePaths(bDisplays)).toContain(bFile);
 	} finally {
 		await Bun.write(release, "go").catch(() => undefined);
-		if (kernel.isAlive()) await kernel.shutdown().catch(() => {});
+		await disposeKernelSessionsByOwner(fixture.owner);
 	}
 }, 15_000);
 
@@ -725,7 +775,7 @@ test("a failed Python output consumer reports an error without wedging the kerne
 test("a rejected async Python display consumer leaves later cells usable", async () => {
 	const kernel = await PythonKernel.start({ cwd: process.cwd() });
 	try {
-		const failed = await kernel.execute("__proto_display({'application/json': {'visible': True}}, raw=True)", {
+		const failed = await kernel.execute("import proto_harness as harness; harness.display({'visible': True})", {
 			onDisplay: async () => {
 				throw new Error("display consumer unavailable");
 			},
@@ -766,15 +816,18 @@ test("a truncated whole-file rewrite from Python reports both sides of the diff"
 	const events: { op: string; path?: string; diff?: string; diffTruncated?: boolean }[] = [];
 
 	await executePython(
-		`from pathlib import Path\nPath(${JSON.stringify(target)}).write_text("\\n".join(f"after{i} = {i * 2}" for i in range(1200)))`,
-		{ cwd: tempDir.path(), kernelMode: "per-call", onStatus: event => events.push(event) },
+		`import proto_harness as harness\nharness.fs.write_text(${JSON.stringify(target)}, "\\n".join(f"after{i} = {i * 2}" for i in range(1200)))`,
+		{
+			cwd: tempDir.path(),
+			toolSession: harnessSession(tempDir.path()).session,
+			onStatus: event => events.push(event),
+		},
 	);
 
 	const event = events.find(candidate => candidate.path === target && typeof candidate.diff === "string");
 	expect(event?.diffTruncated).toBe(true);
 	const rows = (event?.diff ?? "").split("\n");
-	// The Python prelude keeps its own copy of the cap; it must trim like the
-	// JS tracker, keeping head and tail so a rewrite is never shown as a delete.
+	// Keep both sides of a capped rewrite so it cannot be mistaken for a deletion.
 	expect(rows.filter(row => row.startsWith("-")).length).toBeGreaterThan(0);
 	expect(rows.filter(row => row.startsWith("+")).length).toBeGreaterThan(0);
 	expect(rows.filter(row => row.includes("diff lines omitted"))).toHaveLength(1);

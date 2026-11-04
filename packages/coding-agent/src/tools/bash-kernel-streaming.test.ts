@@ -1,27 +1,44 @@
 import { expect, test } from "bun:test";
+import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { disposeBashSessions } from "../exec/bash-executor";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
+import { handleContextControl } from "./context";
 import { ToolAbortError } from "./tool-errors";
 
-async function fixture(run: (bash: BashTool, cwd: string) => Promise<void>): Promise<void> {
+const python = await checkPythonKernelAvailability(process.cwd(), undefined, { forceProbe: true });
+
+async function fixture(run: (bash: BashTool, cwd: string, session: ToolSession) => Promise<void>): Promise<void> {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "kernel-streaming-"));
 	const owner = `kernel-streaming-${crypto.randomUUID()}`;
+	if (!python.pythonPath) throw new Error("Python interpreter unavailable");
+	const bin = path.join(cwd, "test-bin");
+	fsSync.mkdirSync(bin, { recursive: true });
+	for (const name of ["python", "python3"]) {
+		try {
+			fsSync.symlinkSync(python.pythonPath, path.join(bin, name));
+		} catch (error) {
+			if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+		}
+	}
 	const session = {
 		cwd,
-		settings: { get: () => undefined, getShellConfig: () => ({ env: {} }) },
+		settings: { get: () => undefined, getShellConfig: () => ({ env: { PATH: `${bin}:${process.env.PATH ?? ""}` } }) },
 		getArtifactsDir: () => path.join(cwd, "artifacts"),
 		getSessionId: () => owner,
 		getEvalSessionId: () => owner,
 		getEvalKernelOwnerId: () => owner,
 	} as unknown as ToolSession;
 	try {
-		await run(new BashTool(session), cwd);
+		const bash = new BashTool(session);
+		await bash.execute("select-native-python", { command: `export PATH=${JSON.stringify(bin)}:$PATH` });
+		await run(bash, cwd, session);
 	} finally {
 		await Promise.all([
 			disposeBashSessions(owner),
@@ -41,7 +58,8 @@ function text(result: { content: Array<{ type: string; text?: string }> }): stri
 
 for (const language of ["python", "node", "bun"] as const) {
 	const flag = language === "python" ? "-c" : "-e";
-	const cell = (source: string): string => `${language} ${flag} '${source.replaceAll("'", "'\"'\"'")}'`;
+	const cell = (source: string): string =>
+		`${language === "python" ? JSON.stringify(python.pythonPath) : language} ${flag} '${source.replaceAll("'", "'\"'\"'")}'`;
 
 	test(`${language} consumes its first line before the producer can finish`, async () => {
 		await fixture(async bash => {
@@ -59,7 +77,7 @@ for (const language of ["python", "node", "bun"] as const) {
 		});
 	}, 20_000);
 
-	test(`${language} streams more than one MiB losslessly through pipes and retains state`, async () => {
+	test(`${language} streams more than one MiB losslessly with its native state lifetime`, async () => {
 		await fixture(async (bash, cwd) => {
 			const bytes = Uint8Array.from({ length: 3 * 1024 * 1024 + 17 }, (_, i) => i % 256);
 			await Bun.write(path.join(cwd, "input.bin"), bytes);
@@ -69,7 +87,7 @@ for (const language of ["python", "node", "bun"] as const) {
 			);
 			const code =
 				language === "python"
-					? "import sys\nassert stream_marker == 41\nwhile chunk := sys.stdin.buffer.read(32768):\n    sys.stdout.buffer.write(chunk)"
+					? "import sys\nassert 'stream_marker' not in globals()\nwhile chunk := sys.stdin.buffer.read(32768):\n    sys.stdout.buffer.write(chunk)"
 					: 'import { once } from "node:events"; if (stream_marker !== 41) throw Error("lost state"); for await (const chunk of process.stdin) { if (!process.stdout.write(chunk)) await once(process.stdout, "drain"); }';
 			const result = await bash.execute("copy", {
 				command: `cat input.bin | ${cell(code)} | cat > copy.bin`,
@@ -78,8 +96,13 @@ for (const language of ["python", "node", "bun"] as const) {
 			expect(result.isError).not.toBe(true);
 			expect(result.details?.timedOut).not.toBe(true);
 			expect(new Uint8Array(await Bun.file(path.join(cwd, "copy.bin")).arrayBuffer())).toEqual(bytes);
-			const after = language === "python" ? "print(stream_marker + 1)" : "console.log(stream_marker + 1)";
-			expect(text(await bash.execute("after", { command: cell(after) }))).toContain("42");
+			const after =
+				language === "python"
+					? "print('fresh' if 'stream_marker' not in globals() else 'leaked')"
+					: "console.log(stream_marker + 1)";
+			expect(text(await bash.execute("after", { command: cell(after) }))).toContain(
+				language === "python" ? "fresh" : "42",
+			);
 		});
 	}, 30_000);
 
@@ -117,7 +140,7 @@ for (const language of ["python", "node", "bun"] as const) {
 	}, 20_000);
 
 	test(`${language} interrupts a cell blocked on live input without waiting for producer EOF`, async () => {
-		await fixture(async bash => {
+		await fixture(async (bash, _cwd, session) => {
 			const abort = new AbortController();
 			const code =
 				language === "python"
@@ -136,16 +159,24 @@ for (const language of ["python", "node", "bun"] as const) {
 			);
 			await expect(running).rejects.toBeInstanceOf(ToolAbortError);
 			expect(abort.signal.aborted).toBe(true);
+			if (language !== "python") {
+				const refused = await bash.execute("refuse-lost-state", {
+					command: cell('console.log("must-not-replay")'),
+				});
+				expect(text(refused)).toContain("Declared state was lost");
+				expect(refused.details?.execution?.exitCode).toBe(1);
+				await handleContextControl(session, { resource: "kernel", op: "reset", language });
+			}
 			const next = await bash.execute("after-interrupt", {
 				command: cell(language === "python" ? 'print("resumed")' : 'console.log("resumed")'),
 			});
-			expect(next.isError).not.toBe(true);
+			expect(next.isError, text(next)).not.toBe(true);
 			expect(text(next)).toContain("resumed");
 		});
 	}, 25_000);
 
 	test(`${language} cancels a live producer when its output consumer exits`, async () => {
-		await fixture(async bash => {
+		await fixture(async (bash, _cwd, session) => {
 			const code =
 				language === "python"
 					? 'import sys\nwhile True:\n    sys.stdout.buffer.write(b"x" * 32768)'
@@ -156,10 +187,18 @@ for (const language of ["python", "node", "bun"] as const) {
 			});
 			expect(result.details?.timedOut).not.toBe(true);
 			expect(text(result)).toContain("x");
+			if (language !== "python") {
+				const refused = await bash.execute("refuse-lost-state", {
+					command: cell('console.log("must-not-replay")'),
+				});
+				expect(text(refused)).toContain("Declared state was lost");
+				expect(refused.details?.execution?.exitCode).toBe(1);
+				await handleContextControl(session, { resource: "kernel", op: "reset", language });
+			}
 			const next = await bash.execute("usable", {
 				command: cell(language === "python" ? 'print("usable")' : 'console.log("usable")'),
 			});
-			expect(next.isError).not.toBe(true);
+			expect(next.isError, text(next)).not.toBe(true);
 			expect(text(next)).toContain("usable");
 		});
 	}, 25_000);

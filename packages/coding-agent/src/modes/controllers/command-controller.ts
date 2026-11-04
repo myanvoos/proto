@@ -5,7 +5,7 @@ import { CompactionCancelledError, type CompactionOutcome } from "@oh-my-pi/pi-a
 import { resolveUsedFraction, type ServiceTierFamily, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { errorMessage, formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { errorMessage, formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
@@ -720,10 +720,11 @@ export class CommandController {
 	}
 
 	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
-		const isDeferred = this.ctx.session.isStreaming;
+		const target = captureSessionCommandTarget(this.ctx.viewSession);
+		const isDeferred = target.session.isStreaming;
 		const component = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
-		// Capture locally: a later execution must never receive this run's
-		// streamed chunks or display blocks.
+		const attached = () => isSessionCommandTargetCurrent(target, this.ctx.viewSession);
+		const visible = () => attached() && this.ctx.pythonComponent === component;
 		this.ctx.pythonComponent = component;
 		this.ctx.chatContainer.accountSource(component, code);
 
@@ -736,34 +737,44 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 
 		try {
-			const result = await this.ctx.session.executePython(
+			const result = await target.session.executePython(
 				code,
 				chunk => {
-					component.appendOutput(chunk);
+					if (visible()) component.appendOutput(chunk);
 				},
 				{
 					excludeFromContext,
 					onDisplay: output => {
+						if (!visible()) return;
 						component.appendDisplayOutput(output);
 						this.ctx.chatContainer.accountSource(component, output);
 					},
 				},
 			);
 
-			this.ctx.chatContainer.accountSource(component, result);
-			const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-			component.setComplete(result.exitCode, result.cancelled, {
-				output: result.output,
-				truncation: meta?.truncation,
-				execution: result.execution,
-			});
+			if (visible()) {
+				this.ctx.chatContainer.accountSource(component, result);
+				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
+				component.setComplete(result.exitCode, result.cancelled, {
+					output: result.output,
+					truncation: meta?.truncation,
+					execution: result.execution,
+				});
+			} else if (attached()) {
+				// Leaving and re-entering the view disposed the original card; rebuild its durable result.
+				await this.ctx.renderInitialMessages();
+			}
 		} catch (error) {
-			component.setComplete(undefined, false);
-			this.ctx.showError(`Python execution failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+			if (attached()) {
+				if (visible()) component.setComplete(undefined, false);
+				this.ctx.showError(`Python execution failed: ${errorMessage(error)}`);
+			} else {
+				logger.warn("Python execution failed outside the attached view", { sessionId: target.sessionId, error });
+			}
+		} finally {
+			if (this.ctx.pythonComponent === component) this.ctx.pythonComponent = undefined;
+			if (attached()) this.ctx.ui.requestRender();
 		}
-
-		this.ctx.pythonComponent = undefined;
-		this.ctx.ui.requestRender();
 	}
 
 	async handleCompactCommand(

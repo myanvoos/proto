@@ -209,6 +209,7 @@ mod platform {
 
 		match dir_fd.unlink_at(&file_name, false) {
 			Ok(_) => {
+				host.note_write(path);
 				// Update progress bar for file removal
 				if let Some(pb) = progress_bar {
 					pb.inc(1);
@@ -243,6 +244,7 @@ mod platform {
 
 		match dir_fd.unlink_at(&dir_name, true) {
 			Ok(_) => {
+				host.note_write(path);
 				// Update progress bar for directory removal
 				if let Some(pb) = progress_bar {
 					pb.inc(1);

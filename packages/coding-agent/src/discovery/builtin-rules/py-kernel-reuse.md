@@ -1,29 +1,12 @@
 ---
-description: "In the Python kernel, reuse prelude primitives and already-defined functions instead of hand-rolling file and search helpers"
+description: "Use explicit Python harness APIs instead of duplicating host tools"
 scope: "tool:bash"
 interruptMode: never
 ---
 
-The kernel namespace persists across calls, and the prelude already ships the common primitives.
+Python commands are fresh processes. Import `proto_harness as harness`; NEVER assume earlier variables persist.
 
-## Before defining a helper
-
-- Run `defs()` — functions and classes defined in earlier cells are still bound; reuse them, and only re-define to change them.
-- Reach for the prelude API instead of raw file plumbing: `block_range()`, `symbols()`, `display()`, `env()`, `output()`, `tool.<name>()`, `agent()`, `completion()`, `parallel()`/`pipeline()`. File edits are plain `open`/`Path` — every mutation is diffed in Status and guarded (StaleWriteError → re-read).
-
-## Never shadow prelude names
-
-```python
-# Bad — silently replaces the prelude primitive for every later cell
-def symbols(path):
-    return ""
-
-# Good — give helpers distinct names
-def symbols_summary(path):
-    ...
-```
-
-## Hand-rolled patterns to drop
-
-- Scanning files for declarations → `symbols(path)`.
-- Resolving internal URIs by hand → `tool.read({"path": "skill://name"})` or bash URI arguments. Raw file APIs take filesystem paths; bash `env` can pass resolved paths into local cells.
+- Reuse `harness.symbols`, `harness.block_range`, `harness.tool`, `harness.completion` and `harness.agent` instead of duplicating host parsing or orchestration.
+- Use `harness.fs.read` / `replace` / `write` for atomic, stale-guarded host edits. Re-read after `StaleWriteError`; NEVER force an obsolete write.
+- Choose `harness.store` for selected values; choose an explicitly named `harness.kernel(...)` for a whole warm namespace. Inspect definitions before redefining a helper there.
+- Internal URLs belong to host tools: `harness.tool.read({"path": "skill://name"})`. Plain file APIs take filesystem paths.

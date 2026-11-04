@@ -3,6 +3,7 @@ import type {
 	AgentTelemetryConfig,
 	AgentTool,
 	AgentToolContext,
+	BeforeToolCallResult,
 	StreamFn,
 } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
@@ -188,6 +189,14 @@ export interface ToolSession {
 	getToolForEvalBridge?: (name: string) => AgentTool | undefined;
 
 	getToolContext?: () => AgentToolContext | undefined;
+
+	/** Canonical session admission and extension policy, including nested harness calls. */
+	beforeEvalToolCall?: (
+		tool: AgentTool,
+		toolCallId: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	) => Promise<BeforeToolCallResult | undefined>;
 
 	getEvalBridgeToolNames?: () => readonly string[];
 

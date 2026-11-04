@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { parse as parseJavaScript } from "@babel/parser";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { ToolSession } from "../tools";
-import { detectBashKernelCell } from "../tools/bash-embedded-code";
+import { findBashCodeCells } from "../tools/bash-embedded-code";
 import type { StreamedKernelFailure as StreamedKernelFailureContract } from "./speculation";
 import { parseStreamedBashInput } from "./speculation";
 
@@ -69,6 +69,7 @@ const MAX_STREAMED_FAILURE_ENTRY_BYTES = 4 * 1024 * 1024;
 const MAX_PARTIAL_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_COUNT_WORK = 16 * 1024 * 1024;
 
+const HARNESS_MODULE = Symbol("preflight proto_harness module");
 const PATH_CONSTRUCTOR = Symbol("preflight pathlib.Path");
 const PATH_MODULE = Symbol("preflight pathlib module");
 const BUILTINS_MODULE = Symbol("preflight builtins module");
@@ -82,6 +83,7 @@ type SafeValue =
 	| number
 	| boolean
 	| null
+	| typeof HARNESS_MODULE
 	| typeof PATH_CONSTRUCTOR
 	| typeof PATH_MODULE
 	| typeof BUILTINS_MODULE
@@ -220,7 +222,7 @@ export async function preflightStreamedInput(
 		if (typeof streamedInput.command !== "string" || streamedInput.command.length === 0) return undefined;
 		// The scan closes an unterminated heredoc or quoted `-c`/`-e` word, so a
 		// half-streamed cell already yields the code written so far.
-		const cell = detectBashKernelCell(streamedInput.command);
+		const cell = findBashCodeCells(streamedInput.command)[0];
 		if (!cell || cell.code.length === 0) return undefined;
 
 		let cwd = options.cwd ?? options.session?.cwd;
@@ -229,7 +231,13 @@ export async function preflightStreamedInput(
 		}
 		const cacheKey = streamedCacheKey(toolCallId, sessionCacheIdentity(options));
 		const cached = cacheKey === undefined ? undefined : streamedFailures.get(cacheKey);
-		if (cacheKey !== undefined && cached && cached.cwd === cwd && cell.code.startsWith(cached.sourcePrefix)) {
+		if (
+			cacheKey !== undefined &&
+			cached &&
+			cached.cwd === cwd &&
+			cached.failure.language === cell.language &&
+			cell.code.startsWith(cached.sourcePrefix)
+		) {
 			if (await observationsCurrent(cached.provenance, options.signal)) return { ...cached.failure };
 			streamedFailures.delete(cacheKey);
 		}
@@ -266,7 +274,8 @@ export async function preflightStreamedInput(
 /**
  * Safely evaluate the small, source-local assertion subset.  No Python or JS
  * source is executed; parsing and a literal-only interpreter are used.  The
- * supported Python path is:
+ * supported Python paths include explicit proto_harness imports with
+ * `harness.fs.read_text("literal")`, as well as:
  *
  *   from pathlib import Path
  *   p = Path("literal")
@@ -534,6 +543,11 @@ async function evaluatePython(
 		const trimmed = withoutComment.trim();
 		if (trimmed.length === 0) continue;
 		if (/^\s/u.test(withoutComment)) return undefined;
+		const harnessImport = /^import\s+proto_harness(?:\s+as\s+([A-Za-z_]\w*))?$/u.exec(trimmed);
+		if (harnessImport) {
+			values.set(harnessImport[1] ?? "proto_harness", HARNESS_MODULE);
+			continue;
+		}
 		if (/^from\s+pathlib\s+import\s+Path(?:\s+as\s+([A-Za-z_]\w*))?$/u.test(trimmed)) {
 			const alias = /^from\s+pathlib\s+import\s+Path(?:\s+as\s+([A-Za-z_]\w*))?$/u.exec(trimmed)?.[1] ?? "Path";
 			values.set(alias, PATH_CONSTRUCTOR);
@@ -568,7 +582,7 @@ async function evaluatePython(
 			continue;
 		}
 		const assignment = /^([A-Za-z_]\w*)\s*=\s*([\s\S]+)$/u.exec(trimmed);
-		if (!assignment) return undefined;
+		if (!assignment || values.get(assignment[1]!) === HARNESS_MODULE) return undefined;
 		const value = await evaluatePythonValue(assignment[2]!, values, cwd, limits, signal);
 		if (value === undefined) return undefined;
 		if (isReadResult(value)) observations.set(value.observation.public.path, value.observation);
@@ -640,6 +654,7 @@ async function evaluatePythonValue(
 	signal: AbortSignal | undefined,
 ): Promise<SafeValue | ReadResult | undefined> {
 	const literal = parsePythonLiteralOrName(expression.trim(), values);
+	if (literal === HARNESS_MODULE) return undefined;
 	if (literal !== undefined) return literal;
 	const pathValue = parsePythonPathExpression(expression.trim(), values);
 	if (pathValue) return pathValue;
@@ -669,6 +684,15 @@ function parsePythonPathExpression(expression: string, values: Map<string, SafeV
 }
 
 function parsePythonReadExpression(expression: string, values: Map<string, SafeValue>): PythonPathRead | undefined {
+	const harnessRead = /^([A-Za-z_]\w*)\s*\.\s*fs\s*\.\s*read_text\s*\(([\s\S]*)\)$/u.exec(expression);
+	if (harnessRead) {
+		if (values.get(harnessRead[1]!) !== HARNESS_MODULE) return undefined;
+		const args = splitTopLevelComma(harnessRead[2]!);
+		if (!args || args.length < 1 || args.length > 2) return undefined;
+		if (args.length === 2 && !validPythonReadTextArgs(args[1]!)) return undefined;
+		const rawPath = parsePythonLiteralOrName(args[0]!.trim(), values);
+		return typeof rawPath === "string" && rawPath.length <= MAX_LITERAL_CHARS ? { rawPath } : undefined;
+	}
 	const method = /^(.*?)\.\s*read_text\s*\(([\s\S]*)\)$/u.exec(expression);
 	if (method) {
 		if (!validPythonReadTextArgs(method[2]!)) return undefined;

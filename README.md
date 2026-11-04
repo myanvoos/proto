@@ -25,9 +25,11 @@ repository access; publishing a release does not change repository visibility.
 ## Highlights
 
 - **One execution surface, deeply tooled:** the main tool an agent uses is bash with an embedded shell (Rust `brush` fork), which contains in-process `rg`/`fd`/PTY builtins. We keep the always-loaded tool registry deliberately small. 
-- **Code as a first-class surface:** persistent Python/JS kernel cells inside the bash
-  tool, with host callbacks: `agent()` spawns workers, `parallel()` fans out,
-  `tool.<name>()` calls any tool. Programmatic tool calling and sub-agent orchestration are implemented here as ordinary code an agent can write in persistent kernels.
+- **Code as a first-class surface:** ordinary Python commands are fresh native processes;
+  `import proto_harness as harness` explicitly adds tools, model calls, and orchestration.
+  Use `harness.store` for session-owned rich values or `harness.kernel("analysis")` for a
+  named warm namespace. JavaScript keeps persistent Node/Bun cells and its existing helpers.
+  See the [execution contract](docs/bash-tool-runtime.md#native-python-processes).
 - **Sessions that survive your terminal:** `proto attach` connects to a
   daemon-supervised session host, and parked sessions keep thinking in the background.
 - **Orchestration as native tooling:** inherited from OMP's great subagent building blocks, orchestration here is implemented in the form of persistent addressable workers

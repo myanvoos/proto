@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import type { SymbolTheme } from "../symbols";
 import { setTerminalHyperlinks, TERMINAL } from "../terminal-capabilities";
 import { getHangulCompatibilityJamoWidth, setHangulCompatibilityJamoWidth } from "../utils";
@@ -486,6 +486,34 @@ describe("Markdown bounded render caches", () => {
 	beforeEach(clearRenderCache);
 	afterEach(clearRenderCache);
 
+	test("idle shared Markdown output expires and recomputes identical styled Unicode rows", () => {
+		vi.useFakeTimers();
+		let now = performance.now();
+		const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+		let renders = 0;
+		const countingTheme: MarkdownTheme = {
+			...theme,
+			bold: text => {
+				renders++;
+				return `\x1b[1m${text}\x1b[22m`;
+			},
+		};
+		try {
+			const source = "**idle output 界🙂 with wrapping**";
+			const expected = new Markdown(source, 0, 0, countingTheme).render(18);
+			expect(new Markdown(source, 0, 0, countingTheme).render(18)).toEqual(expected);
+			expect(renders).toBe(1);
+			now += 90_001;
+			vi.advanceTimersByTime(90_001);
+			expect(new Markdown(source, 0, 0, countingTheme).render(18)).toEqual(expected);
+			expect(renders).toBe(2);
+		} finally {
+			clearRenderCache();
+			clock.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	test("evicts hidden source keys within the byte budget while retaining recent renders", () => {
 		let renders = 0;
 		const countingTheme: MarkdownTheme = {
@@ -623,9 +651,9 @@ console.log(JSON.stringify({ keyHeapDelta, sliceHeapDelta, exactRows }));
 		]);
 		expect(exitCode, stderr).toBe(0);
 		const result = JSON.parse(stdout) as { keyHeapDelta: number; sliceHeapDelta: number; exactRows: boolean };
-		// 24 MiB of cache data plus 8 MiB of allocator/renderer overhead; the
+		// 10 MiB of cache data plus 8 MiB of allocator/renderer overhead; the
 		// original hidden-key regression retained over 129 MiB for this workload.
-		expect(result.keyHeapDelta).toBeLessThan(32 * 1024 * 1024);
+		expect(result.keyHeapDelta).toBeLessThan(18 * 1024 * 1024);
 		expect(result.sliceHeapDelta).toBeLessThan(8 * 1024 * 1024);
 		expect(result.exactRows).toBe(true);
 	}, 30_000);

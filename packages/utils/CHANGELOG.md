@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Revalidate asynchronous atomic writes immediately before publication with an optional `beforeCommit` callback.
+
+### Changed
+
+- Allow TTL caches to release expired entries while idle without keeping the process alive.
+
 ## [19.2.1] - 2026-11-03
 
 ### Added

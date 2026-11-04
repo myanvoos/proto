@@ -181,11 +181,12 @@ kernelTest("retained asyncio tasks and native runtime threads keep output owners
 	try {
 		const started = await kernel.execute(
 			`import asyncio, threading
+import proto_harness as harness
 async_gate = asyncio.Event()
 thread_gate = threading.Event()
 async def retained_async():
     await asyncio.sleep(0)
-    retain_task(asyncio.current_task())
+    harness.retain_task(asyncio.current_task())
     await async_gate.wait()
     print("retained-async")
 def retained_thread():
@@ -313,13 +314,29 @@ except ValueError:
 asyncio.create_task(exit_child())
 await asyncio.sleep(60)`);
 		expect(exiting).toMatchObject({ status: "error", exitCode: 7, cancelled: false });
-		expect(await run(kernel, 'print("after-child-exit")')).toBe("after-child-exit\n");
+		expect(await run(kernel, 'import gc; gc.collect(); print("after-child-exit")')).toBe("after-child-exit\n");
+		const diagnostics: string[] = [];
+		const unobserved = await kernel.execute(
+			`async def unobserved_child():
+    raise ValueError("unobserved-owned-failure")
+asyncio.create_task(unobserved_child())
+await asyncio.sleep(0)`,
+			{
+				onChunk: text => {
+					diagnostics.push(text);
+				},
+			},
+		);
+		expect(unobserved.status).toBe("ok");
+		expect(diagnostics.join("").match(/Task exception was never retrieved/g)).toHaveLength(1);
+		expect(diagnostics.join("")).toContain("ValueError: unobserved-owned-failure");
+		expect(await run(kernel, 'gc.collect(); print("after-unobserved")')).toBe("after-unobserved\n");
 	} finally {
 		await kernel.shutdown();
 	}
 });
 
-kernelTest("filesystem receipts are sideband and never contaminate binary program output", async () => {
+kernelTest("native filesystem writes do not inject receipts into binary output or mutate tracking", async () => {
 	using dir = TempDir.createSync("@python-native-sideband-");
 	const kernel = await PythonKernel.start({ cwd: dir.path() });
 	try {
@@ -343,7 +360,8 @@ sys.stdout.buffer.write(b"\\x00\\xffnative\\n")`,
 		expect(result.status).toBe("ok");
 		expect(Buffer.concat(stdout)).toEqual(Buffer.from([0, 255, ...Buffer.from("native\n")]));
 		expect(Buffer.concat(stderr)).toHaveLength(0);
-		expect(notes.join("")).toContain("<kernel> note: created created.txt");
+		expect(notes).toEqual([]);
+		expect(await Bun.file(dir.join("created.txt")).text()).toBe("native");
 	} finally {
 		await kernel.shutdown();
 	}

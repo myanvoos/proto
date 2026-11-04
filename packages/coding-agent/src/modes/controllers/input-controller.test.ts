@@ -434,7 +434,7 @@ test("help and its question-mark alias open help without sending a model prompt"
 
 function composerModeContext(): {
 	context: InteractiveModeContext;
-	editor: { onChange?: (text: string) => void };
+	editor: { onChange?: (text: string) => void; onEscape?: () => void };
 	modes: { bash: boolean; python: boolean };
 } {
 	const editor = {
@@ -500,6 +500,28 @@ test("$code without a space enters python mode, matching !cmd", () => {
 	expect(composerModeFor("$print(1)")).toEqual({ bash: false, python: true });
 	expect(composerModeFor("$$print(1)")).toEqual({ bash: false, python: true });
 	expect(composerModeFor("$ print(1)")).toEqual({ bash: false, python: true });
+});
+
+test("focused Escape stops the selected Python execution instead of leaving its view", () => {
+	const { context, editor } = composerModeContext();
+	const actions: string[] = [];
+	Object.assign(context, {
+		focusedAgentId: "child",
+		viewSession: {
+			isCompacting: false,
+			isRetrying: false,
+			isStreaming: false,
+			isEvalRunning: true,
+			abortEval: () => actions.push("stop-child-python"),
+		},
+		unfocusSession: async () => {
+			actions.push("unfocus");
+		},
+	});
+	const controller = new InputController(context);
+	controller.setupKeyHandlers();
+	editor.onEscape?.();
+	expect(actions).toEqual(["stop-child-python"]);
 });
 
 test("$ stays out of python mode for shell interpolation and pasted shell prompts", () => {

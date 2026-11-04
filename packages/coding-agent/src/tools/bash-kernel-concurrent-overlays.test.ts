@@ -4,9 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
+import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { disposeBashSessions } from "../exec/bash-executor";
 import type { ToolSession } from ".";
 import { BashTool } from "./bash";
+
+const python = await checkPythonKernelAvailability(import.meta.dir, undefined, { forceProbe: true });
 
 for (const lang of ["python", "node"] as const) {
 	test(`${lang} concurrent native shell cells retain separate env and stdin across await`, async () => {
@@ -30,7 +33,7 @@ async def concurrent_overlay_probe(label):
     print(label + " before env=" + os.environ.get("OVERLAY_PROBE", "missing") + " stdin=" + sys.stdin.read(1), flush=True)
     await asyncio.sleep(0.15)
     print(label + " after env=" + os.environ.get("OVERLAY_PROBE", "missing") + " stdin=" + sys.stdin.read(), flush=True)
-await concurrent_overlay_probe("${label}")`
+asyncio.run(concurrent_overlay_probe("${label}"))`
 					: `await (async () => {
     const label = "${label}";
     const stdin = process.stdin;
@@ -42,7 +45,7 @@ await concurrent_overlay_probe("${label}")`
     for await (const chunk of process.stdin) input += chunk;
     console.log(label + " after env=" + process.env.OVERLAY_PROBE + " stdin=" + input + " same-stream=" + (stdin === process.stdin));
 })()`;
-			return `printf "${index === 0 ? "A1" : "B2"}" | OVERLAY_PROBE=${label} ${lang} ${flag} '${source}' &`;
+			return `printf "${index === 0 ? "A1" : "B2"}" | OVERLAY_PROBE=${label} ${lang === "python" ? JSON.stringify(python.pythonPath) : lang} ${flag} '${source}' &`;
 		});
 		try {
 			const result = await bash.execute("concurrent-overlays", { command: `${commands.join("\n")}\nwait` });
