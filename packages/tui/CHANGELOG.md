@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.1.2] - 2026-11-04
+
 ### Changed
 
 - Reduce retained rendering memory with smaller byte-accounted caches that release unused entries while idle.

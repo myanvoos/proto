@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.1.2] - 2026-11-04
+
 ### Breaking Changes
 
 - Execute Python through the selected native interpreter instead of an in-process shell builtin or implicit kernel route.

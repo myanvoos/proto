@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.1.2] - 2026-11-04
+
 ### Added
 
 - Revalidate asynchronous atomic writes immediately before publication with an optional `beforeCommit` callback.

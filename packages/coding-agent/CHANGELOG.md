@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.1.2] - 2026-11-04
+
 ### Breaking Changes
 
 - Run ordinary Python commands and `$`/`$$` submissions as fresh native processes; import `proto_harness` explicitly for host APIs and opt into persistence with named kernels or `harness.store`.
@@ -13,6 +15,11 @@
 - Configure Python private-memory residency with safe idle parking and a shared per-interpreter fork server, without evicting busy or unsafely captured state.
 - Use permission-checked filesystem, tool, agent, completion and display APIs from ordinary Python, scripts and the explicit named-kernel CLI.
 
+### Changed
+
+- Replace π branding in terminal titles and Poimandres status lines with `p`.
+- Reduce long-session memory use with smaller, idle-expiring rendering caches and release decoded history caches when agents park.
+
 ### Fixed
 
 - Preserve rich Python displays and precise named-kernel cancellation causes without redirecting ordinary program bytes or replaying failed programs.
@@ -22,12 +29,6 @@
 - Preserve named-script results across forks without retaining an internal file handle.
 - Read agent outputs from fresh and target-backed Python through the authenticated host protocol, preserving published content and superseded-run warnings.
 - Keep completion invocation identities isolated to their Python request and resolve explicit kernel interpreters in the correct environment.
-
-### Changed
-
-- Replace π branding in terminal titles and Poimandres status lines with `p`.
-
-- Reduce long-session memory use with smaller, idle-expiring rendering caches and release decoded history caches when agents park.
 
 ## [20.0.2] - 2026-11-04
 
