@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.0.1] - 2026-11-04
+
 ### Fixed
 
 - Fixed binary installs and release verification for private repositories using authenticated GitHub downloads.
