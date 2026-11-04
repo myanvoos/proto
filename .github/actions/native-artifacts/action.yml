@@ -4,6 +4,9 @@ description: >
    the requested targets into place without rebuilding.
 
 inputs:
+   release-tag:
+      description: Draft release containing the native addons
+      required: true
    targets:
       description: Space-separated scripts/build-natives.sh target names
       required: true
@@ -15,12 +18,14 @@ inputs:
 runs:
    using: composite
    steps:
-      - name: Download native addon artifacts
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-           pattern: native-addons-*
-           merge-multiple: true
-           path: ${{ runner.temp }}/proto-native-artifacts
+      - name: Download staged native addons
+        shell: bash
+        env:
+           GH_TOKEN: ${{ github.token }}
+           RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+             --pattern 'pi_natives.*.node' --dir "$RUNNER_TEMP/proto-native-artifacts"
 
       - name: Install native addon targets
         shell: bash

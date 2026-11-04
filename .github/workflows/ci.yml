@@ -55,6 +55,8 @@ jobs:
    release_metadata:
       name: Resolve release metadata
       runs-on: ubuntu-22.04
+      permissions:
+         contents: write
       outputs:
          is-release: ${{ steps.detect.outputs.is-release }}
          release-tag: ${{ steps.detect.outputs.release-tag }}
@@ -65,7 +67,10 @@ jobs:
          - name: Detect release tag at HEAD
            id: detect
            shell: bash
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
            run: |
+              set -euo pipefail
               is_release=false
               release_tag=""
               case "${{ github.ref }}" in
@@ -81,6 +86,16 @@ jobs:
               if [ -n "$release_tag" ]; then
                 echo "HEAD carries release tag $release_tag; this run builds and publishes the release."
                 is_release=true
+                if draft=$(gh release view "$release_tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft); then
+                  if [ "$draft" != true ]; then
+                    echo "::error::Refusing to rebuild published release $release_tag"
+                    exit 1
+                  fi
+                else
+                  gh release create "$release_tag" --repo "$GITHUB_REPOSITORY" --verify-tag \
+                    --target "$GITHUB_SHA" --draft --title "$release_tag" \
+                    --notes "Release builds and validation are in progress."
+                fi
               fi
               {
                 echo "is-release=$is_release"
@@ -106,7 +121,7 @@ jobs:
          - name: Type check workspace
            run: bun run ci:check:full
          - name: Test build gate scripts
-           run: bun test scripts/run-rs-task.test.ts scripts/bun-install.test.ts scripts/install.test.ts
+           run: bun test scripts/run-rs-task.test.ts scripts/bun-install.test.ts scripts/install.test.ts scripts/ci-stage-release-assets.test.ts
 
    rust_validate:
       name: Validate Rust workspace
@@ -130,6 +145,9 @@ jobs:
    native_addons:
       name: "Build native addons: ${{ matrix.arch }}"
       if: github.event_name != 'pull_request'
+      needs: [release_metadata]
+      permissions:
+         contents: write
       strategy:
          fail-fast: false
          matrix:
@@ -168,13 +186,12 @@ jobs:
               # (native-artifacts renames at install time).
               sh scripts/build-natives.sh ${{ matrix.targets }} \
                  --dest "$RUNNER_TEMP/native-addons"
-         - name: Upload native addon artifacts
-           uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-           with:
-              name: native-addons-${{ matrix.arch }}
-              path: ${{ runner.temp }}/native-addons/*.node
-              if-no-files-found: error
-              retention-days: 1
+         - name: Stage native addons in draft release
+           if: needs.release_metadata.outputs.is-release == 'true'
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
+           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$RUNNER_TEMP/native-addons"/*.node
 
    release_gate:
       name: Release validation gate
@@ -234,7 +251,7 @@ jobs:
                  }
       runs-on: ${{ matrix.os }}
       permissions:
-         contents: read
+         contents: write
       steps:
          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
@@ -250,6 +267,7 @@ jobs:
            uses: ./.github/actions/native-artifacts
            with:
               targets: ${{ matrix.native_targets }}
+              release-tag: ${{ needs.release_metadata.outputs.release-tag }}
          - name: Build release binary
            env:
               RELEASE_TARGETS: ${{ matrix.target_id }}
@@ -270,12 +288,12 @@ jobs:
                 runtime_dir="$(mktemp -d)"
                 HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" proto --version
               '
-         - name: Upload release binary artifact
-           uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-           with:
-              name: proto-binary-${{ matrix.target_id }}
-              path: ${{ matrix.binary_path }}
-              retention-days: 1
+         - name: Stage binary in draft release
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
+              BINARY_PATH: ${{ matrix.binary_path }}
+           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH"
 
    release_binary_darwin:
       name: "Release binary: ${{ matrix.target_id }}"
@@ -299,7 +317,7 @@ jobs:
                  }
       runs-on: ${{ matrix.os }}
       permissions:
-         contents: read
+         contents: write
       env:
          MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
       steps:
@@ -332,12 +350,12 @@ jobs:
            run: |
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
-         - name: Upload release binary artifact
-           uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-           with:
-              name: proto-binary-${{ matrix.target_id }}
-              path: ${{ matrix.binary_path }}
-              retention-days: 1
+         - name: Stage binary in draft release
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
+              BINARY_PATH: ${{ matrix.binary_path }}
+           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH"
 
    release_github:
       name: Publish GitHub release
@@ -358,12 +376,26 @@ jobs:
            env:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
            run: bun scripts/ci-release-notes.ts ${{ needs.release_metadata.outputs.release-tag }}
-         - name: Download release binaries
-           uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-           with:
-              pattern: proto-binary-*
-              path: packages/coding-agent/binaries
-              merge-multiple: true
+         - name: Download staged release binaries
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
+           run: |
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern 'proto-linux-*' --pattern 'proto-darwin-*' \
+                --dir packages/coding-agent/binaries
+         - name: Remove intermediate native addons
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
+           run: |
+              set -euo pipefail
+              assets=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --json assets --jq '.assets[].name | select(startswith("pi_natives."))')
+              while IFS= read -r asset; do
+                [ -n "$asset" ] || continue
+                gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes
+              done <<< "$assets"
          - name: Build browser relay artifacts
            run: bun run --cwd packages/browser-relay build
          - name: Generate checksums
@@ -373,18 +405,18 @@ jobs:
                 packages/browser-relay/dist/proto-browser-relay-extension.zip \
                 LICENSE \
                 THIRD-PARTY-NOTICES.txt
-         - name: Create GitHub Release
-           uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-           with:
-              tag_name: ${{ needs.release_metadata.outputs.release-tag }}
-              files: |
-                 packages/coding-agent/binaries/proto-*
-                 packages/browser-relay/dist/proto-browser-relay-extension.zip
-                 LICENSE
-                 THIRD-PARTY-NOTICES.txt
-                 SHA256SUMS.txt
-              body_path: release-notes.md
-              generate_release_notes: true
+         - name: Publish validated draft release
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
+           run: |
+              set -euo pipefail
+              sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" \
+                packages/coding-agent/binaries/proto-* \
+                packages/browser-relay/dist/proto-browser-relay-extension.zip \
+                LICENSE THIRD-PARTY-NOTICES.txt SHA256SUMS.txt
+              gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --draft=false --latest --notes-file release-notes.md
 
    release_github_verify:
       name: Verify published release (macOS)
