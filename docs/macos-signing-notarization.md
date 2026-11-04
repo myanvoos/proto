@@ -53,8 +53,9 @@ signing or credential failure.
 
 What this means in practice:
 
-- `curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install.sh | sh` — `curl` sets no quarantine bit, so
-  Gatekeeper is not consulted.
+- Command-line installer downloads (`gh` for this private repository, `curl` for
+  public releases) set no quarantine bit, so Gatekeeper is not consulted. See
+  the [authenticated install instructions](../README.md#install).
 - Homebrew **formula** installs — Homebrew does not quarantine formula files, so
   Gatekeeper is not consulted.
 - Anything that **quarantines** the binary (a browser download, or a Homebrew

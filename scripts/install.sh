@@ -2,7 +2,7 @@
 set -e
 
 # PROTO Coding Agent Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install.sh | sh
+# Usage: gh api repos/myanvoos/proto/contents/scripts/install.sh -H 'Accept: application/vnd.github.raw' | sh
 #
 # Options:
 #   --binary       Install the prebuilt release binary (default)
@@ -227,28 +227,29 @@ install_binary() {
     fi
 
     BINARY="proto-${PLATFORM}-${ARCH}"
-    # Get release tag
+    # Public releases need only curl. Private releases use gh's existing
+    # authentication for both metadata and the asset; never put tokens in URLs.
+    RELEASE_API="repos/${REPO}/releases/latest"
     if [ -n "$REF" ]; then
         echo "Fetching release $REF..."
-        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/tags/${REF}" 2>/dev/null); then
-            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-        else
-            echo "Release tag not found: $REF"
-            echo "For branch/commit installs, use --source with --ref."
-            exit 1
-        fi
+        RELEASE_API="repos/${REPO}/releases/tags/${REF}"
     else
         echo "Fetching latest release..."
-        if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null); then
-            LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-        else
-            LATEST=""
-        fi
     fi
-
+    AUTH_DOWNLOAD=false
+    if RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/${RELEASE_API}" 2>/dev/null); then
+        :
+    elif command -v gh >/dev/null 2>&1 && RELEASE_JSON=$(gh api "$RELEASE_API" 2>/dev/null); then
+        AUTH_DOWNLOAD=true
+    else
+        echo "No accessible published release found for ${REPO}${REF:+ at $REF}."
+        echo "For a private repository, run 'gh auth login' with an account that has repository access."
+        echo "For branch/commit installs, use --source with --ref."
+        exit 1
+    fi
+    LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
     if [ -z "$LATEST" ]; then
-        echo "No published release found for ${REPO}."
-        echo "Install from source instead: --source"
+        echo "GitHub returned release metadata without a tag for ${REPO}."
         exit 1
     fi
     echo "Using version: $LATEST"
@@ -257,7 +258,11 @@ install_binary() {
     # Download binary
     BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
     echo "Downloading ${BINARY}..."
-    curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "${INSTALL_DIR}/proto"
+    if [ "$AUTH_DOWNLOAD" = true ]; then
+        gh release download "$LATEST" --repo "$REPO" --pattern "$BINARY" --output "${INSTALL_DIR}/proto" --clobber
+    else
+        curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "${INSTALL_DIR}/proto"
+    fi
     chmod +x "${INSTALL_DIR}/proto"
 
     # Verify the freshly installed binary can actually start before reporting

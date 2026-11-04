@@ -7,12 +7,20 @@ This harness bets on codemode, REPL-as-execution-surface, and letting agents wri
 
 ## Install
 
+This repository is private. Sign in with the [GitHub CLI](https://cli.github.com/)
+using an account with repository access, then fetch and run the installer:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install.sh | sh
+gh auth login
+gh api repos/myanvoos/proto/contents/scripts/install.sh -H 'Accept: application/vnd.github.raw' | sh
 ```
 
-Downloads a prebuilt binary (macOS / Linux, glibc and musl) from GitHub Releases into
-`~/.local/bin`. Pass `--source` to build and install from source with Bun instead.
+Downloads the latest prebuilt binary (macOS / Linux, glibc and musl) from GitHub
+Releases into `~/.local/bin`, using GitHub CLI authentication for private releases.
+The installer also supports anonymous downloads when used with a public repository.
+Pass `--ref <release-tag>` to pin a binary release, or `--source` to build and install
+from source with Bun instead. Private releases are available only to accounts with
+repository access; publishing a release does not change repository visibility.
 
 ## Highlights
 

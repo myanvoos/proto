@@ -106,7 +106,7 @@ jobs:
          - name: Type check workspace
            run: bun run ci:check:full
          - name: Test build gate scripts
-           run: bun test scripts/run-rs-task.test.ts scripts/bun-install.test.ts
+           run: bun test scripts/run-rs-task.test.ts scripts/bun-install.test.ts scripts/install.test.ts
 
    rust_validate:
       name: Validate Rust workspace
@@ -396,8 +396,10 @@ jobs:
          MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
       steps:
          - name: Download published macOS arm64 binary
+           env:
+              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
            run: |
-              curl -fsSL -o proto-darwin-arm64 "https://github.com/${{ github.repository }}/releases/download/${{ needs.release_metadata.outputs.release-tag }}/proto-darwin-arm64"
+              gh release download "${{ needs.release_metadata.outputs.release-tag }}" --repo "${{ github.repository }}" --pattern proto-darwin-arm64
               chmod +x proto-darwin-arm64
          - name: Verify published macOS arm64 binary
            run: |
