@@ -166,17 +166,22 @@ it("deleting a session also removes its stale rewrite backups so listing cannot 
 
 it("an entry appended while ensureOnDisk publishes still reaches the file", async () => {
 	const { cwdA, source } = await fixture();
-	const session = SessionManager.create(cwdA, source);
+	const storage = new FileSessionStorage();
+	const session = SessionManager.create(cwdA, source, storage);
 	const sessionFile = session.getSessionFile()!;
-	const writeFile = fs.promises.writeFile.bind(fs.promises);
+	const rename = storage.renameSync.bind(storage);
 	let appendedDuringPublish = false;
-	vi.spyOn(fs.promises, "writeFile").mockImplementation(async (target, data, options) => {
-		await writeFile(target, data, options);
-		// The publish holds the session file lock until its rename commits.
-		if (!appendedDuringPublish && path.basename(target.toString()).startsWith(`.${path.basename(sessionFile)}.`)) {
+	vi.spyOn(storage, "renameSync").mockImplementation((from, to) => {
+		// The complete staged body exists, but publication still holds the session file lock.
+		if (
+			!appendedDuringPublish &&
+			to === sessionFile &&
+			path.basename(from).startsWith(`.${path.basename(sessionFile)}.`)
+		) {
 			appendedDuringPublish = true;
 			session.appendMessage({ role: "user", content: "appended mid-publish", timestamp: 1 });
 		}
+		rename(from, to);
 	});
 
 	await session.ensureOnDisk();

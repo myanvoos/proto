@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve committed text when shrinking a terminal whose empty padding below the cursor is discarded instead of scrolled.
+
 ## [19.2.1] - 2026-11-03
 
 ### Fixed

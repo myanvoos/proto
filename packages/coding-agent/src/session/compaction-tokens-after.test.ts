@@ -9,7 +9,8 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import type { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRuntime } from "../extensibility/extensions/loader";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { SessionManager } from "./session-manager";
@@ -75,20 +76,24 @@ describe("compaction tokensAfter projection", () => {
 					},
 				}
 			: undefined;
-		const extensionRunner = {
-			hasHandlers: (event: string) => event === "session_before_compact",
-			emit: async (event: { type: string }) =>
-				event.type === "session_before_compact"
-					? {
-							compaction: {
-								summary: "short summary",
-								firstKeptEntryId,
-								tokensBefore: 5_000,
-								preserveData,
-							},
-						}
-					: undefined,
-		} as unknown as ExtensionRunner;
+		const modelRegistry = new ModelRegistry(authStorage!);
+		const extensionRunner = Object.assign(
+			new ExtensionRunner([], new ExtensionRuntime(), process.cwd(), sessionManager, modelRegistry),
+			{
+				hasHandlers: (event: string) => event === "session_before_compact",
+				emit: async (event: { type: string }) =>
+					event.type === "session_before_compact"
+						? {
+								compaction: {
+									summary: "short summary",
+									firstKeptEntryId,
+									tokensBefore: 5_000,
+									preserveData,
+								},
+							}
+						: undefined,
+			},
+		);
 		const session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -100,7 +105,7 @@ describe("compaction tokensAfter projection", () => {
 				"compaction.selfSummary": false,
 				"compaction.keepRecentTokens": 1,
 			}),
-			modelRegistry: new ModelRegistry(authStorage!),
+			modelRegistry,
 			extensionRunner,
 		});
 		sessions.push(session);

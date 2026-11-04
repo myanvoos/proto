@@ -1,6 +1,6 @@
 # RPC Protocol Reference
 
-RPC mode runs the coding agent as a newline-delimited JSON protocol over stdio.
+RPC mode runs the coding agent as a newline-delimited JSON protocol over stdio. This reference preserves the supported stdio v1/v2 SDK interface. The daemon-backed full TUI uses the distinct [node protocol 3](#interactive-host-node-protocol-3) below; it does not accept implicit-root stdio commands as fallback aliases.
 
 - **stdin**: commands (`RpcCommand`), extension UI responses, and host-tool updates/results
 - **stdout**: a ready frame, command responses (`RpcResponse`), session/agent events, extension UI requests, host-tool requests/cancellations
@@ -12,6 +12,68 @@ Primary implementation:
 - `packages/coding-agent/src/session/agent-session.ts`
 - `packages/agent/src/agent.ts`
 - `packages/agent/src/agent-loop.ts`
+
+## Interactive-host node protocol 3
+
+Normal persisted full-TUI launches run the real `InteractiveMode` in the existing broker-supervised session host. Terminal attachment relays that host's PTY; its socket serves typed node operations against the same session instances. There is one host for the tree, not a process per node. See [session-host.md](./session-host.md) for detach, restart, terminal leases, and geometry.
+
+Canonical interfaces: `session/node-backend.ts` (`NodeBackend`, `NodeTarget`, `NodeOperation`, `NodeReply`), `session-host/node-protocol.ts` (wire validation), `session-host/node-service.ts` (owner service), and `modes/rpc/node-client.ts` (`RpcNodeBackend` and response decoding). Direct SDK/tests use `DirectNodeBackend`; hosted clients use `RpcNodeBackend`, also exported through `rpc-client.ts`.
+
+Connect to the interactive host socket and negotiate before writing:
+
+```json
+{ "id": "client-unique-1", "type": "negotiate_protocol", "protocolVersion": 3 }
+```
+
+Success is `{ id, type: "response", command: "negotiate_protocol", success: true, data: { protocolVersion: 3, attachmentPolicy: "latest-wins", controllerLease, root } }`. `root` is the authoritative `NodeSnapshot`: captured target, explicit ownership topology, name, history head/count, live/parked state, streaming/compaction state, parent, and children. Compatibility requires matching command, success, and version—not just a response-shaped object. No v1 ready frame is required on this socket; outbound objects use the existing v2 lossless chunk framing and `RpcFrameDecoder`.
+
+Every request has a nonempty string `id` (at most 256 characters). Replies echo it; clients match IDs, never event order. The bundled client uses a unique client identity plus connection epoch/counter, rejects pending requests on disconnect, and negotiates authoritative state on reconnect. An old connection's pending response is not delivered to its replacement. Accepted work can still finish after detach, so a missing reply is an **unknown outcome**, not permission to repeat the mutation.
+
+| Request | Required fields | Success data |
+| --- | --- | --- |
+| `node_snapshot` | `nodeId` | Current authoritative `NodeSnapshot`; no runtime revival. |
+| `node_operation` | `target`, `operation`, `controllerLease` | `{ snapshot, result }`, with a discriminated typed result. |
+| `node_subscribe` | `nodeIds`, `controllerLease` | The subscribed `nodeIds`; replaces this attachment's subscription set. |
+
+`target` is the immutable `{ nodeId, generation, revision }` captured when the user acts. Treat `revision` as opaque. Normal mutations validate the revision; observations and cancellation controls validate identity/generation without requiring an unchanged append-only history tail. Unknown nodes never resolve to root or the display label `Main`. Abandoned/stopped generations are browse-only. A replaced socket invalidates its controller lease even before the next client negotiates; terminal input/resize authority is a separate broker attachment lease. Multiple writers are not granted by read subscriptions.
+
+Example node mutation (copy the target and lease from authoritative responses):
+
+```json
+{
+  "id": "client-unique-2",
+  "type": "node_operation",
+  "target": { "nodeId": "durable-node-id", "generation": 2, "revision": "opaque-captured-revision" },
+  "controllerLease": "lease-from-negotiation",
+  "operation": { "type": "rename", "name": "investigation" }
+}
+```
+
+Typed operations are not converted into slash-command text:
+
+| Operation | Fields / behavior |
+| --- | --- |
+| `context` | Live context usage/stats; `runtime: "parked"` explicitly indicates unavailable live accounting. |
+| `jobs` | Owned job snapshot; parked runtime availability is explicit. |
+| `tree` | Optional `offset`, `limit` (1–256); metadata rows, `totalEntries`, optional `nextOffset`. |
+| `history` | Optional `cursor`, `limit` (1–512); bounded semantic history page. |
+| `prompt` | `message`, optional `images`, `streamingBehavior`; result follows turn completion, unlike stdio's immediate prompt acknowledgement. |
+| `abort`, `abort_compaction`, `abort_retry` | Targeted cancellation controls; usable while a turn/mutation is active. |
+| `cancel_job` | `jobId`; cancellation is scoped to the selected node's ownership. |
+| `compact` | Optional `instructions`. |
+| `model`, `thinking` | `provider`, `modelId`, optional `thinkingLevel`; or `level`. |
+| `rename`, `label` | `name`; or `entryId` and optional `label`. |
+| `navigate`, `branch` | `entryId`; navigation optionally accepts `summarize`, `instructions`. |
+| `fork` | New independent root; source ownership/history remains unchanged. Successful foreground adoption renegotiates root/lease. |
+| `extension` | Explicit `name`, `args`; command must declare scope. Non-node scope requires an explicit root target, never a child-to-root fallback. |
+
+Failures are `{ id, type: "response", command, success: false, error, code }`. Codes include `invalid_request`, `protocol_mismatch`, `stale_controller`, `node_not_found`, `stale_target`, `node_read_only`, `node_busy`, `request_capacity`, `stale_cursor`, and `operation_failed`. A committed mutation forces recoverable storage and flushes before success. Fork adoption that becomes stale releases the unused new runtime rather than switching the wrong foreground root. Foreground changes also await the durable host-ownership handoff: per-session locators map newly forked/selected filenames back to the original host, and restart reads its committed foreground pointer instead of replaying the original root selection. The host also persists schema-aware restart arguments after extension discovery: saved model/effort state wins over original launch selectors, and the initial CLI prompt/file input is never resubmitted merely because the process restarted. Missing/corrupt committed ownership fails closed; locating a retained nonforeground root/child never substitutes it for the requested target.
+
+Observation is bounded separately from results: at most 64 outstanding requests and 32 subscribed nodes. Subscriptions emit coalesced `{ type: "node_changed", nodeId, generation }` invalidations (25 ms window), not reliable event replay. Fetch the selected node's state/history after a hint or reconnect. Replies are never fetched from a lossy progress log.
+
+History pages include `messages`, `entryIds`, `headId`, `generation`, `totalMessages`, and optional `nextCursor`. Cursors pin a historical branch head, generation, and page size, so newer appends do not shift older pages. Rewrite/navigation that invalidates the generation/head fails with `stale_cursor`; refresh instead of combining incompatible pages. Hydration is limited to the selected semantic window: at most 512 messages and 1,536 KiB. An oversized indivisible message/tool group produces an explicit history-window notice, not a partial tool-call group. Tree metadata is paged without hydrating transcript payloads. Reading parked/abandoned history uses a read-only lease and does not revive an `AgentSession`.
+
+`proto attach` from a terminal relays an existing full-TUI host; `Ctrl+]` releases that attachment without aborting work or shutting down the tree. Scripted line-oriented attach to such a host reports an explicit protocol-3 incompatibility and leaves it running. Stdio v1/v2 clients below remain supported for `--mode rpc` and RPC-only hosts; those commands are not an alternate lane on the interactive socket.
 
 ## Startup
 
@@ -192,7 +254,7 @@ correlate it via `id`. Ordering across concurrent commands is not guaranteed
 - `{ id?, type: "get_messages" }`
 - `{ id?, type: "get_messages_page", cursor?: string, limit?: number }`
 
-`get_messages_page` returns a stable chronological page with `messages`, `totalMessages`, and an opaque `nextCursor` when more messages remain. Cursors are bound to the session ID, durable leaf, and message count. The server rejects stale cursors if the session changes between requests, and refuses to start a paging walk while the session is streaming or compacting. Failed page requests carry a machine-readable `code` on the error response — `session_busy` (session is streaming or compacting) or `stale_cursor` (the snapshot behind the cursor changed, e.g. a background bash appended a message between pages) — so clients can react without matching error-message text. Pages contain at most 256 messages and normally stay below the v1 physical-frame ceiling. A v1 caller can page ordinary histories, but an individual message whose response exceeds that ceiling produces an overflow error; retrieving it losslessly requires negotiated v2 framing.
+`get_messages_page` returns a stable chronological page with `messages`, `totalMessages`, and an opaque `nextCursor` when more messages remain. Cursors are bound to the session ID, durable leaf, and message count. The server rejects stale cursors if the session changes between requests, and refuses to start a paging walk while the session is streaming or compacting. Failed page requests carry a machine-readable `code` on the error response — `session_busy` (session is streaming or compacting) or `stale_cursor` (the snapshot behind the cursor changed, e.g. a background bash appended a message between pages) — so clients can react without matching error-message text. Pages contain at most 512 messages with a target serialized-message budget of 1,536 KiB; one indivisible oversized message may exceed that target. The default request remains 100 messages, while bundled clients drain with 512-message requests. The v1 physical-frame ceiling is unchanged: any response exceeding it produces an overflow error rather than truncated history. Negotiate v2 lossless chunk framing for expanded pages and large individual messages.
 
 The bundled TypeScript `RpcClient.getMessages()` and Python `RpcClient.get_messages()` drain this paged endpoint automatically after negotiating v2. They retain the legacy monolithic command when connected to a v1 server, and on either `session_busy` or `stale_cursor` they discard partial pages and fall back to the legacy best-effort snapshot. Direct `getMessagesPage()` and `get_messages_page()` calls remain strict so incremental hosts never mix snapshots silently.
 

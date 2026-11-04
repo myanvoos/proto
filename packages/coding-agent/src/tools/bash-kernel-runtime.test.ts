@@ -180,23 +180,20 @@ test("stage output previews preserve UTF-8 while reporting omitted bytes", async
 	});
 });
 
-test("exiting a lane's shell reports the lost state once on that lane's next call", async () => {
+test("exit and errexit end the command, not the lane's shell state", async () => {
 	await fixture(async bash => {
 		await bash.execute("seed", { lane: "exit", command: "export EXIT_MARKER=kept; greet() { :; }" });
 		const exited = await bash.execute("exit", { lane: "exit", command: "exit 7" });
 		expect(exited.details?.execution?.exitCode).toBe(7);
-		expect(text(exited)).not.toContain("state lost");
+		const errexit = await bash.execute("errexit", { lane: "exit", command: "set -e; false; echo unreachable" });
+		expect(text(errexit)).not.toContain("unreachable");
 
 		const next = await bash.execute("next", {
 			lane: "exit",
-			command: '[ -z "$EXIT_MARKER" ] && echo marker-unset; type greet >/dev/null 2>&1 || echo no-function',
+			command: 'printf "%s\\n" "$EXIT_MARKER"; type greet >/dev/null 2>&1 && echo has-function',
 		});
-		expect(text(next)).toContain("<shell> state lost: lane exit shell exited with code 7");
-		expect(text(next)).toContain("marker-unset");
-		expect(text(next)).toContain("no-function");
-
-		const after = await bash.execute("after", { lane: "exit", command: "export EXIT_MARKER=again" });
-		expect(text(after)).not.toContain("state lost");
+		expect(text(next)).not.toContain("state lost");
+		expect(text(next)).toContain("kept\nhas-function");
 	});
 });
 
@@ -285,33 +282,49 @@ test("a background kernel cell force-closed mid-run fails with the close as its 
 	});
 }, 30_000);
 
-test("a backgrounded bash call reuses the session's node kernel instead of starting a new one", async () => {
-	await fixture(async (bash, _cwd, _owner, session) => {
-		const manager = new AsyncJobManager({});
-		const managedSession = {
-			...session,
-			asyncJobManager: manager,
-			settings: {
-				get: (key: string) => (key === "async.enabled" ? true : undefined),
-				getShellConfig: () => ({ env: {} }),
-			},
-		} as unknown as ToolSession;
-		try {
-			await bash.execute("seed-node-main", { command: `node -e 'globalThis.background_marker = 39'` });
-			const before = await handleKernelControl(managedSession, { op: "inspect", language: "node", lane: "main" });
-			const job = await new BashTool(managedSession).execute("background-node", {
-				async: true,
-				command: `node -e 'console.log(globalThis.background_marker)'`,
-			});
-			await manager.waitForAll();
-			expect(manager.getJob(job.details!.async!.jobId)!.resultText).toContain("39");
-			const after = await handleKernelControl(managedSession, { op: "inspect", language: "node", lane: "main" });
-			expect(after.kernel?.generation).toBe(before.kernel?.generation);
-		} finally {
-			await manager.dispose();
-		}
-	});
-}, 30_000);
+for (const language of ["python", "node", "bun"] as const) {
+	test(`repeated background jobs reuse the main ${language} kernel without leaking per-job kernels`, async () => {
+		await fixture(async (bash, _cwd, _owner, session) => {
+			const manager = new AsyncJobManager({});
+			const managedSession = {
+				...session,
+				asyncJobManager: manager,
+				settings: {
+					get: (key: string) => (key === "async.enabled" ? true : undefined),
+					getShellConfig: () => ({ env: {} }),
+				},
+			} as unknown as ToolSession;
+			const seed = language === "python" ? "background_marker = 39" : "globalThis.background_marker = 39";
+			const increment =
+				language === "python"
+					? "background_marker += 1; print(background_marker)"
+					: "console.log(++globalThis.background_marker)";
+			const read = language === "python" ? "print(background_marker)" : "console.log(globalThis.background_marker)";
+			const cell = (source: string) => `${language} <<'CELL'\n${source}\nCELL`;
+			try {
+				await bash.execute("seed-main", { command: cell(seed) });
+				const before = await handleKernelControl(managedSession, { op: "inspect", language, lane: "main" });
+				const generation = before.kernel?.generation;
+				if (!generation) throw new Error("Seeding the main lane did not start its kernel");
+				const managed = new BashTool(managedSession);
+				for (let index = 0; index < 3; index++) {
+					const job = await managed.execute(`background-${index}`, { async: true, command: cell(increment) });
+					await manager.waitForAll();
+					const completed = manager.getJob(job.details!.async!.jobId)!;
+					expect(completed.status).toBe("completed");
+					expect(completed.resultText).toContain(String(40 + index));
+				}
+				const after = await handleKernelControl(managedSession, { op: "list", language });
+				expect(after.kernels?.map(kernel => ({ lane: kernel.lane, generation: kernel.generation }))).toEqual([
+					{ lane: "main", generation },
+				]);
+				expect(text(await bash.execute("read-main", { command: cell(read) }))).toContain("42");
+			} finally {
+				await manager.dispose();
+			}
+		});
+	}, 30_000);
+}
 
 test("a cancelled lane waiter never executes or resets the active shell", async () => {
 	await fixture(async (_bash, cwd, owner) => {

@@ -37,6 +37,7 @@ export async function reloadTuiPluginState(ctx: InteractiveModeContext): Promise
 export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "marketplace",
+		scope: "application",
 		description: "Manage marketplace plugin sources and installed plugins",
 		acpDescription: "Manage plugins from marketplaces",
 		acpInputHint: "<subcommand>",
@@ -413,6 +414,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 	},
 	{
 		name: "plugins",
+		scope: "application",
 		aliases: ["plugin"],
 		description: "View and manage installed plugins",
 		acpDescription: "Manage plugins",

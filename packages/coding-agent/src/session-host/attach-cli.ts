@@ -8,7 +8,8 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { BINARY_NAME } from "@oh-my-pi/pi-utils/dirs";
 import chalk from "chalk";
 
-import { closeDaemonClients } from "../launch/client";
+import { closeDaemonClients, daemonClientForProject } from "../launch/client";
+import { describeQuietly } from "../launch/ensure";
 import { findMostRecentSession, resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { connectSessionRpc, type SessionRpcConnection } from "./client";
@@ -20,6 +21,9 @@ const commandOutput = {
 };
 
 import { ensureSessionHost, stopSessionHost } from "./ensure";
+import { relayHostedTerminal } from "./interactive-client";
+import { resolveSessionHostOwnership } from "./ownership";
+import { sessionHostDaemonName } from "./protocol";
 
 const REPLAY_LINE_WIDTH = 120;
 const DEFAULT_REPLAY_MESSAGES = 10;
@@ -229,7 +233,8 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 			return;
 		}
 		try {
-			await stopSessionHost(projectDir, sessionFile);
+			const ownership = await resolveSessionHostOwnership(sessionFile);
+			await stopSessionHost(ownership?.projectDir ?? projectDir, ownership?.initialSessionFile ?? sessionFile);
 			console.log(chalk.green(truncateLine(`Stopped session host for ${path.basename(sessionFile)}`)));
 		} finally {
 			// Stopping is a one-shot command: drop the broker connection so the
@@ -257,6 +262,60 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 			process.exitCode = 1;
 			return;
 		}
+	}
+
+	// Determine the existing host interface before any compatibility probe. A v2
+	// probe must never stop a healthy v3 full-TUI owner as "incompatible".
+	const ownership = await resolveSessionHostOwnership(sessionFile);
+	const broker = await daemonClientForProject(ownership?.projectDir ?? projectDir);
+	const daemonName = ownership?.name ?? (await sessionHostDaemonName(sessionFile));
+	if (ownership && ownership.requestedNodeId !== ownership.activeNodeId) {
+		console.error(
+			`The requested session is retained by host ${ownership.name}, whose foreground is ${ownership.activeSessionFile}. Attach that foreground and explicitly select the retained root/node; no replacement host was started.`,
+		);
+		process.exitCode = 1;
+		await closeDaemonClients();
+		return;
+	}
+	const existing = await describeQuietly(broker, daemonName, "session host");
+	if (existing && existing.state !== "exited" && existing.state !== "failed") {
+		const described = await broker.request({ op: "describe", name: daemonName, expectedId: existing.id });
+		if (described.op === "describe" && described.spec.pty) {
+			try {
+				if (process.stdin.isTTY && process.stdout.isTTY) await relayHostedTerminal(broker, described.daemon);
+				else {
+					console.error(
+						"This session is hosted by the full TUI (node protocol 3). Scripted line-oriented attach is incompatible; use the typed RpcNodeBackend client or attach from a terminal. The active host was left running.",
+					);
+					process.exitCode = 1;
+				}
+			} finally {
+				await closeDaemonClients();
+			}
+			return;
+		}
+	}
+
+	if (ownership) {
+		try {
+			if (!process.stdin.isTTY || !process.stdout.isTTY) {
+				console.error(
+					"This session uses full-TUI node protocol 3; scripted line-oriented attach is incompatible. No replacement host was started.",
+				);
+				process.exitCode = 1;
+				return;
+			}
+			const resumed = await ensureSessionHost(ownership.projectDir, ownership.initialSessionFile, {
+				client: broker,
+				interactive: { argv: ["--resume", ownership.initialSessionFile] },
+			});
+			const described = await broker.request({ op: "describe", name: resumed.name });
+			if (described.op !== "describe") throw new Error("Unexpected hosted session description");
+			await relayHostedTerminal(broker, described.daemon);
+		} finally {
+			await closeDaemonClients();
+		}
+		return;
 	}
 
 	const host = await ensureSessionHost(projectDir, sessionFile);

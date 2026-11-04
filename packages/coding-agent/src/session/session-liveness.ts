@@ -145,7 +145,12 @@ export function claimSessionOwnership(sessionFile: string | null | undefined): b
 	return true;
 }
 
-export function releaseSessionOwnership(): void {
+export function releaseSessionOwnership(options?: { removeMarker?: boolean }): void {
+	if (options?.removeMarker && ownedSessionFile && ownershipHandle) {
+		// Remove our advisory marker while the OS lock still excludes a successor.
+		const marker = readSessionLiveState(ownedSessionFile);
+		if (marker.pid === process.pid) fs.rmSync(getSessionLivePath(ownedSessionFile), { force: true });
+	}
 	ownershipHandle?.release();
 	ownershipHandle = null;
 	ownedSessionFile = undefined;

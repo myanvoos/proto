@@ -22,6 +22,7 @@ import type { DaemonCompletionNotification } from "../launch/protocol";
 import type { MCPManager } from "../mcp";
 import type { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import type { AgentRegistry } from "../registry/agent-registry";
+import type { RootExtensionEnvironment } from "../sdk";
 import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
@@ -85,6 +86,7 @@ export type ImageAttachmentEntry = {
 };
 
 export interface ToolSession {
+	rootExtensionEnvironment?: RootExtensionEnvironment;
 	cwd: string;
 
 	additionalDirectories?: string[];
@@ -160,6 +162,11 @@ export interface ToolSession {
 		| "getEntry"
 		| "getSubagentUsage"
 		| "recordSubagentUsage"
+		| "getNodeTopology"
+		| "setNodeTopology"
+		| "getLeafId"
+		| "appendEntriesAtomically"
+		| "getSessionFile"
 	>;
 
 	getEvalKernelOwnerId?: () => string | null;

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [19.2.2] - 2026-11-03
+
+### Changed
+
+- Update Rust dependencies and adapt bundled shell utilities and Linux desktop integrations to their current APIs.
+
+### Fixed
+
+- Restore Linux Rust validation with the current Tokio version.
+
+### Removed
+
+- Remove the unused `ShellRunResult.sessionEnded` flag; `exit` and errexit preserve persistent shell state.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes

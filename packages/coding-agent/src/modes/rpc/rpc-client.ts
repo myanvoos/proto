@@ -7,6 +7,7 @@ import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
 import type { LogoutAccount } from "../../slash-commands/helpers/logout";
+import { TRANSCRIPT_WINDOW_MESSAGES } from "../utils/transcript-window";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import {
 	RPC_MESSAGES_PAGE_BUSY_ERROR,
@@ -36,6 +37,8 @@ import type {
 	RpcSubagentSnapshot,
 	RpcSubagentSubscriptionLevel,
 } from "./rpc-types";
+
+export * from "./node-client";
 
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
@@ -691,7 +694,7 @@ export class RpcClient {
 				let totalMessages: number | undefined;
 				let cursor: string | undefined;
 				do {
-					const page = await this.getMessagesPage({ cursor, limit: 256 });
+					const page = await this.getMessagesPage({ cursor, limit: TRANSCRIPT_WINDOW_MESSAGES });
 					if (
 						!Number.isSafeInteger(page.totalMessages) ||
 						page.totalMessages < 0 ||

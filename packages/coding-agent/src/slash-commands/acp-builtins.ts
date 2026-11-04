@@ -1,5 +1,10 @@
 import type { AvailableCommand } from "@oh-my-pi/pi-utils/acp";
-import { BUILTIN_SLASH_COMMANDS_INTERNAL, lookupBuiltinSlashCommand } from "./builtin-registry";
+import { isSessionCommandTargetCurrent } from "../session/command-target";
+import {
+	BUILTIN_SLASH_COMMANDS_INTERNAL,
+	lookupBuiltinSlashCommand,
+	resolveBuiltinCommandScope,
+} from "./builtin-registry";
 import { parseSlashCommand } from "./helpers/parse";
 import type { AcpBuiltinSlashCommandResult, SlashCommandRuntime } from "./types";
 
@@ -34,6 +39,19 @@ export async function executeAcpBuiltinSlashCommand(
 	if (!parsed) return false;
 	const command = lookupBuiltinSlashCommand(parsed.name);
 	if (!command?.handle) return false;
+	if (runtime.target) {
+		if (!isSessionCommandTargetCurrent(runtime.target, runtime.session, true))
+			throw new Error("Command target changed before dispatch");
+		const scope = resolveBuiltinCommandScope(command, parsed);
+		if (scope !== "node" && runtime.target.sessionManager.getNodeTopology()?.parentId)
+			throw new Error(`/${parsed.name} requires an explicit root/application target`);
+		runtime = {
+			...runtime,
+			session: runtime.target.session,
+			sessionManager: runtime.target.sessionManager,
+			cwd: runtime.target.sessionManager.getCwd(),
+		};
+	}
 	if (parsed.args.length > 0 && !command.allowArgs) {
 		// Same contract as the TUI builtin dispatcher: a known builtin with
 		// unsupported arguments is a usage error, consumed instead of leaking

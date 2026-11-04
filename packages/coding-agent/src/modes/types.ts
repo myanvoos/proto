@@ -18,6 +18,7 @@ import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { AgentSession } from "../session/agent-session";
+import type { SessionCommandTarget } from "../session/command-target";
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
@@ -316,18 +317,18 @@ export interface InteractiveModeContext {
 	reloadChecklist(source?: AgentSession): Promise<void>;
 	toggleChecklistExpansion(): void;
 
-	handleChecklistCommand(args: string): Promise<void>;
-	handleAdvisorStatusCommand(): Promise<void>;
-	handleJobsCommand(): Promise<void>;
-	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;
+	handleChecklistCommand(args: string, target?: SessionCommandTarget): Promise<void>;
+	handleAdvisorStatusCommand(target?: SessionCommandTarget): Promise<void>;
+	handleJobsCommand(target?: SessionCommandTarget): Promise<void>;
+	handleUsageCommand(reports?: UsageReport[] | null, target?: SessionCommandTarget): Promise<void>;
 	handleHelpCommand(): void;
 	handleHotkeysCommand(): void;
-	handleToolsCommand(): void;
-	handleContextCommand(): void;
+	handleToolsCommand(target?: SessionCommandTarget): void;
+	handleContextCommand(target?: SessionCommandTarget): void;
 	handleDebugTranscriptCommand(): Promise<void>;
 	handleClearCommand(): Promise<void>;
-	handleResetContextCommand(): Promise<void>;
-	handleForkCommand(): Promise<void>;
+	handleResetContextCommand(target?: SessionCommandTarget): Promise<void>;
+	handleForkCommand(target?: SessionCommandTarget): Promise<void>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
 	handleMCPCommand(text: string): Promise<void>;
@@ -336,9 +337,10 @@ export interface InteractiveModeContext {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		target?: SessionCommandTarget,
 	): Promise<CompactionOutcome>;
 	handleMoveCommand(targetPath?: string): Promise<void>;
-	handleRenameCommand(title: string): Promise<void>;
+	handleRenameCommand(title: string, target?: SessionCommandTarget): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,
@@ -356,13 +358,13 @@ export interface InteractiveModeContext {
 	showExtensionsDashboard(): void;
 	showAgentsView(scope?: "current" | "global"): Promise<void>;
 	showTrajectoryView(): void;
-	showModelSelector(options?: { temporaryOnly?: boolean }): void;
+	showModelSelector(options?: { temporaryOnly?: boolean }, target?: SessionCommandTarget): void;
 	showPluginSelector(mode?: "install" | "uninstall"): void;
-	showUserMessageSelector(): void;
+	showUserMessageSelector(target?: SessionCommandTarget): void;
 	showCopySelector(): void;
-	showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void>;
-	annotateLastResponse(note?: string): Promise<void>;
-	showBookmarks(): void;
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }, target?: SessionCommandTarget): Promise<void>;
+	annotateLastResponse(note?: string, target?: SessionCommandTarget): Promise<void>;
+	showBookmarks(target?: SessionCommandTarget): void;
 	showSessionSelector(source?: ForeignSessionSource): void;
 	handleResumeSession(sessionPath: string): Promise<void>;
 	handleSessionDeleteCommand(): Promise<void>;

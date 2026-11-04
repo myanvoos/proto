@@ -264,11 +264,14 @@ describe("agents view spend", () => {
 });
 
 describe("collectSessionTreeAgents", () => {
-	test("scopes rows to the session artifact subtree and live children, newest first", async () => {
+	test("scopes rows by durable ownership including live children without history paths, newest first", async () => {
 		const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "proto-tree-agents-")));
 		try {
 			const parentFile = path.join(dir, "2026_parent.jsonl");
-			fs.writeFileSync(parentFile, "");
+			fs.writeFileSync(
+				parentFile,
+				`${JSON.stringify({ type: "session", version: 3, id: "parent", timestamp: "2026-10-01T00:00:00.000Z", cwd: dir })}\n`,
+			);
 			fs.mkdirSync(path.join(dir, "2026_parent"));
 			const sideFile = path.join(dir, "2026_parent", "Side-1.jsonl");
 			// The persisted scan skips transcripts without a session_init or conversation record.
@@ -285,6 +288,9 @@ describe("collectSessionTreeAgents", () => {
 
 			registry.register({
 				id: "Sub-9",
+				nodeId: "Sub-9",
+				parentNodeId: "parent",
+				rootId: "parent",
 				label: "live subagent",
 				kind: "sub",
 				parentId: "Main",

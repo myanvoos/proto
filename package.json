@@ -10,7 +10,7 @@
   "license": "MIT",
   "packageManager": "bun@1.4.4",
   "patchedDependencies": {
-    "puppeteer-core@25.14.0": "patches/puppeteer-core@25.14.0.patch"
+    "puppeteer-core@25.16.0": "patches/puppeteer-core@25.16.0.patch"
   },
   "private": true,
   "scripts": {
@@ -64,17 +64,17 @@
       "packages/*"
     ],
     "catalog": {
-      "@babel/parser": "8.0.7",
-      "@biomejs/biome": "2.5.15",
-      "@huggingface/transformers": "4.3.1",
-      "@napi-rs/cli": "3.10.8",
-      "@oh-my-pi/omptype": "19.2.1",
-      "@oh-my-pi/pi-agent-core": "19.2.1",
-      "@oh-my-pi/pi-ai": "19.2.1",
-      "@oh-my-pi/pi-catalog": "19.2.1",
-      "@oh-my-pi/pi-natives": "19.2.1",
-      "@oh-my-pi/pi-tui": "19.2.1",
-      "@oh-my-pi/pi-utils": "19.2.1",
+      "@babel/parser": "8.1.0",
+      "@biomejs/biome": "2.6.4",
+      "@huggingface/transformers": "4.3.2",
+      "@napi-rs/cli": "3.10.12",
+      "@oh-my-pi/omptype": "19.2.2",
+      "@oh-my-pi/pi-agent-core": "19.2.2",
+      "@oh-my-pi/pi-ai": "19.2.2",
+      "@oh-my-pi/pi-catalog": "19.2.2",
+      "@oh-my-pi/pi-natives": "19.2.2",
+      "@oh-my-pi/pi-tui": "19.2.2",
+      "@oh-my-pi/pi-utils": "19.2.2",
       "@opentelemetry/api": "1.10.0",
       "@opentelemetry/api-logs": "0.223.0",
       "@opentelemetry/context-async-hooks": "3.0.0",
@@ -91,8 +91,8 @@
       "chalk": "6.0.1",
       "diff": "9.0.0",
       "lru-cache": "11.5.3",
-      "puppeteer-core": "25.14.0",
-      "typebox": "1.4.2"
+      "puppeteer-core": "25.16.0",
+      "typebox": "1.4.3"
     }
   },
   "engines": {

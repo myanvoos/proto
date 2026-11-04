@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { ModelRegistry } from "../../config/model-registry";
+import { Settings } from "../../config/settings";
+import { AgentSession } from "../../session/agent-session";
+import { AuthStorage } from "../../session/auth-storage";
 import { SessionManager } from "../../session/session-manager";
 import { BUILTIN_SESSION_SLASH_COMMANDS } from "../../slash-commands/builtin-session";
 import type { ParsedSlashCommand, TuiSlashCommandRuntime } from "../../slash-commands/types";
@@ -38,24 +43,36 @@ interface Harness {
 }
 
 const tempDirs: string[] = [];
-const managers: SessionManager[] = [];
+const sessions: AgentSession[] = [];
+const authStores: AuthStorage[] = [];
 
 afterEach(async () => {
-	for (const manager of managers.splice(0)) await manager.close();
+	for (const session of sessions.splice(0)) await session.dispose();
+	for (const authStorage of authStores.splice(0)) authStorage.close();
 	for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function harness(): Harness {
+async function harness(): Promise<Harness> {
 	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "proto-annotate-"));
 	tempDirs.push(cwd);
 	const sessionManager = SessionManager.create(cwd, cwd);
-	managers.push(sessionManager);
+	const authStorage = await AuthStorage.create(":memory:");
+	authStores.push(authStorage);
+	const session = new AgentSession({
+		agent: new Agent({ initialState: { systemPrompt: [], tools: [], messages: [] } }),
+		sessionManager,
+		settings: Settings.isolated({}),
+		modelRegistry: new ModelRegistry(authStorage),
+	});
+	sessions.push(session);
 	const statuses: string[] = [];
 	const treeOpens: Array<{ filterMode?: string } | undefined> = [];
 	const state = { answer: undefined as string | undefined };
 
 	const ctx = {
+		session,
 		sessionManager,
+		viewSession: session,
 		showStatus: (message: string) => statuses.push(message),
 		showError: (message: string) => statuses.push(`ERROR: ${message}`),
 		showHookEditor: async () => state.answer,
@@ -85,7 +102,7 @@ test("bookmarks the last assistant response, and an empty note clears it", async
 	// Contract: /annotate labels the response the user just read, and clearing
 	// the note deletes the bookmark. Without the clear path a bookmark could
 	// never be removed.
-	const h = harness();
+	const h = await harness();
 	h.sessionManager.appendMessage({ role: "user", content: "question", timestamp: 0 });
 	const firstId = h.sessionManager.appendMessage(assistant("older answer"));
 	h.sessionManager.appendMessage({ role: "user", content: "again", timestamp: 0 });
@@ -104,7 +121,7 @@ test("bookmarks the last assistant response, and an empty note clears it", async
 test("cancelling the note prompt leaves an existing bookmark untouched", async () => {
 	// Contract: escaping the prompt must abort. The previous editor saved a
 	// bookmark even when the user escaped, with no way to delete it afterwards.
-	const h = harness();
+	const h = await harness();
 	h.sessionManager.appendMessage({ role: "user", content: "question", timestamp: 0 });
 	const id = h.sessionManager.appendMessage(assistant("answer"));
 
@@ -121,17 +138,17 @@ test("cancelling the note prompt leaves an existing bookmark untouched", async (
 });
 
 test("refuses to bookmark when the session has no assistant prose", async () => {
-	const h = harness();
+	const h = await harness();
 	h.sessionManager.appendMessage({ role: "user", content: "question", timestamp: 0 });
 
 	await h.controller.annotateLastResponse("nothing to anchor to");
 	expect(h.statuses.at(-1)).toBe("No agent response to bookmark yet");
 });
 
-test("browsing bookmarks opens the labelled-only tree, and says so when empty", () => {
+test("browsing bookmarks opens the labelled-only tree, and says so when empty", async () => {
 	// Contract: /annotate view must not open an empty tree overlay, and when
 	// bookmarks exist it must filter to them rather than showing everything.
-	const h = harness();
+	const h = await harness();
 	h.sessionManager.appendMessage({ role: "user", content: "question", timestamp: 0 });
 	const id = h.sessionManager.appendMessage(assistant("answer"));
 

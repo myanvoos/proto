@@ -12,7 +12,7 @@ pub fn parse(input: &str) -> Result<ast::ArithmeticExpr, error::WordParseError> 
     cacheable_parse(input.to_owned())
 }
 
-#[cached::proc_macro::cached(size = 64, result = true)]
+#[cached::proc_macro::cached(max_size = 64)]
 fn cacheable_parse(input: String) -> Result<ast::ArithmeticExpr, error::WordParseError> {
     tracing::debug!(target: "arithmetic", "parsing arithmetic expression: '{input}'");
     arithmetic::full_expression(input.as_str())

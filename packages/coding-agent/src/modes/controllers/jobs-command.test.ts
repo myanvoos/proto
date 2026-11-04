@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import * as os from "node:os";
 import type { Component } from "@oh-my-pi/pi-tui";
+import { SessionManager } from "../../session/session-manager";
 import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { CommandController } from "./command-controller";
@@ -10,6 +11,7 @@ test("/jobs renders home-prefixed paths compactly and never emits raw tabs", asy
 	let output: Component[] = [];
 	const controller = new CommandController({
 		viewSession: {
+			sessionManager: SessionManager.inMemory(),
 			getAsyncJobSnapshot: () => ({
 				running: [
 					{

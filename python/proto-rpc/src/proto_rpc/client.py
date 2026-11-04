@@ -1011,7 +1011,7 @@ class RpcClient:
                 total_messages: int | None = None
                 cursor: str | None = None
                 while True:
-                    page = self.get_messages_page(cursor=cursor, limit=256)
+                    page = self.get_messages_page(cursor=cursor, limit=512)
                     if (
                         total_messages is not None
                         and page.total_messages != total_messages

@@ -19,6 +19,7 @@ function createMode(skillCommands: Map<string, Skill>) {
 		finishPendingSubmission: vi.fn(),
 		showError: vi.fn(),
 		checkShutdownRequested: vi.fn(async () => {}),
+		getToolUIContext: () => undefined,
 		skillCommands,
 	};
 }
@@ -67,9 +68,9 @@ describe("submitInteractiveInput", () => {
 		await submitInteractiveInput(mode, session, createInput("/skill:missing go"));
 
 		expect(session.promptCustomMessage).not.toHaveBeenCalled();
-		expect(session.prompt).toHaveBeenCalledWith("/skill:missing go", {
-			images: undefined,
-			streamingBehavior: "followUp",
-		});
+		expect(session.prompt).toHaveBeenCalledWith(
+			"/skill:missing go",
+			expect.objectContaining({ streamingBehavior: "followUp" }),
+		);
 	});
 });

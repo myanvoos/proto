@@ -10,6 +10,7 @@ import type { SlashCommandSpec } from "./types";
 export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "advisor",
+		scope: command => (command.args.trim() === "configure" ? "application" : "node"),
 		description: "Toggle the advisor (a second model that reviews each turn and injects notes)",
 		acpDescription: "Toggle advisor",
 		acpInputHint: "[on|off|status|configure]",
@@ -21,7 +22,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			const stats = runtime.ctx.session.getAdvisorStats();
+			const stats = (runtime.target?.session ?? runtime.ctx.viewSession).getAdvisorStats();
 			if (stats.active && stats.advisors.length > 1) return `Advisor: on (${stats.advisors.length} advisors)`;
 			if (stats.active && stats.model) return `Advisor: on (${stats.model.provider}/${stats.model.id})`;
 			if (stats.configured) return "Advisor: configured, no model";
@@ -68,8 +69,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		handleTui: async (command, runtime) => {
 			const { verb } = parseSubcommand(command.args);
 			if (!verb || verb === "toggle") {
-				const active = runtime.ctx.session.toggleAdvisorEnabled();
-				const configured = runtime.ctx.session.isAdvisorEnabled();
+				const active = (runtime.target?.session ?? runtime.ctx.viewSession).toggleAdvisorEnabled();
+				const configured = (runtime.target?.session ?? runtime.ctx.viewSession).isAdvisorEnabled();
 				if (active) {
 					runtime.ctx.showStatus("Advisor enabled.");
 				} else if (configured) {
@@ -82,7 +83,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			if (verb === "on") {
-				const active = runtime.ctx.session.setAdvisorEnabled(true);
+				const active = (runtime.target?.session ?? runtime.ctx.viewSession).setAdvisorEnabled(true);
 				runtime.ctx.showStatus(
 					active ? "Advisor enabled." : "Advisor setting enabled, but no model is assigned to the 'advisor' role.",
 				);
@@ -91,14 +92,14 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			if (verb === "off") {
-				runtime.ctx.session.setAdvisorEnabled(false);
+				(runtime.target?.session ?? runtime.ctx.viewSession).setAdvisorEnabled(false);
 				runtime.ctx.showStatus("Advisor disabled.");
 				refreshStatusLine(runtime.ctx);
 				clearSubmittedText(runtime);
 				return;
 			}
 			if (verb === "status") {
-				await runtime.ctx.handleAdvisorStatusCommand();
+				await runtime.ctx.handleAdvisorStatusCommand(runtime.target);
 				clearSubmittedText(runtime);
 				return;
 			}
@@ -113,6 +114,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "browser",
+		scope: "tree",
 		description: "Toggle browser headless vs visible mode",
 		acpInputHint: "[headless|visible]",
 		subcommands: [
@@ -186,6 +188,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "copy",
+		scope: "node",
 		description: "Pick text or code from the conversation to copy",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -196,7 +199,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			if (arg === "code") {
-				const block = extractLastCodeBlock(runtime.ctx.session.messages);
+				const block = extractLastCodeBlock((runtime.target?.session ?? runtime.ctx.viewSession).messages);
 				if (!block) {
 					runtime.ctx.showStatus("No code block to copy.");
 					clearSubmittedText(runtime);
@@ -208,7 +211,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				return;
 			}
 			if (arg === "cmd" || arg === "command") {
-				const lastCommand = extractLastCommand(runtime.ctx.session.messages);
+				const lastCommand = extractLastCommand((runtime.target?.session ?? runtime.ctx.viewSession).messages);
 				if (!lastCommand) {
 					runtime.ctx.showStatus("No command to copy.");
 					clearSubmittedText(runtime);

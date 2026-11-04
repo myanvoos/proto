@@ -13,7 +13,8 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import type { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRuntime } from "../extensibility/extensions/loader";
 import vendorMemoryExtension from "../vendor/pi-blackhole/index.js";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
@@ -125,6 +126,7 @@ describe("user message retention across compaction", () => {
 			mock.stream(requestModel, context, streamOptions);
 
 		const sessionManager = SessionManager.inMemory();
+		const modelRegistry = new ModelRegistry(authStorage!);
 		session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -136,26 +138,29 @@ describe("user message retention across compaction", () => {
 				"compaction.enabled": true,
 				"compaction.selfSummary": true,
 			}),
-			modelRegistry: new ModelRegistry(authStorage!),
+			modelRegistry,
 			sideStreamFn: streamFn,
-			extensionRunner: {
-				hasHandlers: (event: string) => (memory.handlers.get(event)?.length ?? 0) > 0,
-				emit: async (event: { type: string }) => {
-					const ctx = {
-						cwd: process.cwd(),
-						hasUI: false,
-						ui: { notify() {} },
-						model: { provider: model.provider, id: model.id, api: model.api },
-						modelRegistry: session.modelRegistry,
-						sessionManager,
-					};
-					let result: unknown;
-					for (const handler of memory.handlers.get(event.type) ?? []) {
-						result = (await handler(event, ctx)) ?? result;
-					}
-					return result;
+			extensionRunner: Object.assign(
+				new ExtensionRunner([], new ExtensionRuntime(), process.cwd(), sessionManager, modelRegistry),
+				{
+					hasHandlers: (event: string) => (memory.handlers.get(event)?.length ?? 0) > 0,
+					emit: async (event: { type: string }) => {
+						const ctx = {
+							cwd: process.cwd(),
+							hasUI: false,
+							ui: { notify() {} },
+							model: { provider: model.provider, id: model.id, api: model.api },
+							modelRegistry: session.modelRegistry,
+							sessionManager,
+						};
+						let result: unknown;
+						for (const handler of memory.handlers.get(event.type) ?? []) {
+							result = (await handler(event, ctx)) ?? result;
+						}
+						return result;
+					},
 				},
-			} as unknown as ExtensionRunner,
+			),
 		});
 
 		const appendUser = (text: string) => {

@@ -134,6 +134,20 @@ describe("session RPC client lifecycle", () => {
 		expect(await bounded(ended.promise)).toBeUndefined();
 	});
 
+	test("response-shaped incompatibility and unsuccessful negotiation never count as serving", async () => {
+		const replies = [
+			{ type: "response", id: "probe", command: "negotiate_protocol", success: false, error: "unsupported" },
+			{ type: "response", id: "probe", command: "negotiate_protocol", success: true, data: { protocolVersion: 1 } },
+			{ type: "response", id: "probe", command: "get_state", success: true, data: { protocolVersion: 2 } },
+		];
+		for (const reply of replies) {
+			const path = await serve(socket => {
+				socket.once("data", () => socket.write(`${JSON.stringify(reply)}\n`));
+			});
+			expect((await negotiateSessionHost(path, 100)).socket).toBe("refused");
+		}
+	});
+
 	test("each successful probe closes its socket", async () => {
 		let connections = 0;
 		let closed = 0;
@@ -143,7 +157,9 @@ describe("session RPC client lifecycle", () => {
 				closed++;
 			});
 			socket.once("data", () =>
-				socket.write(`${JSON.stringify({ type: "response", id: "probe", success: true })}\n`),
+				socket.write(
+					`${JSON.stringify({ type: "response", id: "probe", command: "negotiate_protocol", success: true, data: { protocolVersion: 2 } })}\n`,
+				),
 			);
 		});
 		for (let i = 0; i < 20; i++) expect((await negotiateSessionHost(path, 100)).socket).toBe("live");

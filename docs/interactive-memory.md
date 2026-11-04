@@ -21,7 +21,7 @@ Session managers retain small structural entries and keep raw entries in tempora
 
 Compaction archives append independently compressed batches instead of decompressing and rewriting every prior archived message on every compaction. Legacy archives remain readable. Reopen, branch, rewind and export preserve the saved history, and malformed archive data fails closed for destructive rewrites.
 
-The ordinary persistence size policy is unchanged: strings exceeding **500,000 characters** are truncated in their saved representation. Their complete current-process version may exist only in the temporary entry store; it is not guaranteed after process restart or temporary-directory deletion. Signed/encrypted provider replay content and images retain their separate durable blob handling. A missing or corrupt temporary entry can fall back to its display preview, but cannot authorize overwriting the durable transcript from that preview: reopen the session before rewriting it. See [session storage](./session.md).
+The ordinary persistence size policy is unchanged: strings exceeding **500,000 characters** are truncated in their saved representation. Their complete current-process version may exist only in the temporary entry store; it is not guaranteed after process restart or temporary-directory deletion. Signed/encrypted provider replay content, images, and declared-state manifests retain their separate lossless durable blob handling; declared state is not truncated into a history preview. A missing or corrupt temporary entry can fall back to its display preview, but cannot authorize overwriting the durable transcript from that preview: reopen the session before rewriting it. See [session storage](./session.md).
 
 Explicit APIs such as `getEntries()`, `getBranch()`, `getTree()` and unwindowed transcript export still materialize the requested collection. Callers needing bounded traversal use metadata views, entry iterators, or windowed transcript access. Returning a caller-requested full array cannot have a constant-memory contract.
 
@@ -29,16 +29,19 @@ Explicit APIs such as `getEntries()`, `getBranch()`, `getTree()` and unwindowed 
 
 | Retained data | Default bound and behavior |
 |---|---|
-| Committed main-transcript replay | 1,000 blocks and 2 MiB estimated source plus rendered rows; active output is not discarded |
-| Main UI history page | 256 messages and 2 MiB estimated payload, with semantic groups admitted before hydration |
-| Fleet raw-file viewer window | 2 MiB serialized span, 256 semantic groups, 512 JSONL records, and 1,024 estimated render units |
-| Fleet transient stream | 2 MiB estimated retained source and 256 content blocks; checked before partial argument decoding |
+| Committed main-transcript replay | 2,000 blocks and 4 MiB estimated source plus rendered rows; active output is not discarded |
+| Main UI history page | 512 messages and 4 MiB estimated payload, with semantic groups admitted before hydration |
+| Fleet raw-file viewer window | 4 MiB serialized span, 512 semantic groups, 1,024 JSONL records, and 2,048 estimated render units |
+| Fleet transient stream | 4 MiB estimated retained source and 512 content blocks; checked before partial argument decoding |
 | Markdown rendering cache | 4,096 entries / 24 MiB total / 4 MiB per entry, counting source keys and rendered rows; oversized sources render without cache admission. Incremental fragment caches have the same accounting limits |
+| Node/RPC history page | At most 512 messages and a 1,536 KiB page budget; typed node pages preserve semantic groups and omit oversized indivisible groups visibly |
 | Session picker and tree view | Search/ranking metadata and selected visible rows, not one component or full rendered string per historical row |
 
 Committed blocks retire only after acknowledged emission into terminal history. Disposal clears builder pointers, layout/replay caches, image ownership and obsolete streaming/optimistic components. Message-to-component reuse is weak and restricted to components still live in the previous view.
 
 Terminal scrollback is best effort. After replay eviction, a full redraw or width change shows an explicit **`/history` / `Alt+PgUp`** notice instead of claiming all old rows remain replayable. Fleet history opens archived pages lazily; returning to the newest page includes output received while browsing older history. Oversized records/groups show a bounded notice with reversible older/newer navigation rather than constructing all their cards first.
+
+The doubled history windows do not change active-work queues, tree metadata pages, result retention or interpreter admission. Typed node protocol 3 and both bundled RPC clients use the matching expanded history-page contract; the legacy v1 physical-frame ceiling is unchanged.
 
 Offline `proto render` still emits the complete saved transcript chronologically, one page at a time, with stdout backpressure. It does not adopt the interactive recent-history cutoff.
 
@@ -50,7 +53,7 @@ Nested waits lend the parent's runnable permit and reacquire it before continuin
 
 Parked identities and dormant records use disk-backed SQLite indexes and weak in-memory identities. Each index uses a nominal 1 MiB native page-cache target, not a total RSS bound. Persisted schemas are loaded only for the selected revival, not for every historical worker during discovery. Transcript-index caching is limited to **16 roots / 4 MiB**; active operations share ownership until their writes settle. Cold restart preserves original worker identities for accepted initial work, including the gap between a durable turn start and durable child initialization. Restoring initialized workers still requires their saved transcript rather than silently replaying an already-started task.
 
-Empty orchestration scopes release parent sessions. Suspending a scope races safely with pending admission; disposal prevents a late loader or queued spawn from reviving it. Steering-message byte reservations include messages waiting behind another send and are released on failure/cancellation.
+Runtime release drops the expensive parent session without stopping its descendants or their result delivery. Explicit subtree/tree shutdown remains a separate operation. Parked-parent lifecycle and usage receipts atomically carry the exact immutable state manifest forward with their metadata, so receiving a grandchild result does not erase the parent's restorable computation. Steering-message byte reservations include messages waiting behind another send and are released on failure/cancellation.
 
 Async jobs bound pending/running work and retained completed results together: the default completed-result allowance is **256 records and 16 MiB**, with **8 MiB** of accepted pending delivery. Saturation rejects new work explicitly. Already-accepted deliveries are drained in batches rather than truncated; owned metadata is snapshotted rather than retaining caller mutation graphs.
 
@@ -58,9 +61,30 @@ Async jobs bound pending/running work and retained completed results together: t
 
 JavaScript and Python share one admission pool of **256 process-wide interpreters and 16 per creating owner**, reserving capacity before startup and retaining it until shutdown is confirmed. Queue and payload bounds are also applied to JavaScript and Python requests. Idle persistent kernels are not silently evicted just to make room; exhaustion names the capacity failure so the owner can close/restart state intentionally.
 
-Automatic nested shell execution uses **8 reusable leased lanes per tool session**, not a fresh persistent lane per call. Leases remain occupied through actual cleanup, including cancelled asynchronous work. The existing 15-minute idle reap remains; dead kernels can be reaped even when their prior busy state is unknown. Live kernels with unknown busy status remain protected.
+Automatic nested shell execution uses **8 reusable leased lanes per tool session**, not a fresh persistent lane per call. Leases remain occupied through actual cleanup, including cancelled asynchronous work. The existing 15-minute idle reap remains, but busy, unknown-busy, dirty or unsafely captured generations are not automatically evicted. A clean declared snapshot can restore lazily after residency ends; loss after an uncommitted computation boundary refuses an older or fresh namespace instead of pretending continuity.
 
 Owner disposal terminates JavaScript/Python subprocess resources and known descendants, cancels bridge registrations, releases require/runtime caches and callbacks, closes owned provider connections, and stops extension-managed timers. The process-group/descendant behavior has Linux regression coverage; other operating systems and unmanaged application resources need their own platform verification.
+
+### Declared state and safe eviction
+
+Python `declare_state(["name", ...])` and JavaScript `declareState(["name", ...])` explicitly select top-level data bindings for durable continuity; `[]` clears the declaration. Completed model turns and direct Python submissions capture immutable, versioned manifests at their exact conversation-entry boundaries. Capture freezes cell admission under the node/kernel execution gate; the manifest is committed durably before a boundary-dependent fork, navigation or runtime release succeeds. Retained historical manifests remain reachable with their branches: there is no twenty-turn limit, nearest-earlier snapshot, or silent fresh-kernel fallback. See [declared state at temporal boundaries](./session-operations.md#declared-state-at-temporal-boundaries) and the [cell API](./bash-tool-runtime.md#declared-session-state).
+
+The existing selected-data codec supports bounded plain JSON-like values and bytes, not arbitrary interpreter heaps: at most 4,096 bindings, 100,000 value nodes, depth 64 and a 16 MiB encoded snapshot per kernel. Selected shared mutable aliases, cycles, custom objects, accessors/proxies and resources are refused. Explicit sharing of a live namespace still works; distinct declared physical namespaces that collide on one language/lane/environment are an ambiguous temporal alias and refuse capture rather than selecting one. Use separate named lanes for independently declared namespaces. Live retained Python tasks/user threads and JavaScript `retainTask` resources also prevent a declared-state boundary. Undeclared objects, imports, closures and external side effects are not reconstructed; artifact-reference metadata alone does not transfer artifact authority.
+
+Restoration is lazy, before the first destination cell, into the recorded language/runtime, lane, working directory, target and interpreter environment. Automatic durable restore requires the same interpreter implementation, version and executable; incompatible, missing or corrupt manifests fail explicitly. Temporal preflight validates with the actual selected interpreter before source teardown. Copied ancestor history does not become a worker's own state manifest. Independent forks receive a destination-owned manifest; model context-only `checkpoint`/`rewind(report)` preserves current computation instead of applying temporal restoration.
+
+Runtime release/normal close validates and commits declared state before beginning destructive teardown; a refused capture keeps the runtime attached and usable. Runtime parking emits neither logical session shutdown nor session exit. Normal close commits its exit record and exact state manifest together. Explicit kernel reset/close and Python `%reset` still mean discarding that kernel's bindings/declarations; they are not automatic restoration requests. This is a safety policy, not a new fixed kernel-count cap, fork server, or plain-Python product migration.
+
+### Measured snapshot and restore costs
+
+One macOS arm64 run (Apple M4 Max, CPython 3.13.16 and Bun 1.4.2) exercised paired Python+Bun namespaces through three captures, compatibility preflights and cold restores. Each runtime held one ASCII string of the stated length; measurements include actual subprocess startup and durable commits, not mocked kernels. Ranges are the observed samples, not latency guarantees.
+
+| Namespace per runtime | Initial paired startup | Capture/commit | Compatibility preflight | Cold paired restore | Referenced durable bytes after boundaries 1 → 2 → 3 |
+|---|---:|---:|---:|---:|---:|
+| 100 characters | 292 ms | 1.7–4.5 ms | 209–249 ms | 238–246 ms | 2,270 → 3,774 → 5,278 |
+| 600,000 characters | 266 ms | 9.4–10.4 ms | 221–243 ms | 242–247 ms | 1,202,170 → 2,403,574 → 3,604,978 |
+
+Disk accounting includes the session files and their referenced global snapshot blobs; counting only the transcript would omit the large payloads. Durable disk growth remains proportional to retained boundaries/payloads. Runtime regressions also exercise more than twenty later boundaries, 600,000-character Unicode payloads, actual Python/Node/Bun restoration, normal-exit restart, parked-parent result delivery, aliases/resources, corruption, and capture-versus-next-cell races. These macOS measurements do **not** measure private/native memory, prove an RSS ceiling, or establish Linux/remote-target performance. No memory-pressure eviction policy was added on the strength of these timings.
 
 ## Rich displays, browser output and blobs
 

@@ -9,8 +9,9 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import type { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRunner } from "../extensibility/extensions";
 import { runExtensionCompact } from "../extensibility/extensions/compact-handler";
+import { ExtensionRuntime } from "../extensibility/extensions/loader";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { SessionManager } from "./session-manager";
@@ -43,8 +44,12 @@ describe("manual compaction resumes the turn it interrupted", () => {
 		authStorage = undefined;
 	});
 
-	/** Only the runner members the session consults are stubbed; the cast is confined here. */
-	function extensionRunner(control: CompactorControl): ExtensionRunner {
+	/** Override only compaction controls; keep the real runner lifecycle and timer cleanup. */
+	function extensionRunner(
+		control: CompactorControl,
+		sessionManager: SessionManager,
+		modelRegistry: ModelRegistry,
+	): ExtensionRunner {
 		const stub = {
 			hasHandlers: (event: string) => event === "session_before_compact",
 			emit: async (event: { type: string }) => {
@@ -74,12 +79,16 @@ describe("manual compaction resumes the turn it interrupted", () => {
 			createCommandContext: () => ({}),
 			emitError: () => {},
 		};
-		return stub as unknown as ExtensionRunner;
+		return Object.assign(
+			new ExtensionRunner([], new ExtensionRuntime(), process.cwd(), sessionManager, modelRegistry),
+			stub,
+		);
 	}
 
 	function createSession(control: CompactorControl = {}, settings: Record<string, unknown> = {}): void {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5") as Model;
 		const sessionManager = SessionManager.inMemory();
+		const modelRegistry = new ModelRegistry(authStorage!);
 		session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -92,8 +101,8 @@ describe("manual compaction resumes the turn it interrupted", () => {
 				"compaction.keepRecentTokens": 1,
 				...settings,
 			}),
-			modelRegistry: new ModelRegistry(authStorage!),
-			extensionRunner: extensionRunner(control),
+			modelRegistry,
+			extensionRunner: extensionRunner(control, sessionManager, modelRegistry),
 		});
 		for (let turn = 0; turn < 3; turn++) {
 			sessionManager.appendMessage({ role: "user", content: `question ${turn}`, timestamp: Date.now() });

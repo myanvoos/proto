@@ -24,7 +24,13 @@ export const DAEMON_PROTOCOL_VERSION = 2;
 
 export const DAEMON_CAPABILITY_PROCESS_IDENTITY = "process-identity";
 
-export const DAEMON_BROKER_CAPABILITIES: readonly string[] = [DAEMON_CAPABILITY_PROCESS_IDENTITY];
+export const DAEMON_CAPABILITY_TERMINAL_ATTACHMENT = "terminal-attachment";
+
+export const DAEMON_BROKER_CAPABILITIES: readonly string[] = [
+	DAEMON_CAPABILITY_PROCESS_IDENTITY,
+	DAEMON_CAPABILITY_TERMINAL_ATTACHMENT,
+	"execution-admission",
+];
 
 /** Bytes one `read` may return; callers continue from `nextCursor`. */
 export const DAEMON_MAX_READ_BYTES = 256 * 1024;
@@ -93,6 +99,8 @@ export interface DaemonSnapshot {
 export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKILL";
 
 export type DaemonOperation =
+	| { op: "execution-acquire"; leaseId: string; ownerPid: number; nodeId: string; treeId: string }
+	| { op: "execution-release"; leaseId: string; ownerPid: number }
 	| { op: "ping" }
 	| { op: "start"; spec: DaemonSpec; owner?: string }
 	| { op: "list"; owner?: string; all?: boolean }
@@ -115,6 +123,7 @@ export type DaemonOperation =
 			op: "read";
 			name: string;
 			expectedId: string;
+			terminalLeaseId?: string;
 			cursor: number;
 			maxBytes: number;
 			/** Milliseconds to wait for output newer than `cursor`; 0 returns immediately. */
@@ -124,17 +133,22 @@ export type DaemonOperation =
 			op: "send";
 			name: string;
 			expectedId?: string;
+			terminalLeaseId?: string;
 			data?: string;
 			enter?: boolean;
 			keys?: string[];
 			signal?: DaemonSignal;
 	  }
+	| { op: "terminal_attach"; name: string; expectedId: string; columns: number; rows: number }
+	| { op: "terminal_resize"; name: string; expectedId: string; terminalLeaseId: string; columns: number; rows: number }
+	| { op: "terminal_detach"; name: string; expectedId: string; terminalLeaseId: string }
 	| { op: "stop"; name: string; timeoutMs: number; expectedId?: string }
 	| { op: "restart"; name: string; expectedId?: string }
 	| { op: "describe"; name: string; expectedId?: string }
 	| { op: "shutdown" };
 
 export type DaemonRpcResult =
+	| { op: "execution-acquire" | "execution-release"; leaseId: string }
 	| {
 			op: "ping";
 			projectDir: string;
@@ -171,6 +185,8 @@ export type DaemonRpcResult =
 			timedOut: boolean;
 	  }
 	| { op: "send"; daemon: DaemonSnapshot }
+	| { op: "terminal_attach"; daemon: DaemonSnapshot; terminalLeaseId: string; cursor: number }
+	| { op: "terminal_resize" | "terminal_detach"; daemon: DaemonSnapshot }
 	| { op: "stop"; daemon: DaemonSnapshot }
 	| { op: "restart"; daemon: DaemonSnapshot; readyTimedOut: boolean; ready?: DaemonReadySpec }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
@@ -418,6 +434,9 @@ function expectedIdField(source: Record<string, unknown>): { expectedId?: string
 export function requiresProcessIdentity(operation: DaemonOperation): boolean {
 	switch (operation.op) {
 		case "read":
+		case "terminal_attach":
+		case "terminal_resize":
+		case "terminal_detach":
 			return true;
 		case "logs":
 		case "wait":
@@ -434,6 +453,20 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 	const source = record(value, "daemon operation");
 	const op = stringValue(source.op, "operation.op");
 	switch (op) {
+		case "execution-acquire":
+			return {
+				op,
+				leaseId: stringValue(source.leaseId, "operation.leaseId"),
+				ownerPid: numberValue(source.ownerPid, "operation.ownerPid"),
+				nodeId: stringValue(source.nodeId, "operation.nodeId"),
+				treeId: stringValue(source.treeId, "operation.treeId"),
+			};
+		case "execution-release":
+			return {
+				op,
+				leaseId: stringValue(source.leaseId, "operation.leaseId"),
+				ownerPid: numberValue(source.ownerPid, "operation.ownerPid"),
+			};
 		case "ping":
 		case "shutdown":
 			return { op };
@@ -482,6 +515,7 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				expectedId: stringValue(source.expectedId, "operation.expectedId"),
+				terminalLeaseId: optionalString(source.terminalLeaseId, "operation.terminalLeaseId"),
 				cursor: numberValue(source.cursor, "operation.cursor"),
 				maxBytes: numberValue(source.maxBytes, "operation.maxBytes"),
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
@@ -491,10 +525,41 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				op,
 				name: stringValue(source.name, "operation.name"),
 				...expectedIdField(source),
+				terminalLeaseId: optionalString(source.terminalLeaseId, "operation.terminalLeaseId"),
 				data: optionalString(source.data, "operation.data"),
 				enter: optionalBoolean(source.enter, "operation.enter"),
 				keys: source.keys === undefined ? undefined : stringArray(source.keys, "operation.keys"),
 				signal: source.signal === undefined ? undefined : daemonSignal(source.signal),
+			};
+		case "terminal_attach":
+		case "terminal_resize": {
+			const columns = numberValue(source.columns, "operation.columns");
+			const rows = numberValue(source.rows, "operation.rows");
+			if (
+				!Number.isInteger(columns) ||
+				columns < 1 ||
+				columns > 1000 ||
+				!Number.isInteger(rows) ||
+				rows < 1 ||
+				rows > 1000
+			)
+				throw new Error("Terminal dimensions must be integers from 1 to 1000");
+			const target = {
+				name: stringValue(source.name, "operation.name"),
+				expectedId: stringValue(source.expectedId, "operation.expectedId"),
+				columns,
+				rows,
+			};
+			return op === "terminal_attach"
+				? { op, ...target }
+				: { op, ...target, terminalLeaseId: stringValue(source.terminalLeaseId, "operation.terminalLeaseId") };
+		}
+		case "terminal_detach":
+			return {
+				op,
+				name: stringValue(source.name, "operation.name"),
+				expectedId: stringValue(source.expectedId, "operation.expectedId"),
+				terminalLeaseId: stringValue(source.terminalLeaseId, "operation.terminalLeaseId"),
 			};
 		case "stop":
 			return {
@@ -514,6 +579,9 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown): DaemonRpcResult {
 	const source = record(value, `${operation.op} result`);
 	switch (operation.op) {
+		case "execution-acquire":
+		case "execution-release":
+			return { op: operation.op, leaseId: stringValue(source.leaseId, "result.leaseId") };
 		case "ping":
 			return {
 				op: "ping",
@@ -568,6 +636,16 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			};
 		case "send":
 			return { op: "send", daemon: parseDaemonSnapshot(source.daemon) };
+		case "terminal_attach":
+			return {
+				op: "terminal_attach",
+				daemon: parseDaemonSnapshot(source.daemon),
+				terminalLeaseId: stringValue(source.terminalLeaseId, "result.terminalLeaseId"),
+				cursor: numberValue(source.cursor, "result.cursor"),
+			};
+		case "terminal_resize":
+		case "terminal_detach":
+			return { op: operation.op, daemon: parseDaemonSnapshot(source.daemon) };
 		case "stop":
 			return { op: "stop", daemon: parseDaemonSnapshot(source.daemon) };
 		case "restart":

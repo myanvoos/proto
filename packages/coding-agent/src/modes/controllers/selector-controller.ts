@@ -57,6 +57,11 @@ import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import type { AgentSession } from "../../session/agent-session";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome } from "../../session/auth-storage";
+import {
+	captureSessionCommandTarget,
+	isSessionCommandTargetCurrent,
+	type SessionCommandTarget,
+} from "../../session/command-target";
 import { detachedSessionHolder } from "../../session/detached-session-holder";
 import {
 	createForeignSessionStore,
@@ -553,7 +558,7 @@ export class SelectorController {
 	}
 
 	showTrajectoryView(): void {
-		const trajectory = buildSessionTrajectory(this.ctx.sessionManager);
+		const trajectory = buildSessionTrajectory(this.ctx.viewSession.sessionManager);
 		if (trajectory.steps.length === 0) {
 			this.ctx.showStatus("Trajectory is empty — nothing logged yet");
 			return;
@@ -830,28 +835,27 @@ export class SelectorController {
 		}
 	}
 
-	// Model changes apply to whatever session the user is looking at. Focused on a side agent, the
-	// picker and the hub's default-role assignment must retarget it, or the switch silently lands on
-	// the parent instead.
-	get #modelSession(): AgentSession {
-		return this.ctx.viewSession;
-	}
-
-	showModelSelector(options?: { temporaryOnly?: boolean }): void {
-		if (options?.temporaryOnly) {
-			this.#showModelPicker();
+	showModelSelector(options?: { temporaryOnly?: boolean }, target?: SessionCommandTarget): void {
+		const captured = target ?? captureSessionCommandTarget(this.ctx.viewSession);
+		if (!isSessionCommandTargetCurrent(captured, this.ctx.viewSession)) {
+			this.ctx.showError("Model selection target changed. Reopen /model for the viewed session.");
 			return;
 		}
-		this.#showModelHub({});
+		if (options?.temporaryOnly) {
+			this.#showModelPicker(captured);
+			return;
+		}
+		this.#showModelHub({}, captured);
 	}
 
-	#showModelPicker(): void {
+	#showModelPicker(target: SessionCommandTarget): void {
+		const modelSession = target.session;
 		if (this.#focusOpenMenu("model-picker")) return;
 		const menu: OpenMenu = {};
-		const currentContextTokens = this.#modelSession.getContextUsage()?.tokens ?? 0;
-		const current = this.#modelSession.model;
+		const currentContextTokens = modelSession.getContextUsage()?.tokens ?? 0;
+		const current = modelSession.model;
 		const quickRoleOrder = this.ctx.settings.get("cycleOrder");
-		const quickRoleCycle = this.#modelSession.getRoleModelCycle(quickRoleOrder);
+		const quickRoleCycle = modelSession.getRoleModelCycle(quickRoleOrder);
 		let closed = false;
 		const done = () => {
 			if (closed) return;
@@ -861,16 +865,25 @@ export class SelectorController {
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
+		const isCurrent = () => {
+			if (isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return true;
+			done();
+			this.ctx.showError("Model selection target changed. Reopen /model for the viewed session.");
+			return false;
+		};
 		const picker = new ModelPickerComponent(
 			this.ctx.ui,
 			this.ctx.settings,
-			this.#modelSession.modelRegistry,
-			this.#modelSession.scopedModels,
+			modelSession.modelRegistry,
+			modelSession.scopedModels,
 			{
 				onPick: async (model, selector, { overContext }) => {
+					if (!isCurrent()) return;
 					const applySessionModel = async () => {
-						const roleThinkingLevel = this.#modelSession.resolveTemporaryModelThinkingLevel(model);
-						await this.#modelSession.setModelTemporary(model, roleThinkingLevel);
+						if (!isCurrent()) return;
+						const roleThinkingLevel = modelSession.resolveTemporaryModelThinkingLevel(model);
+						await modelSession.setModelTemporary(model, roleThinkingLevel);
+						if (!isCurrent()) return;
 						this.ctx.statusLine.invalidate();
 						this.ctx.updateEditorBorderColor();
 						const roleSelectorHint = this.ctx.keybindings.getKeys("app.model.select")[0] ?? "Alt+M";
@@ -878,9 +891,7 @@ export class SelectorController {
 						this.ctx.showStatus(`${scope}: ${selector}. Use ${roleSelectorHint} or /model for roles.`);
 					};
 					try {
-						// Compaction is a main-session command, so it can only front-run the switch when the
-						// main session is the one being switched.
-						if (overContext && this.#modelSession === this.ctx.session) {
+						if (overContext) {
 							done();
 							let switched = false;
 							const switchAfterCompaction = async (outcome: CompactionOutcome) => {
@@ -888,7 +899,12 @@ export class SelectorController {
 								switched = true;
 								await applySessionModel();
 							};
-							const outcome = await this.ctx.handleCompactCommand(undefined, undefined, switchAfterCompaction);
+							const outcome = await this.ctx.handleCompactCommand(
+								undefined,
+								undefined,
+								switchAfterCompaction,
+								target,
+							);
 							await switchAfterCompaction(outcome);
 							return;
 						}
@@ -899,8 +915,10 @@ export class SelectorController {
 					}
 				},
 				onPickRole: async entry => {
+					if (!isCurrent()) return;
 					try {
-						await this.#modelSession.applyRoleModel(entry);
+						await modelSession.applyRoleModel(entry);
+						if (!isCurrent()) return;
 						this.ctx.statusLine.invalidate();
 						this.ctx.updateEditorBorderColor();
 						this.ctx.showModelCycleTrack(
@@ -938,7 +956,8 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 	}
 
-	#showModelHub(hubOptions: { initialProviderId?: string }): void {
+	#showModelHub(hubOptions: { initialProviderId?: string }, target: SessionCommandTarget): void {
+		const modelSession = target.session;
 		if (this.#focusOpenMenu("model-hub")) return;
 		const menu: OpenMenu = {};
 		let hub: ModelHubComponent | undefined;
@@ -952,13 +971,20 @@ export class SelectorController {
 			this.focusActiveEditorArea();
 			this.ctx.ui.requestRender();
 		};
+		const isCurrent = () => {
+			if (isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return true;
+			done();
+			this.ctx.showError("Model selection target changed. Reopen /model for the viewed session.");
+			return false;
+		};
 		hub = new ModelHubComponent(
 			this.ctx.ui,
 			this.ctx.settings,
-			this.#modelSession.modelRegistry,
-			this.#modelSession.scopedModels,
+			modelSession.modelRegistry,
+			modelSession.scopedModels,
 			{
 				onAssign: async (model, role, thinkingLevel, selector, scope?: ModelRoleSelectionScope) => {
+					if (!isCurrent()) return false;
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
 					const configuredStorage = this.ctx.settings.get("modelRoleStorage");
 					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
@@ -967,6 +993,7 @@ export class SelectorController {
 						configuredStorage === "project" ? `${targetScope === "project" ? "Project" : "Global"} ` : "";
 					const defaultStatusLabel = configuredStorage === "project" ? `${scopeLabel}default` : "Default";
 					try {
+						if (!isCurrent()) return false;
 						if (role === "default") {
 							const concreteThinking =
 								thinkingLevel !== undefined && thinkingLevel !== ThinkingLevel.Inherit
@@ -995,12 +1022,12 @@ export class SelectorController {
 									formatModelSelectorValue(selectorValue, concreteThinking),
 								);
 							} else {
-								const { switched } = await this.#modelSession.setModel(model, role, {
+								const { switched } = await modelSession.setModel(model, role, {
 									selector,
 									thinkingLevel: concreteThinking ?? ThinkingLevel.Inherit,
 									persist: targetScope === "global",
 								});
-								if (!switched) return false;
+								if (!switched || !isCurrent()) return false;
 								if (targetScope === "project") {
 									this.ctx.settings.setProjectModelRole(
 										"default",
@@ -1008,7 +1035,7 @@ export class SelectorController {
 									);
 								}
 								if (concreteThinking) {
-									this.#modelSession.setThinkingLevel(concreteThinking);
+									modelSession.setThinkingLevel(concreteThinking);
 								}
 								this.ctx.statusLine.invalidate();
 								this.ctx.updateEditorBorderColor();
@@ -1036,12 +1063,14 @@ export class SelectorController {
 					}
 				},
 				onUnassign: async (role, scope?: ModelRoleSelectionScope) => {
+					if (!isCurrent()) return;
 					const releaseDefaultMutation = role === "default" ? await this.#acquireDefaultRoleMutation() : undefined;
 					const configuredStorage = this.ctx.settings.get("modelRoleStorage");
 					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
 					const scopeLabel =
 						configuredStorage === "project" ? `${targetScope === "project" ? "Project" : "Global"} ` : "";
 					try {
+						if (!isCurrent()) return;
 						const previousEffectiveRoleValue =
 							role === "default" ? this.ctx.settings.getModelRole("default") : undefined;
 						if (targetScope === "project") {
@@ -1060,13 +1089,13 @@ export class SelectorController {
 							const exposesPersistedFallback =
 								fallbackProvenance === "project" || fallbackProvenance === "global";
 							if (fallbackRoleValue && exposesPersistedFallback) {
-								const scopedModels = this.#modelSession.scopedModels.map(sm => sm.model);
+								const scopedModels = modelSession.scopedModels.map(sm => sm.model);
 								const availableModels =
-									scopedModels.length > 0 ? scopedModels : this.#modelSession.getAvailableModels();
+									scopedModels.length > 0 ? scopedModels : modelSession.getAvailableModels();
 								const resolved = resolveModelRoleValue(fallbackRoleValue, availableModels, {
 									settings: this.ctx.settings,
 								});
-								const live = this.#modelSession.model;
+								const live = modelSession.model;
 								const liveDiffers =
 									!live || live.provider !== resolved.model?.provider || live.id !== resolved.model.id;
 								if (resolved.model && (fallbackRoleValue !== previousEffectiveRoleValue || liveDiffers)) {
@@ -1074,13 +1103,13 @@ export class SelectorController {
 									if (fallbackThinking === undefined) {
 										fallbackThinking = parseThinkingLevel(this.ctx.settings.get("defaultThinkingLevel"));
 									}
-									const { switched } = await this.#modelSession.setModel(resolved.model, "default", {
+									const { switched } = await modelSession.setModel(resolved.model, "default", {
 										persist: false,
 										thinkingLevel: fallbackThinking ?? ThinkingLevel.Inherit,
 									});
-									if (!switched) return;
+									if (!switched || !isCurrent()) return;
 									if (fallbackThinking && fallbackThinking !== ThinkingLevel.Inherit) {
-										this.#modelSession.setThinkingLevel(fallbackThinking);
+										modelSession.setThinkingLevel(fallbackThinking);
 									}
 									this.ctx.statusLine.invalidate();
 									this.ctx.updateEditorBorderColor();
@@ -1096,6 +1125,7 @@ export class SelectorController {
 					}
 				},
 				onFallbackChainChange: (role, chain) => {
+					if (!isCurrent()) return;
 					try {
 						this.ctx.settings.setRecordEntry("retry.fallbackChains", role, chain.length > 0 ? chain : undefined);
 						const roleInfo = getRoleInfo(role, settings);
@@ -1110,10 +1140,12 @@ export class SelectorController {
 				},
 
 				onLoginRequest: providerId => {
+					if (!isCurrent()) return;
 					done();
-					void this.#loginThenReopenModelHub(providerId);
+					void this.#loginThenReopenModelHub(providerId, target);
 				},
 				onCycleOrderChange: order => {
+					if (!isCurrent()) return;
 					try {
 						this.ctx.settings.set("cycleOrder", order);
 						this.ctx.showStatus(
@@ -1132,10 +1164,10 @@ export class SelectorController {
 		this.#mountMenu("model-hub", menu, hub, () => this.#showFullscreenMenu(hub!));
 	}
 
-	async #loginThenReopenModelHub(providerId: string): Promise<void> {
+	async #loginThenReopenModelHub(providerId: string, target: SessionCommandTarget): Promise<void> {
 		const succeeded = await this.#handleOAuthLogin(providerId);
-		if (succeeded) {
-			this.#showModelHub({ initialProviderId: providerId });
+		if (succeeded && isSessionCommandTargetCurrent(target, this.ctx.viewSession)) {
+			this.#showModelHub({ initialProviderId: providerId }, target);
 		}
 	}
 
@@ -1224,8 +1256,8 @@ export class SelectorController {
 		});
 	}
 
-	showUserMessageSelector(): void {
-		const userMessages = this.ctx.session.getUserMessagesForBranching();
+	showUserMessageSelector(target = captureSessionCommandTarget(this.ctx.viewSession)): void {
+		const userMessages = target.session.getUserMessagesForBranching();
 
 		if (userMessages.length === 0) {
 			this.ctx.showStatus("No messages to branch from");
@@ -1236,22 +1268,32 @@ export class SelectorController {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map(m => ({ id: m.entryId, text: m.text })),
 				async entryId => {
-					const branchEntry = this.ctx.sessionManager.getEntry(entryId);
+					if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) {
+						done();
+						this.ctx.showStatus("Selection expired: the session changed");
+						return;
+					}
+					const branchEntry = target.sessionManager.getEntry(entryId);
 					const branchMessage =
 						branchEntry?.type === "message" && branchEntry.message.role === "user"
 							? branchEntry.message
 							: undefined;
-					const result = await this.ctx.session.branch(entryId);
+					const result = await target.session.branch(entryId);
 					if (result.cancelled) {
 						done();
 						this.ctx.ui.requestRender();
 						return;
 					}
 
+					if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) {
+						done();
+						return;
+					}
+
 					const fastRewind =
 						branchMessage !== undefined &&
 						branchEntry?.parentId != null &&
-						this.ctx.sessionManager.getLeafId() === branchEntry.parentId &&
+						target.sessionManager.getLeafId() === branchEntry.parentId &&
 						this.ctx.truncateTranscriptFromMessage(branchMessage);
 					if (!fastRewind) {
 						await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
@@ -1270,7 +1312,7 @@ export class SelectorController {
 	}
 
 	showCopySelector(): void {
-		const targets = buildCopyTargets(this.ctx.session);
+		const targets = buildCopyTargets(this.ctx.viewSession);
 		if (targets.length === 0) {
 			this.ctx.showStatus("Nothing to copy yet.");
 			return;
@@ -1301,19 +1343,25 @@ export class SelectorController {
 		this.ctx.ui.requestRender();
 	}
 
-	async showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void> {
-		// The tree rewinds the main session's branches; opening it over a focused agent would
-		// edit a transcript the user cannot see, so land on the main session first.
-		if (this.ctx.focusedAgentId) await this.ctx.unfocusSession();
-		const tree = this.ctx.sessionManager.getTreeForDisplay();
-		const realLeafId = this.ctx.sessionManager.getLeafId();
+	async showTreeSelector(
+		options?: { filterMode?: TreeFilterMode },
+		target = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		const tree = target.sessionManager.getTreeForDisplay();
+		const realLeafId = target.sessionManager.getLeafId();
 
 		if (tree.length === 0) {
 			this.ctx.showStatus("No entries in session");
 			return;
 		}
 
-		const agents = await this.#collectTreeAgents();
+		const agents = await this.#collectTreeAgents(target);
+		const current = (): boolean => {
+			if (isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return true;
+			this.ctx.showStatus("Selection expired: the session changed");
+			return false;
+		};
+		if (!current()) return;
 
 		this.showSelector(done => {
 			const selector = new TreeSelectorComponent(
@@ -1321,8 +1369,12 @@ export class SelectorController {
 				realLeafId,
 				this.ctx.ui.terminal.rows,
 				async (entryId, options) => {
+					if (!current()) {
+						done();
+						return;
+					}
 					if (entryId === realLeafId) {
-						const currentEntry = this.ctx.sessionManager.getEntry(entryId);
+						const currentEntry = target.sessionManager.getEntry(entryId);
 						const currentIsAskResult =
 							currentEntry?.type === "message" &&
 							currentEntry.message.role === "toolResult" &&
@@ -1336,12 +1388,12 @@ export class SelectorController {
 
 					done();
 
-					const treeRewind = this.#treeRewindBoundary(entryId, realLeafId);
+					const treeRewind = this.#treeRewindBoundary(entryId, realLeafId, target.sessionManager);
 
 					let wantsSummary = options.summarize;
 					let customInstructions: string | undefined;
 
-					const branchSummariesEnabled = settings.get("branchSummary.enabled");
+					const branchSummariesEnabled = this.ctx.settings.get("branchSummary.enabled");
 
 					while (!wantsSummary && branchSummariesEnabled) {
 						const summaryChoice = await this.ctx.showHookSelector("Summarize branch?", [
@@ -1367,12 +1419,14 @@ export class SelectorController {
 						break;
 					}
 
+					if (!current()) return;
+
 					let summaryLoader: Loader | undefined;
 					const originalOnEscape = this.ctx.editor.onEscape;
 
 					if (wantsSummary) {
 						this.ctx.editor.onEscape = () => {
-							this.ctx.session.abortBranchSummary();
+							target.session.abortBranchSummary();
 						};
 						this.ctx.chatContainer.addChild(new Spacer(1));
 						summaryLoader = new Loader(
@@ -1387,19 +1441,20 @@ export class SelectorController {
 					}
 
 					try {
-						let result = await this.ctx.session.navigateTree(entryId, {
+						let result = await target.session.navigateTree(entryId, {
 							summarize: wantsSummary,
 							customInstructions,
 							allowAskReopen: true,
 						});
 
 						if (result.reopenAsk) {
-							const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
+							const reanswer = await this.#reanswerAsk(result.reopenAsk.params, target);
 							if (!reanswer) {
 								this.ctx.showStatus("Re-answer cancelled");
 								return;
 							}
-							result = await this.ctx.session.navigateTree(entryId, {
+							if (!current()) return;
+							result = await target.session.navigateTree(entryId, {
 								summarize: wantsSummary,
 								customInstructions,
 								allowAskReopen: true,
@@ -1417,12 +1472,14 @@ export class SelectorController {
 							return;
 						}
 
+						if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
+
 						const fastRewind =
 							treeRewind !== undefined &&
 							!wantsSummary &&
 							!result.summaryEntry &&
 							!result.askReanswerCommitted &&
-							this.ctx.sessionManager.getLeafId() === treeRewind.expectedLeafId &&
+							target.sessionManager.getLeafId() === treeRewind.expectedLeafId &&
 							this.ctx.truncateTranscriptFromMessage(treeRewind.message);
 						if (!fastRewind) {
 							await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
@@ -1434,7 +1491,7 @@ export class SelectorController {
 						this.ctx.showStatus("Navigated to selected point");
 
 						if (result.askReanswerCommitted) {
-							this.ctx.session.resumeAfterAskReanswer();
+							target.session.resumeAfterAskReanswer();
 						}
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -1451,11 +1508,12 @@ export class SelectorController {
 					this.ctx.ui.requestRender();
 				},
 				(entryId, label) => {
-					this.ctx.sessionManager.appendLabelChange(entryId, label);
+					if (!current()) return;
+					target.sessionManager.appendLabelChange(entryId, label);
 					this.ctx.ui.requestRender();
 				},
-				options?.filterMode ?? settings.get("treeFilterMode"),
-				entryId => this.ctx.sessionManager.getEntry(entryId),
+				options?.filterMode ?? this.ctx.settings.get("treeFilterMode"),
+				entryId => target.sessionManager.getEntry(entryId),
 				agents,
 				agentId => {
 					done();
@@ -1466,11 +1524,11 @@ export class SelectorController {
 		});
 	}
 
-	async #collectTreeAgents(): Promise<TreeAgentEntry[]> {
+	async #collectTreeAgents(target: SessionCommandTarget): Promise<TreeAgentEntry[]> {
 		return collectSessionTreeAgents({
 			registry: AgentRegistry.global(),
-			currentSessionFile: this.ctx.sessionManager.getSessionFile(),
-			ownAgentId: this.ctx.session.getAgentId(),
+			currentSessionFile: target.sessionManager.getSessionFile(),
+			ownAgentId: target.session.getAgentId(),
 		});
 	}
 
@@ -1490,18 +1548,19 @@ export class SelectorController {
 	#treeRewindBoundary(
 		targetId: string,
 		leafId: string | null,
+		sessionManager: SessionManager,
 	): { message: AgentMessage; expectedLeafId: string } | undefined {
 		if (!leafId) return undefined;
-		const target = this.ctx.sessionManager.getEntry(targetId);
+		const target = sessionManager.getEntry(targetId);
 		if (!target) return undefined;
 		const rewindsPastTarget = target.type === "message" && target.message.role === "user";
 		if (!rewindsPastTarget && target.type === "custom_message") return undefined;
 
 		let firstDropped: SessionEntry | undefined;
-		let cursor = this.ctx.sessionManager.getEntry(leafId);
+		let cursor = sessionManager.getEntry(leafId);
 		while (cursor && cursor.id !== targetId) {
 			firstDropped = cursor;
-			cursor = cursor.parentId ? this.ctx.sessionManager.getEntry(cursor.parentId) : undefined;
+			cursor = cursor.parentId ? sessionManager.getEntry(cursor.parentId) : undefined;
 		}
 		if (!cursor) return undefined;
 		const boundary = rewindsPastTarget ? target : firstDropped;
@@ -1515,29 +1574,36 @@ export class SelectorController {
 		};
 	}
 
-	async #reanswerAsk(questions: AskToolInput["questions"]): Promise<AgentToolResult<AskToolDetails> | undefined> {
+	async #reanswerAsk(
+		params: AskToolInput,
+		target: SessionCommandTarget,
+	): Promise<AgentToolResult<AskToolDetails> | undefined> {
 		const uiContext = this.ctx.getToolUIContext();
 		if (!uiContext) {
 			this.ctx.showError("Ask tool UI is not ready");
 			return undefined;
 		}
 		const toolSession: ToolSession = {
-			cwd: this.ctx.sessionManager.getCwd(),
+			cwd: target.sessionManager.getCwd(),
 			hasUI: true,
 			settings: this.ctx.settings,
-			getSessionFile: () => this.ctx.sessionManager.getSessionFile() ?? null,
+			getSessionFile: () => target.sessionManager.getSessionFile() ?? null,
 			getSessionSpawns: () => null,
 		};
 		const askTool = new AskTool(toolSession);
-		const context = this.ctx.session.buildAskReanswerContext(uiContext);
+		const context = target.session.buildAskReanswerContext(uiContext);
 		let result: AgentToolResult<AskToolDetails>;
 		try {
-			result = await askTool.execute("tree-reanswer", { questions }, undefined, undefined, context);
+			result = await askTool.execute("tree-reanswer", params, undefined, undefined, context);
 		} catch (error) {
 			if (error instanceof ToolAbortError) return undefined;
 			throw error;
 		}
 
+		if (result.details?.timedOut) {
+			this.ctx.showStatus("Re-answer timed out; no answer branch created");
+			return undefined;
+		}
 		if (result.details?.chatRedirect) {
 			this.ctx.showError(
 				"Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead.",
@@ -2196,8 +2262,8 @@ export class SelectorController {
 	 * Session entry id of the most recent assistant message that carries prose.
 	 * Bookmarks anchor here so `/annotate` labels the response the user just read.
 	 */
-	#lastAssistantEntryId(): string | undefined {
-		const entries = this.ctx.sessionManager.getEntries();
+	#lastAssistantEntryId(sessionManager: SessionManager): string | undefined {
+		const entries = sessionManager.getEntries();
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const entry = entries[i];
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
@@ -2211,14 +2277,17 @@ export class SelectorController {
 	 * Bookmark the last agent response by labelling its session-tree node. An
 	 * empty note clears the bookmark; cancelling the prompt leaves it untouched.
 	 */
-	async annotateLastResponse(note?: string): Promise<void> {
-		const entryId = this.#lastAssistantEntryId();
+	async annotateLastResponse(
+		note?: string,
+		target = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		const entryId = this.#lastAssistantEntryId(target.sessionManager);
 		if (!entryId) {
 			this.ctx.showStatus("No agent response to bookmark yet");
 			return;
 		}
 
-		const current = this.ctx.sessionManager.getLabel(entryId);
+		const current = target.sessionManager.getLabel(entryId);
 		let label = note?.trim();
 		if (label === undefined) {
 			const entered = await this.ctx.showHookEditor("Bookmark note (empty clears)", current ?? "");
@@ -2226,8 +2295,13 @@ export class SelectorController {
 			label = entered.trim();
 		}
 
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) {
+			this.ctx.showStatus("Selection expired: the session changed");
+			return;
+		}
+
 		try {
-			this.ctx.sessionManager.appendLabelChange(entryId, label.length > 0 ? label : undefined);
+			target.sessionManager.appendLabelChange(entryId, label.length > 0 ? label : undefined);
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 			return;
@@ -2237,12 +2311,12 @@ export class SelectorController {
 	}
 
 	/** Browse bookmarks: the session tree filtered to labelled nodes. */
-	showBookmarks(): void {
-		if (!hasLabelledNode(this.ctx.sessionManager.getTreeForDisplay())) {
+	showBookmarks(target = captureSessionCommandTarget(this.ctx.viewSession)): void {
+		if (!hasLabelledNode(target.sessionManager.getTreeForDisplay())) {
 			this.ctx.showStatus("No bookmarks yet — /annotate bookmarks the last response");
 			return;
 		}
-		this.showTreeSelector({ filterMode: "labeled-only" });
+		void this.showTreeSelector({ filterMode: "labeled-only" }, target);
 	}
 }
 

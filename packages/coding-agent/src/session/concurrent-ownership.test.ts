@@ -90,3 +90,33 @@ test("a locked session file reports the contention instead of discarding entries
 	expect(failures.join(" ")).toContain(`pid ${process.ppid}`);
 	expect(second.getEntries().some(entry => JSON.stringify(entry).includes("second cli turn"))).toBe(true);
 });
+
+test("resuming an owned child never promotes it into an independent root", async () => {
+	const { cwd, sessionDir } = await project();
+	const owner = await seededSession(cwd, sessionDir);
+	const child = await seededSession(cwd, sessionDir);
+	try {
+		const parent = owner.getNodeTopology();
+		const childNode = child.getNodeTopology();
+		if (!parent || !childNode) throw new Error("Persisted sessions must have durable node identities");
+		const rootFile = owner.getSessionFile()!;
+		await child.setNodeTopology({
+			...childNode,
+			parentId: parent.id,
+			rootId: parent.rootId,
+			parentSessionFile: rootFile,
+			rootSessionFile: rootFile,
+			spawnAnchorId: owner.getLeafId()!,
+		});
+		const childFile = child.getSessionFile()!;
+		const before = await Bun.file(childFile).text();
+		await expect(
+			createSessionManager(args({ resume: childFile, sessionDir, cwd }), cwd, Settings.isolated()),
+		).rejects.toThrow("cannot be resumed as an independent root");
+		expect(await Bun.file(childFile).text()).toBe(before);
+		expect(child.getNodeTopology()?.parentId).toBe(parent.id);
+	} finally {
+		await child.close();
+		await owner.close();
+	}
+});

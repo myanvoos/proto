@@ -132,14 +132,14 @@ export interface AsyncJobManagerOptions {
 export interface AsyncJobAdmission {
 	/** Re-estimates unused admission atomically; rejection preserves its original byte charge. */
 	resize(bytes: number): void;
-	/** Releases an unused reservation. After registration, only callback settlement releases it. */
-	release(): void;
+	/** Releases unused accepted work after optional resource settlement; registered work remains callback-owned. */
+	release(settlement?: Promise<void>): void;
 }
 
 interface AdmissionState {
 	ownerId?: string;
 	bytes: number;
-	registered: boolean;
+	phase: "reserved" | "registered" | "settling";
 }
 
 interface AsyncJobDelivery {
@@ -187,6 +187,8 @@ export interface AsyncJobRegisterOptions {
 	/** Callback input bytes beyond its label and monitor command metadata, unless admission was reserved earlier. */
 	bytes?: number;
 	admission?: AsyncJobAdmission;
+	/** Published output is available before this recoverable resource-settlement lease resolves. */
+	settlement?: () => Promise<void> | undefined;
 }
 
 interface AsyncJobFilter {
@@ -254,7 +256,7 @@ export class AsyncJobManager {
 		ttl: POLL_ESCALATION_RESET_MS,
 	});
 	readonly #admissions = new Map<AsyncJobAdmission, AdmissionState>();
-	readonly #unsettledJobs = new Set<string>();
+	readonly #settlements = new Map<string, Promise<void>>();
 	readonly #retainedJobs = new Map<string, number>();
 	#retainedJobBytes = 0;
 	#nextJobId = 1;
@@ -341,20 +343,42 @@ export class AsyncJobManager {
 		const admission: AsyncJobAdmission = {
 			resize: bytes => {
 				const state = this.#admissions.get(admission);
-				if (!state || state.registered) throw new Error("Async job admission is unavailable for resizing");
+				if (state?.phase !== "reserved") throw new Error("Async job admission is unavailable for resizing");
 				this.#checkAdmission(bytes, state.ownerId, admission);
 				const previousBytes = state.bytes;
 				state.bytes = bytes;
 				if (bytes < previousBytes) this.#notifyCapacityAvailable();
 			},
-			release: () => {
-				if (this.#admissions.get(admission)?.registered !== false) return;
-				this.#admissions.delete(admission);
-				this.#notifyCapacityAvailable();
+			release: settlement => {
+				if (this.#admissions.get(admission)?.phase !== "reserved") return;
+				this.#releaseAdmission(admission, settlement);
 			},
 		};
-		this.#admissions.set(admission, { bytes, ownerId: options.ownerId, registered: false });
+		this.#admissions.set(admission, { bytes, ownerId: options.ownerId, phase: "reserved" });
 		return admission;
+	}
+
+	#releaseAdmission(admission: AsyncJobAdmission, settlement?: Promise<void>, onReleased?: () => void): void {
+		const state = this.#admissions.get(admission);
+		if (state) state.phase = "settling";
+		const release = () => {
+			this.#admissions.delete(admission);
+			onReleased?.();
+			this.#notifyCapacityAvailable();
+		};
+		if (!settlement) release();
+		else
+			void settlement.then(release, error => {
+				logger.error("Async job resource settlement failed; admission retained", {
+					error: String(error),
+					ownerId: state?.ownerId,
+				});
+			});
+	}
+
+	/** Result publication is job.promise; shutdown/reaping must wait for its actual resource settlement. */
+	waitForJobSettlement(id: string): Promise<void> {
+		return this.#settlements.get(id) ?? Promise.resolve();
 	}
 
 	get atCapacity(): boolean {
@@ -365,7 +389,7 @@ export class AsyncJobManager {
 
 	#runningCount(): number {
 		let count = 0;
-		for (const id of this.#unsettledJobs) {
+		for (const id of this.#settlements.keys()) {
 			const job = this.#jobs.get(id);
 			if (job && job.type !== "monitor" && !job.queued) count++;
 		}
@@ -469,10 +493,10 @@ export class AsyncJobManager {
 					].reduce((total, text) => total + Buffer.byteLength(text), 0),
 			});
 		const state = this.#admissions.get(admission);
-		if (!state || state.registered || state.ownerId !== options?.ownerId) {
+		if (state?.phase !== "reserved" || state.ownerId !== options?.ownerId) {
 			throw new Error("Async job admission is unavailable or belongs to another owner");
 		}
-		state.registered = true;
+		state.phase = "registered";
 
 		const id = this.#resolveJobId(options?.id);
 		this.#suppressedDeliveries.delete(id);
@@ -509,7 +533,8 @@ export class AsyncJobManager {
 			}
 		};
 		this.#jobs.set(id, job);
-		this.#unsettledJobs.add(id);
+		const settled = Promise.withResolvers<void>();
+		this.#settlements.set(id, settled.promise);
 		this.#observe(observers, { kind: "registered", job });
 		job.promise = (async () => {
 			try {
@@ -541,11 +566,13 @@ export class AsyncJobManager {
 					if (type !== "monitor") this.#enqueueDelivery(id, failureDeliveryText(job));
 				}
 			} finally {
-				this.#unsettledJobs.delete(id);
-				this.#admissions.delete(admission);
 				this.#observe(observers, { kind: "settled", job });
-				this.#scheduleEviction(id);
-				this.#notifyCapacityAvailable();
+				this.#releaseAdmission(admission, options?.settlement?.(), () => {
+					this.#settlements.delete(id);
+					settled.resolve();
+					if (this.#disposed) this.#jobs.delete(id);
+					else this.#scheduleEviction(id);
+				});
 			}
 		})();
 
@@ -569,7 +596,7 @@ export class AsyncJobManager {
 
 	/** A cancelled job may still be tearing down; only callback settlement ends it. */
 	isSettled(id: string): boolean {
-		return this.#jobs.has(id) && !this.#unsettledJobs.has(id);
+		return this.#jobs.has(id) && !this.#settlements.has(id);
 	}
 
 	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
@@ -742,7 +769,7 @@ export class AsyncJobManager {
 	}
 
 	async waitForAll(): Promise<void> {
-		await Promise.all(Array.from(this.#jobs.values()).map(job => job.promise));
+		await Promise.all(Array.from(this.#settlements.values()));
 	}
 
 	registerDeliverySink(ownerId: string, sink: AsyncJobDeliverySink): () => void {
@@ -776,7 +803,7 @@ export class AsyncJobManager {
 			if (pending.length === 0) return true;
 			for (const job of pending) awaited.add(job.id);
 			const settled = await this.#waitForDeliveryPromise(
-				Promise.all(pending.map(job => job.promise)).then(() => {}),
+				Promise.all(pending.map(job => this.waitForJobSettlement(job.id))).then(() => {}),
 				deadline,
 			);
 			if (!settled) return false;
@@ -800,14 +827,14 @@ export class AsyncJobManager {
 			return { settled: true, pendingJobIds: [], completion: Promise.resolve() };
 		}
 		const pendingJobIds = this.getAllJobs(filter)
-			.filter(job => this.#unsettledJobs.has(job.id))
+			.filter(job => this.#settlements.has(job.id))
 			.map(job => job.id);
 		const completion = this.waitForOwnerJobs(ownerId, options).then(() => {});
 		return { settled: false, pendingJobIds, completion };
 	}
 
 	async #waitForAllUntil(deadline: number): Promise<boolean> {
-		const promises = Array.from(this.#jobs.values()).map(job => job.promise);
+		const promises = Array.from(this.#settlements.values());
 		if (promises.length === 0) return true;
 		if (deadline === Number.POSITIVE_INFINITY) {
 			await Promise.all(promises);
@@ -858,9 +885,11 @@ export class AsyncJobManager {
 		this.#deliveryExpiryTimer = undefined;
 		this.#retainedDeliveries.clear();
 		this.#deliveryBytes = 0;
-		this.#jobs.clear();
-		this.#admissions.clear();
-		this.#unsettledJobs.clear();
+		for (const id of this.#jobs.keys()) if (!this.#settlements.has(id)) this.#jobs.delete(id);
+		if (jobsSettled) {
+			this.#admissions.clear();
+			this.#settlements.clear();
+		}
 		this.#retainedJobs.clear();
 		this.#retainedJobBytes = 0;
 		this.#deliveries.length = 0;
@@ -941,7 +970,7 @@ export class AsyncJobManager {
 
 	#scheduleEviction(jobId: string, delayMs: number = this.#retentionMs): void {
 		const job = this.#jobs.get(jobId);
-		if (this.#disposed || !job || this.#unsettledJobs.has(jobId) || job.events?.length) return;
+		if (this.#disposed || !job || this.#settlements.has(jobId) || job.events?.length) return;
 		if (!this.#retainedJobs.has(jobId)) {
 			// Account UTF-16 storage as well as UTF-8 serialization, not only the result preview.
 			let details = "";

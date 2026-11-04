@@ -30,15 +30,16 @@ export * from "./main";
 
 export * from "./modes";
 export * from "./modes/components";
-
+export * from "./modes/rpc/node-client";
 export * from "./modes/theme/theme";
-
 export * from "./sdk";
 export * from "./session/agent-session";
 export * from "./session/auth-storage";
 export * from "./session/execution-metadata";
 export * from "./session/indexed-session-storage";
 export * from "./session/messages";
+export * from "./session/node-backend";
+export * from "./session/node-history";
 export * from "./session/redis-session-storage";
 export * from "./session/session-context";
 export * from "./session/session-entries";

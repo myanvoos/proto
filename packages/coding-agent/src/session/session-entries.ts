@@ -26,6 +26,18 @@ export interface SessionTitleSlotEntry {
 
 export const EPHEMERAL_MODEL_CHANGE_ROLE = "fallback";
 
+/** Ownership identity; parentSession below records fork provenance, never ownership. */
+export interface SessionNodeTopology {
+	id: string;
+	rootId: string;
+	parentId?: string;
+	spawnAnchorId?: string;
+	parentSessionFile?: string;
+	rootSessionFile?: string;
+	generation: number;
+	state: "active" | "abandoned" | "stopped";
+}
+
 export interface SessionHeader {
 	type: "session";
 	version?: number;
@@ -36,6 +48,8 @@ export interface SessionHeader {
 	cwd: string;
 
 	additionalDirectories?: string[];
+	node?: SessionNodeTopology;
+	/** Independent fork provenance, not an ownership edge. */
 	parentSession?: string;
 
 	previousSessionFiles?: string[];

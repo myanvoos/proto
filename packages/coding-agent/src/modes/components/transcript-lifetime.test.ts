@@ -18,7 +18,7 @@ test("eviction and empty resets collect components while builder and durable mes
 		evictedExpandables: 0,
 		clearedComponent: 0,
 		retiredWhileMessagesRemain: 0,
-		retainedMessages: 1100,
-		retainedBlocks: 1000,
+		retainedMessages: 2100,
+		retainedBlocks: 2000,
 	});
 }, 20_000);

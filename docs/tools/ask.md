@@ -14,7 +14,8 @@
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `questions` | `Question[]` | Yes | One or more questions. Empty arrays are rejected by schema and also guarded at runtime. |
+| `questions` | `Question[]` | Yes | One or more questions; empty arrays are rejected. |
+| `timeout` | `number` | No | Non-negative whole-form deadline in seconds. Overrides `ask.timeout`; `0` disables. Omitted uses settings (default `0`). |
 
 ### `Question`
 
@@ -25,7 +26,7 @@
 | `options` | `{ label: string; description?: string; preview?: string }[]` | Yes | Picker choices. `description` is explanatory text; `preview` supplies optional rich preview content to a rich ask dialog. No minimum/maximum is enforced. The runtime adds its own controls; callers must not use reserved labels `Other (type your own)`, `Chat about this`, or `Next →`. |
 | `header` | `string` | No | Optional short display chip used by rich ask dialogs. Ignored by the selector fallback. |
 | `multi` | `boolean` | No | Enables multi-select mode. Default: `false`. |
-| `recommended` | `number` | No | Zero-based recommended/default option index. Invalid indexes are ignored for selection; the fallback selector marks a valid single-select option with ` (Recommended)`. |
+| `recommended` | `number` | No | Zero-based suggested option index; not approval. Invalid indexes are ignored for selection; the fallback selector marks a valid single-select option with ` (Recommended)`. |
 
 ## Outputs
 - Single-shot result.
@@ -37,19 +38,20 @@
   - single question: `{ question, options, multi, selectedOptions, customInput?, note?, timedOut? }`
   - multiple questions: `{ results: QuestionResult[] }`; each item includes `id`, `question`, `options`, `multi`, `selectedOptions`, and optional `customInput`, `note`, and `timedOut`
   - chat redirect: `{ chatRedirect: true, questions: string[] }`
+- Expiry returns `details.timedOut: true`, explicit no-response text, and only confirmed answers. Unanswered result items have `selectedOptions: []` and `timedOut: true`; drafts and suggestions are never answers.
 - Cancellation and headless cases throw instead of returning a structured success result. The tool does not stream updates.
 
 ## Flow
 1. `AskTool.createIf()` only registers the discoverable tool when the session can prompt the user (`canPromptUser`, falling back to `hasUI`); headless sessions never get it.
 2. `execute()` also requires `context.hasUI` and `context.ui`; if missing it aborts the context and throws `ToolAbortError("Ask tool requires interactive mode")`.
-3. It reads `ask.timeout` from settings and converts seconds to milliseconds (`0` disables timeout).
+3. It resolves the per-call `timeout` before `ask.timeout` and starts one deadline for the entire outstanding form (`0` disables).
 4. If `ask.notify` is not `off`, it sends a terminal notification: `Waiting for input`.
 5. When the UI supplies `askDialog`, the tool opens one rich multi-question form. Rich options receive `header`, `description`, and `preview`; results may contain an answer note or choose the dialog's `Chat about this` redirect.
 6. Otherwise it uses the selector/editor fallback for each question:
    - single-select list plus `Other (type your own)`
    - multi-select checkbox loop plus `Done selecting` when applicable and `Other (type your own)`
 7. In fallback multi-question mode, left/right arrow handlers move backward/forward and preserve prior answers. The final question auto-advances on selection.
-8. If a timeout fires before an answer, the fallback auto-selects the valid recommended option, or the first option otherwise; result text gets ` (auto-selected after timeout)` and `details.timedOut` is set. The rich dialog reports its own `timedOut` answers.
+8. Expiry closes the outstanding picker/editor/form and returns control without cancelling the agent turn. Rich dialogs return `kind: "timeout"` with confirmed answers and explicit unanswered items. There is no automatic option selection; moving the cursor, toggling an unconfirmed multi-select draft, or leaving an editor open does not approve anything.
 9. If the user cancels without timeout, `execute()` aborts the tool context and throws `ToolAbortError("Ask tool was cancelled by the user")`.
 10. On success it formats human-readable text plus structured `details`; the TUI renderer uses `details` for rich result display.
 
@@ -77,7 +79,7 @@
 - `ask.timeout` defaults to `0` seconds (disabled); configured non-zero values are seconds.
 - Prompt guidance says provide 2–5 options, but code only requires the `options` array field and does not enforce a minimum or maximum length.
 - Option labels must not equal the reserved runtime labels `Other (type your own)`, `Chat about this`, or `Next →`.
-- Fallback timeout only applies to the option picker; once the user chooses `Other`, the editor has no timeout.
+- The deadline covers all questions, custom/note editors, review, and navigation. Input never refreshes it. Confirmed earlier answers survive expiry; unsubmitted editor text and unconfirmed multi-select drafts do not.
 - `AskTool.concurrency = "exclusive"`: the tool runs alone in its tool batch because the selector/editor UI surface is shared and concurrent `ask` calls would clobber each other.
 - The call renderer normalizes incomplete or malformed streamed arguments for display: bare string options become labels and unusable question/option entries are omitted. Execution still receives schema-validated input.
 
@@ -89,8 +91,8 @@
 - Rich-dialog contract violations (wrong result count, id, or order) throw `Error`.
 
 ## Notes
-- `recommended` is only a UI/default hint; invalid indexes are ignored. Timeout fallback uses the first option if no valid recommendation exists.
+- `recommended` is only a UI suggestion; invalid indexes are ignored. No response is not approval. The model uses independent judgment for ordinary/reversible work, but stops for disproportionate spend/cost or public-facing/external consequential actions until actual approval.
 - In fallback single-select mode the returned `selectedOptions` value strips the appended ` (Recommended)` suffix.
 - Multi-select results preserve selection order by `Set` insertion order, not original option order after arbitrary toggles.
 - Option labels and prompt text are returned verbatim in `details`. Descriptions/previews/header guide presentation but are not copied into result details.
-- `/tree` can recover the schema-valid original `questions` from a persisted `ask` call and re-open it to create a sibling answer branch; malformed legacy arguments fail closed.
+- `/tree` recovers schema-valid original ask arguments (including `timeout`) to re-open an answer branch. Malformed arguments fail closed; a timed-out re-answer does not create an answer branch.

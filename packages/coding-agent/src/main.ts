@@ -69,6 +69,7 @@ import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
+import { adoptIndependentRoot } from "./modes/controllers/foreground-session";
 import { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
@@ -109,10 +110,19 @@ import {
 	persistForeignSession,
 } from "./session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
+import { importLegacyNodeTopology } from "./session/node-topology";
 import { findMostRecentSession, resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { claimSessionOwnership, liveSessionOwnerPid } from "./session/session-liveness";
 import { ForkSourceNotFoundError, SessionManager } from "./session/session-manager";
 import { describeDirectoryFailure, SessionDirectoryError } from "./session/session-paths";
+import {
+	attachExistingHostedInteractive,
+	interactiveHostRestartArgs,
+	launchHostedInteractive,
+} from "./session-host/interactive-client";
+import { startHostedNodeService } from "./session-host/node-service";
+import { commitHostedRestartArgs } from "./session-host/ownership";
+import { getSessionHostRpcInput } from "./session-host/transport";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
@@ -283,6 +293,7 @@ export async function submitInteractiveInput(
 		| "finishPendingSubmission"
 		| "showError"
 		| "checkShutdownRequested"
+		| "getToolUIContext"
 		| "skillCommands"
 	>,
 	session: Pick<AgentSession, "prompt" | "promptCustomMessage" | "isStreaming">,
@@ -321,7 +332,11 @@ export async function submitInteractiveInput(
 			if (skillPrompt) {
 				await session.promptCustomMessage(skillPrompt.message, skillPrompt.options);
 			} else {
-				await session.prompt(input.text, { images: input.images, streamingBehavior });
+				await session.prompt(input.text, {
+					images: input.images,
+					streamingBehavior,
+					extensionCommandUI: mode.getToolUIContext(),
+				});
 			}
 		}
 	} catch (error: unknown) {
@@ -488,6 +503,13 @@ async function runInteractiveMode(
 			: [];
 
 		await mode.init();
+		if (getSessionHostRpcInput()) {
+			mode.hostedNodeService = startHostedNodeService(session, {
+				onTerminalRedraw: () => mode.ui.requestRender(true),
+				adoptFork: (forked, source) => adoptIndependentRoot(mode, forked, source),
+			});
+			await mode.hostedNodeService.ready;
+		}
 	} catch (error) {
 		mode.stop();
 		throw error;
@@ -590,6 +612,16 @@ export class SessionResolutionError extends Error {
 		super(message);
 		this.name = "SessionResolutionError";
 		this.hint = hint;
+	}
+}
+
+class SessionInUseError extends SessionResolutionError {
+	constructor(
+		readonly sessionFile: string,
+		message: string,
+		hint: string,
+	) {
+		super(message, hint);
 	}
 }
 
@@ -914,6 +946,13 @@ export async function createSessionManager(
 		return SessionManager.inMemory(cwd);
 	}
 	const openSession = async (sessionPath: string): Promise<SessionManager> => {
+		const node = await importLegacyNodeTopology(sessionPath);
+		if (node.parentId) {
+			throw new SessionResolutionError(
+				`Session "${node.id}" belongs to another session tree and cannot be resumed as an independent root.`,
+				`Resume ${node.rootSessionFile} and focus that node, or use \`proto --fork ${sessionPath}\` to create an independent history copy.`,
+			);
+		}
 		if (!parsed.noSession) {
 			// A session file is owned by one live process: resuming it here would
 			// silently persist nothing. The claim is taken before the file is read so
@@ -921,7 +960,8 @@ export async function createSessionManager(
 			if (!claimSessionOwnership(sessionPath)) {
 				const ownerPid = liveSessionOwnerPid(sessionPath);
 				const owner = ownerPid === undefined ? "Another proto process" : `Another proto process (pid ${ownerPid})`;
-				throw new SessionResolutionError(
+				throw new SessionInUseError(
+					sessionPath,
 					`${owner} is currently using this session — release it there before resuming here.`,
 					`Run \`proto --fork ${sessionPath}\` to continue in a copy, or close the other process first.`,
 				);
@@ -1147,7 +1187,10 @@ export async function buildSessionOptions(
 		if (matchedAfterMissingRolePattern) {
 			options.modelPattern = parsed.model;
 		} else if (resolved.error) {
-			if (!parsed.provider && ((resolved.configuredPatterns?.length ?? 0) > 0 || !parsed.model.includes(":"))) {
+			if (parsed.provider) {
+				// Extension providers register after options are built; preserve the explicit pin for that resolution.
+				options.modelPattern = `${parsed.provider}/${parsed.model}`;
+			} else if ((resolved.configuredPatterns?.length ?? 0) > 0 || !parsed.model.includes(":")) {
 				options.modelPattern = parsed.model;
 			} else {
 				process.stderr.write(`${chalk.red(resolved.error)}\n`);
@@ -1705,6 +1748,20 @@ export async function runRootCommand(
 				);
 			}
 		} catch (error: unknown) {
+			if (
+				error instanceof SessionInUseError &&
+				isInteractive &&
+				deps === DEFAULT_RUN_ROOT_DEPENDENCIES &&
+				!getSessionHostRpcInput()
+			) {
+				stopPendingStartupComposer();
+				stopStartupWatchdog();
+				if (await attachExistingHostedInteractive(cwd, error.sessionFile)) {
+					stopThemeWatcher();
+					await postmortem.quit(0);
+					return;
+				}
+			}
 			if (error instanceof SessionDirectoryError) {
 				process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
 				process.stderr.write(`${chalk.dim(error.hint)}\n`);
@@ -1781,6 +1838,15 @@ export async function runRootCommand(
 				await sessionManager.setSessionFile(selected.path);
 			} else {
 				if (!claimSessionOwnership(selected.path)) {
+					if (isInteractive && deps === DEFAULT_RUN_ROOT_DEPENDENCIES && !getSessionHostRpcInput()) {
+						stopPendingStartupComposer();
+						stopStartupWatchdog();
+						if (await attachExistingHostedInteractive(selected.cwd ?? cwd, selected.path)) {
+							stopThemeWatcher();
+							await postmortem.quit(0);
+							return;
+						}
+					}
 					const ownerPid = liveSessionOwnerPid(selected.path);
 					const owner =
 						ownerPid === undefined ? "another proto process" : `another proto process (pid ${ownerPid})`;
@@ -1821,6 +1887,24 @@ export async function runRootCommand(
 				} else {
 					process.stderr.write(`${chalk.yellow(`${pendingToolWarning}\n`)}`);
 				}
+			}
+		}
+
+		if (
+			isInteractive &&
+			!parsedArgs.noSession &&
+			deps === DEFAULT_RUN_ROOT_DEPENDENCIES &&
+			!getSessionHostRpcInput()
+		) {
+			sessionManager ??= SessionManager.create(cwd, parsedArgs.sessionDir);
+			if (sessionManager.getSessionFile()) {
+				stopPendingStartupComposer();
+				stopStartupWatchdog();
+				logger.endTiming();
+				await launchHostedInteractive(sessionManager, rawArgs);
+				stopThemeWatcher();
+				await postmortem.quit(0);
+				return;
 			}
 		}
 
@@ -1907,6 +1991,16 @@ export async function runRootCommand(
 			};
 			const initialArgs = applyExtensionFlags(extensionFlagSink, rawArgs) ?? parsedArgs;
 			normalizeContinueSessionArgs(initialArgs, rawArgs);
+			const startupSessionFile = sessionManager?.getSessionFile();
+			if (isInteractive && startupSessionFile) {
+				await commitHostedRestartArgs(
+					interactiveHostRestartArgs(
+						rawArgs,
+						startupSessionFile,
+						ExtensionRunner.aggregateFlags(extensionsResult.extensions),
+					),
+				);
+			}
 			if ((parsedArgs.trustedExtensions?.length ?? 0) > 0 && extensionsResult.errors.length > 0) {
 				throw new Error(
 					`Trusted extension failed to load: ${extensionsResult.errors.map(item => item.error).join("; ")}`,

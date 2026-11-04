@@ -49,6 +49,7 @@ async function createHarness(options: {
 	id: string;
 	sub?: boolean;
 	registry: AgentRegistry;
+	manager: AsyncJobManager;
 	asyncEnabled?: boolean;
 }): Promise<Harness> {
 	const agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "monitor-wake-"));
@@ -61,6 +62,7 @@ async function createHarness(options: {
 			taskDepth: options.sub ? 1 : 0,
 			parentTaskPrefix: options.sub ? options.id : undefined,
 			agentRegistry: options.registry,
+			asyncJobManager: options.manager,
 			settings: Settings.isolated({
 				"async.enabled": options.asyncEnabled ?? true,
 				"monitor.enabled": true,
@@ -145,20 +147,17 @@ async function sharedHarnesses(
 		sibling: Harness,
 	) => Promise<void>,
 ) {
-	const previous = AsyncJobManager.instance();
 	const manager = new AsyncJobManager({});
 	const registry = new AgentRegistry();
-	AsyncJobManager.setInstance(manager);
 	const harnesses: Harness[] = [];
 	try {
 		for (const id of ["monitor-parent", "monitor-worker", "monitor-sibling"]) {
-			harnesses.push(await createHarness({ id, sub: id !== "monitor-parent", registry }));
+			harnesses.push(await createHarness({ id, sub: id !== "monitor-parent", registry, manager }));
 		}
 		await run(manager, registry, harnesses[0]!, harnesses[1]!, harnesses[2]!);
 	} finally {
 		for (const harness of harnesses) await closeHarness(harness);
 		await manager.dispose();
-		AsyncJobManager.setInstance(previous);
 	}
 }
 
@@ -288,11 +287,10 @@ test("idle worker parking retains active monitor owner until cancellation", asyn
 }, 30_000);
 
 test("async disabled refuses watch creation even with a shared manager", async () => {
-	const previous = AsyncJobManager.instance();
 	const manager = new AsyncJobManager({});
-	AsyncJobManager.setInstance(manager);
 	const harness = await createHarness({
 		id: "disabled",
+		manager,
 		sub: true,
 		registry: new AgentRegistry(),
 		asyncEnabled: false,
@@ -307,7 +305,6 @@ test("async disabled refuses watch creation even with a shared manager", async (
 	} finally {
 		await closeHarness(harness);
 		await manager.dispose();
-		AsyncJobManager.setInstance(previous);
 	}
 }, 30_000);
 

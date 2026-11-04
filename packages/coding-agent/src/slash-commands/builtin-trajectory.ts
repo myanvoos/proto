@@ -5,13 +5,7 @@ import type { Trajectory } from "../session/trajectory/model";
 import { buildSessionTrajectory, defaultExportPath } from "../session/trajectory/session-source";
 import { clearSubmittedText } from "./helpers/draft";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
-import type {
-	BuiltinSlashCommand,
-	ParsedSlashCommand,
-	SlashCommandResult,
-	SlashCommandRuntime,
-	SlashCommandSpec,
-} from "./types";
+import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec } from "./types";
 
 const USAGE_TEXT = "Usage: /trajectory [view] | stats | export [<path>]";
 
@@ -87,6 +81,7 @@ async function handleText(command: ParsedSlashCommand, runtime: SlashCommandRunt
 
 const TRAJECTORY_SPEC: SlashCommandSpec = {
 	name: "trajectory",
+	scope: "node",
 	description: "Inspect session trajectory",
 	allowArgs: true,
 	subcommands: [
@@ -102,7 +97,7 @@ const TRAJECTORY_SPEC: SlashCommandSpec = {
 	handleTui: async (command, runtime) => {
 		const ctx = runtime.ctx;
 		clearSubmittedText(runtime);
-		const trajectory = buildSessionTrajectory(ctx.sessionManager);
+		const trajectory = buildSessionTrajectory(runtime.target?.sessionManager ?? ctx.viewSession.sessionManager);
 		const { verb, request } = resolveCommand(command.args);
 
 		if (verb === "" || verb === "view") {
@@ -119,7 +114,13 @@ const TRAJECTORY_SPEC: SlashCommandSpec = {
 				return;
 			}
 			try {
-				ctx.showStatus(await writeExport(trajectory, request, ctx.sessionManager.getCwd()));
+				ctx.showStatus(
+					await writeExport(
+						trajectory,
+						request,
+						(runtime.target?.sessionManager ?? ctx.viewSession.sessionManager).getCwd(),
+					),
+				);
 			} catch (err) {
 				ctx.showError(`Export failed: ${errorMessage(err)}`);
 			}
@@ -129,6 +130,4 @@ const TRAJECTORY_SPEC: SlashCommandSpec = {
 	},
 };
 
-export const BUILTIN_TRAJECTORY_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand | SlashCommandSpec> = [
-	TRAJECTORY_SPEC,
-];
+export const BUILTIN_TRAJECTORY_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [TRAJECTORY_SPEC];

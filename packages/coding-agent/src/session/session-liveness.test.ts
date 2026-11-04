@@ -90,3 +90,34 @@ function writeSessionLiveMarkerForTest(sessionFile: string, streaming: boolean, 
 		mode: 0o600,
 	});
 }
+
+test("a live selecting process can hand ownership to its host without leaving a blocking heartbeat", async () => {
+	const sessionFile = makeTempSession();
+	const moduleUrl = JSON.stringify(new URL("./session-liveness.ts", import.meta.url).href);
+	const contenderSource = `import { claimSessionOwnership, releaseSessionOwnership } from ${moduleUrl};
+const accepted = claimSessionOwnership(process.argv[1]);
+releaseSessionOwnership({ removeMarker: true });
+process.stdout.write(String(accepted));`;
+	const selectingSource = `import { claimSessionOwnership, releaseSessionOwnership } from ${moduleUrl};
+if (!claimSessionOwnership(process.argv[1])) throw new Error("selection did not own session");
+releaseSessionOwnership({ removeMarker: true });
+const child = Bun.spawnSync([process.execPath, "-e", ${JSON.stringify(contenderSource)}, process.argv[1]], { stdout: "pipe", stderr: "pipe" });
+process.stdout.write(child.stdout);
+process.stderr.write(child.stderr);
+process.exitCode = child.exitCode;`;
+	try {
+		const child = Bun.spawn([process.execPath, "-e", selectingSource, sessionFile], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [output, errors, code] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect({ code, errors, output }).toEqual({ code: 0, errors: "", output: "true" });
+		expect(readSessionLiveState(sessionFile).fresh).toBe(false);
+	} finally {
+		await fs.promises.rm(path.dirname(sessionFile), { recursive: true, force: true });
+	}
+});

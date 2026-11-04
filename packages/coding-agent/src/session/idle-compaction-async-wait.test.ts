@@ -9,7 +9,8 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { AsyncJobManager } from "../async/job-manager";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import type { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRuntime } from "../extensibility/extensions/loader";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { SessionManager } from "./session-manager";
@@ -48,14 +49,18 @@ describe("idle compaction while a background job is pending", () => {
 				timestamp: Date.now(),
 			});
 		}
-		const extensionRunner = {
-			hasHandlers: (event: string) => event === "session_before_compact",
-			emit: async (event: { type: string }) => {
-				if (event.type !== "session_before_compact") return undefined;
-				compactions++;
-				return { compaction: { summary: "summary", firstKeptEntryId: "", tokensBefore: 1_000 } };
+		const modelRegistry = new ModelRegistry(authStorage);
+		const extensionRunner = Object.assign(
+			new ExtensionRunner([], new ExtensionRuntime(), process.cwd(), sessionManager, modelRegistry),
+			{
+				hasHandlers: (event: string) => event === "session_before_compact",
+				emit: async (event: { type: string }) => {
+					if (event.type !== "session_before_compact") return undefined;
+					compactions++;
+					return { compaction: { summary: "summary", firstKeptEntryId: "", tokensBefore: 1_000 } };
+				},
 			},
-		} as unknown as ExtensionRunner;
+		);
 		session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -68,7 +73,7 @@ describe("idle compaction while a background job is pending", () => {
 				"compaction.keepRecentTokens": 1,
 				"compaction.autoContinue": false,
 			}),
-			modelRegistry: new ModelRegistry(authStorage),
+			modelRegistry,
 			extensionRunner,
 			asyncJobManager: manager,
 		});

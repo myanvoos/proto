@@ -119,7 +119,7 @@ async function createAuth(): Promise<AuthStorage> {
 
 it("keeps signed thinking in a preserved turn on its source Anthropic model", async () => {
 	const primary = getBundledModel("anthropic", "claude-sonnet-4-5") as Model;
-	const fallback = getBundledModel("anthropic", "claude-opus-4-1") as Model;
+	const fallback: Model = { ...primary, id: "claude-opus-4-1", name: "Alternate Anthropic model" };
 	const requested = await runPreservedTurn({
 		primary,
 		fallbackChain: [`${fallback.provider}/${fallback.id}`],

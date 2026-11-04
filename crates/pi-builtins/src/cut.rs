@@ -155,9 +155,9 @@ impl Default for Delimiter<'_> {
 
 fn list_to_ranges(list: &str, complement: bool) -> Result<Vec<Range>, String> {
 	if complement {
-		Range::from_list(list).map(|r| uucore::ranges::complement(&r))
+		Range::from_list(list).map(|r| uucore::ranges::complement(&r)).map_err(|error| error.to_string())
 	} else {
-		Range::from_list(list)
+		Range::from_list(list).map_err(|error| error.to_string())
 	}
 }
 

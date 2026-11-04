@@ -31,6 +31,7 @@ import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import { captureSessionCommandTarget, isSessionCommandTargetCurrent } from "../../session/command-target";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { isUserQueuedMessage, toRestoredQueuedMessage } from "../../session/queued-messages";
 import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
@@ -118,10 +119,6 @@ function pythonCommandPrefixLength(trimmedText: string): 0 | 1 | 2 {
 	if (trimmedText.charCodeAt(prefixLength) === 123) return 0;
 	return prefixLength;
 }
-
-// Commands the focused-agent view answers itself instead of bouncing to the main session: the model
-// selector already retargets whatever session is in view.
-const FOCUS_SCOPED_COMMANDS: Record<string, true> = { model: true, models: true };
 
 interface SubmittedInput {
 	text: string;
@@ -827,7 +824,10 @@ export class InputController {
 			if (this.#isLocalExtensionCommand(text)) {
 				this.ctx.editor.clearDraft(text);
 				try {
-					await this.ctx.session.prompt(text, { images: inputImages });
+					await this.ctx.session.prompt(text, {
+						images: inputImages,
+						extensionCommandUI: this.ctx.getToolUIContext(),
+					});
 				} catch (error) {
 					restoreInputDraft(this.ctx.editor, text, inputImages, inputImageLinks);
 					this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -846,7 +846,12 @@ export class InputController {
 				try {
 					await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() =>
+							this.ctx.session.prompt(text, {
+								streamingBehavior: "steer",
+								images,
+								extensionCommandUI: this.ctx.getToolUIContext(),
+							}),
 						{ imageCount: images?.length ?? 0 },
 					);
 				} catch (error) {
@@ -888,7 +893,12 @@ export class InputController {
 				try {
 					await this.ctx.withLocalSubmission(
 						text,
-						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
+						() =>
+							this.ctx.session.prompt(text, {
+								streamingBehavior: "steer",
+								images,
+								extensionCommandUI: this.ctx.getToolUIContext(),
+							}),
 						{
 							imageCount: images?.length ?? 0,
 						},
@@ -937,20 +947,50 @@ export class InputController {
 			}
 			return;
 		}
-		if (text && (text.startsWith("/") || text.startsWith("!") || parsePythonCommandInput(text))) {
+		if (text.startsWith("/")) {
+			const commandTarget = captureSessionCommandTarget(target);
+			const rootSession = this.ctx.session;
+			try {
+				if (
+					await executeBuiltinSlashCommand(text, {
+						ctx: this.ctx,
+						target: commandTarget,
+						input: { images, imageLinks },
+					})
+				)
+					return;
+			} catch (error) {
+				this.ctx.showError(error instanceof Error ? error.message : String(error));
+				return;
+			}
+			if (!isSessionCommandTargetCurrent(commandTarget, this.ctx.viewSession) || this.ctx.session !== rootSession) {
+				this.ctx.showStatus("Selection expired: the session changed");
+				return;
+			}
 			const parsed = parseSlashCommand(text);
-			const command = parsed?.name;
-			if (command === "jobs" && (!parsed?.args.trim() || parsed.args.trim() === "full")) {
-				this.ctx.editor.clearDraft(text);
-				await this.ctx.handleJobsCommand();
+			const declared =
+				parsed &&
+				(target.extensionRunner?.getCommand(parsed.name) ??
+					this.ctx.session.extensionRunner?.getCommand(parsed.name));
+			if (!declared?.scope || !parsed) {
+				this.ctx.showStatus("Extension commands require an explicit scope before use in a focused session");
 				return;
 			}
-			if (command && FOCUS_SCOPED_COMMANDS[command]) {
-				this.ctx.editor.clearDraft(text);
-				this.ctx.showModelSelector();
+			const commandSession = declared.scope === "node" ? target : rootSession;
+			if (!commandSession.extensionRunner?.getCommand(parsed.name)?.scope) {
+				this.ctx.showStatus("Extension command is unavailable in the selected session");
 				return;
 			}
-			this.ctx.showStatus("Commands run in the main session — press Esc to return first");
+			this.ctx.editor.clearDraft(text);
+			await commandSession.prompt(text, {
+				streamingBehavior,
+				images,
+				extensionCommandUI: this.ctx.getToolUIContext(),
+			});
+			return;
+		}
+		if (text.startsWith("!") || parsePythonCommandInput(text)) {
+			this.ctx.showStatus("Shell and kernel shortcuts are unavailable in a focused session");
 			return;
 		}
 		const continueShortcut = streamingBehavior === "steer" && !images && (text === "." || text === "c");
@@ -1324,7 +1364,12 @@ export class InputController {
 			try {
 				await this.ctx.withLocalSubmission(
 					text,
-					() => this.ctx.session.prompt(text, { streamingBehavior: "followUp", images }),
+					() =>
+						this.ctx.session.prompt(text, {
+							streamingBehavior: "followUp",
+							images,
+							extensionCommandUI: this.ctx.getToolUIContext(),
+						}),
 					{ imageCount: images?.length ?? 0 },
 				);
 			} catch (error) {
@@ -1337,9 +1382,13 @@ export class InputController {
 
 		this.ctx.editor.addToHistory(text);
 		try {
-			await this.ctx.withLocalSubmission(text, () => this.ctx.session.prompt(text, { images }), {
-				imageCount: images?.length ?? 0,
-			});
+			await this.ctx.withLocalSubmission(
+				text,
+				() => this.ctx.session.prompt(text, { images, extensionCommandUI: this.ctx.getToolUIContext() }),
+				{
+					imageCount: images?.length ?? 0,
+				},
+			);
 		} catch (error) {
 			restoreOnError(error);
 		}
@@ -1903,9 +1952,11 @@ export class InputController {
 	}
 
 	async cycleRoleModel(direction: "forward" | "backward" = "forward"): Promise<void> {
+		const target = this.ctx.viewSession;
 		try {
 			const cycleOrder = settings.get("cycleOrder");
-			const result = await this.ctx.viewSession.cycleRoleModels(cycleOrder, direction);
+			const result = await target.cycleRoleModels(cycleOrder, direction);
+			if (this.ctx.viewSession !== target) return;
 			if (!result) {
 				this.ctx.showStatus("Only one role model available");
 				return;

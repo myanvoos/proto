@@ -11,10 +11,11 @@ mod platform {
 	mod unix {
 		use std::{ffi::OsString, io};
 
-		use uucore::{entries::uid2usr, process::geteuid};
+		use rustix::process::geteuid;
+		use uucore::entries::uid2usr;
 
 		pub fn get_username() -> io::Result<OsString> {
-			uid2usr(geteuid()).map(Into::into)
+			uid2usr(geteuid().as_raw()).map(Into::into)
 		}
 	}
 }

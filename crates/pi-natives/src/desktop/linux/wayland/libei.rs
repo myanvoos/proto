@@ -5,7 +5,7 @@ use std::{
 
 use ashpd::desktop::{
 	PersistMode, Session,
-	remote_desktop::{DeviceType, RemoteDesktop},
+	remote_desktop::{DeviceType, RemoteDesktop, SelectDevicesOptions},
 };
 use futures::StreamExt;
 use reis::{
@@ -41,7 +41,7 @@ struct EiDevice {
 	serial: u32,
 }
 
-type RemoteDesktopSession = Session<'static, RemoteDesktop<'static>>;
+type RemoteDesktopSession = Session<RemoteDesktop>;
 
 struct PortalSession {
 	runtime: &'static tokio::runtime::Runtime,
@@ -109,21 +109,21 @@ impl Libei {
 					.await
 					.map_err(|err| format!("RemoteDesktop portal unavailable: {err}"))?;
 				let session = portal
-					.create_session()
+					.create_session(Default::default())
 					.await
 					.map_err(|err| format!("RemoteDesktop CreateSession: {err}"))?;
 				let fd = async {
 					portal
 						.select_devices(
 							&session,
-							DeviceType::Keyboard | DeviceType::Pointer,
-							None,
-							PersistMode::DoNot,
+							SelectDevicesOptions::default()
+								.set_devices(DeviceType::Keyboard | DeviceType::Pointer)
+								.set_persist_mode(PersistMode::DoNot),
 						)
 						.await
 						.map_err(|err| format!("RemoteDesktop SelectDevices: {err}"))?;
 					let response = portal
-						.start(&session, None)
+						.start(&session, None, Default::default())
 						.await
 						.map_err(|err| format!("RemoteDesktop Start: {err}"))?
 						.response()
@@ -134,7 +134,7 @@ impl Libei {
 						keyboard: devices.contains(DeviceType::Keyboard),
 					};
 					portal
-						.connect_to_eis(&session)
+						.connect_to_eis(&session, Default::default())
 						.await
 						.map(|fd| (fd, targets))
 						.map_err(|err| format!("RemoteDesktop ConnectToEIS: {err}"))
@@ -185,13 +185,13 @@ impl Libei {
 				.map_err(|err| DesktopError::input_failed(format!("libei device discovery: {err}")))?;
 				match event {
 					EiEvent::SeatAdded(event) => {
-						event.seat.bind_capabilities(&[
-							DeviceCapability::PointerAbsolute,
-							DeviceCapability::Pointer,
-							DeviceCapability::Button,
-							DeviceCapability::Scroll,
-							DeviceCapability::Keyboard,
-						]);
+						event.seat.bind_capabilities(
+							DeviceCapability::PointerAbsolute
+								| DeviceCapability::Pointer
+								| DeviceCapability::Button
+								| DeviceCapability::Scroll
+								| DeviceCapability::Keyboard,
+						);
 						self.context.flush().map_err(|err| {
 							DesktopError::input_failed(format!("libei bind seat: {err}"))
 						})?;
@@ -219,7 +219,10 @@ impl Libei {
 					EiEvent::Disconnected(event) => {
 						return Err(DesktopError::input_failed(format!(
 							"libei disconnected: {}",
-							event.explanation
+							event
+								.explanation
+								.as_deref()
+								.unwrap_or("no explanation provided")
 						)));
 					},
 					_ => {},

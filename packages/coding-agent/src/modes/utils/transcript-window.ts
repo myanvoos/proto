@@ -1,5 +1,7 @@
-export const TRANSCRIPT_WINDOW_MESSAGES = 256;
-export const TRANSCRIPT_WINDOW_BYTES = 2 * 1024 * 1024;
+export const TRANSCRIPT_WINDOW_MESSAGES = 512;
+export const TRANSCRIPT_WINDOW_BYTES = 4 * 1024 * 1024;
+/** Serialized history pages keep transport admission distinct from retained UI storage. */
+export const TRANSCRIPT_PAGE_MAX_BYTES = 1536 * 1024;
 
 /** Conservative retained string storage plus object overhead; stops once over budget. */
 export function estimateTranscriptBytes(value: unknown, limit: number): number {

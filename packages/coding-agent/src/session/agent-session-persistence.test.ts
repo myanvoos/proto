@@ -454,26 +454,28 @@ function sideAnswer(): AssistantMessage {
 	};
 }
 
-test.each(["first", "later"])("moves the live marker when branching from the %s user message", async position => {
-	const harness = await createHarness(true);
-	try {
-		const previousFile = harness.session.sessionFile!;
-		harness.sessionManager.resetLeaf();
-		const firstId = harness.sessionManager.appendMessage(userMessage("first"));
-		const laterId = harness.sessionManager.appendMessage(userMessage("later", TEST_TIMESTAMP + 1));
+test.each(["first", "later"])(
+	"retains node identity and live marker when branching from the %s user message",
+	async position => {
+		const harness = await createHarness(true);
+		try {
+			const previousFile = harness.session.sessionFile!;
+			harness.sessionManager.resetLeaf();
+			const firstId = harness.sessionManager.appendMessage(userMessage("first"));
+			const laterId = harness.sessionManager.appendMessage(userMessage("later", TEST_TIMESTAMP + 1));
 
-		const result = await harness.session.branch(position === "first" ? firstId : laterId);
-		const nextFile = harness.session.sessionFile!;
-		expect(result.cancelled).toBe(false);
-		expect(nextFile).not.toBe(previousFile);
-		expect(readSessionLiveState(nextFile).fresh).toBe(true);
-		expect(readSessionLiveState(previousFile).fresh).toBe(false);
-	} finally {
-		await closeHarness(harness);
-	}
-});
+			const result = await harness.session.branch(position === "first" ? firstId : laterId);
+			const nextFile = harness.session.sessionFile!;
+			expect(result.cancelled).toBe(false);
+			expect(nextFile).toBe(previousFile);
+			expect(readSessionLiveState(nextFile).fresh).toBe(true);
+		} finally {
+			await closeHarness(harness);
+		}
+	},
+);
 
-test("moves the live marker to a side-question branch before it can be resumed", async () => {
+test("retains the node live marker when committing a side-question continuation", async () => {
 	const harness = await createHarness(true);
 	try {
 		const previousFile = harness.session.sessionFile!;
@@ -485,9 +487,8 @@ test("moves the live marker to a side-question branch before it can be resumed",
 			harness.sessionManager.getSessionId(),
 		);
 		expect(result.cancelled).toBe(false);
-		expect(result.sessionFile).not.toBe(previousFile);
+		expect(result.sessionFile).toBe(previousFile);
 		expect(readSessionLiveState(result.sessionFile!).fresh).toBe(true);
-		expect(readSessionLiveState(previousFile).fresh).toBe(false);
 	} finally {
 		await closeHarness(harness);
 	}
@@ -515,74 +516,44 @@ test.each(["branch", "side"])("keeps the original marker when an extension cance
 	}
 });
 
-test.each(["branch", "side"])("keeps the original marker after failed %s and abort", async mode => {
-	const harness = await createHarness(true);
-	const branchSpy = spyOn(harness.sessionManager, "createBranchedSession").mockImplementation(() => {
-		throw new Error("branch persistence failed");
-	});
-	try {
-		const previousFile = harness.session.sessionFile!;
-		harness.sessionManager.appendMessage(userMessage("keep this session"));
-		const leafId = harness.sessionManager.appendMessage(userMessage("branch here", TEST_TIMESTAMP + 1));
-		const branching =
-			mode === "branch"
-				? harness.session.branch(leafId)
-				: harness.session.branchFromSideQuestion(
-						"side question",
-						sideAnswer(),
-						leafId,
-						harness.sessionManager.getSessionId(),
-					);
-		await expect(branching).rejects.toThrow("branch persistence failed");
-		expect(harness.session.sessionFile).toBe(previousFile);
-		expect(readSessionLiveState(previousFile).fresh).toBe(true);
-		await harness.session.abort();
-		expect(readSessionLiveState(previousFile)).toMatchObject({ fresh: true, streaming: false });
-	} finally {
-		branchSpy.mockRestore();
-		await closeHarness(harness);
-	}
-});
+test.each(["branch", "side"])(
+	"retains durable node identity and refuses stale runtime after a committed %s write fails",
+	async mode => {
+		const harness = await createHarness(true);
+		const branchSpy = spyOn(harness.sessionManager, "setNodeTopology").mockImplementation(async () => {
+			throw new Error("branch persistence failed");
+		});
+		try {
+			const previousFile = harness.session.sessionFile!;
+			harness.sessionManager.appendMessage(userMessage("keep this session"));
+			const leafId = harness.sessionManager.appendMessage(userMessage("branch here", TEST_TIMESTAMP + 1));
+			const branching =
+				mode === "branch"
+					? harness.session.branch(leafId)
+					: harness.session.branchFromSideQuestion(
+							"side question",
+							sideAnswer(),
+							leafId,
+							harness.sessionManager.getSessionId(),
+						);
+			await expect(branching).rejects.toThrow("branch persistence failed");
+			expect(harness.session.sessionFile).toBe(previousFile);
+			expect(harness.session.isDisposed).toBe(true);
+			await expect(harness.session.prompt("must reopen committed history")).rejects.toThrow();
+		} finally {
+			branchSpy.mockRestore();
+			await closeHarness(harness);
+		}
+	},
+);
 
-test.each(["branch", "side"])("follows the current file when %s fails after changing persistence", async mode => {
-	const harness = await createHarness(true);
-	const originalBranch = harness.sessionManager.createBranchedSession.bind(harness.sessionManager);
-	const branchSpy = spyOn(harness.sessionManager, "createBranchedSession").mockImplementation(leafId => {
-		originalBranch(leafId);
-		throw new Error("branch failed after changing files");
-	});
-	try {
-		const previousFile = harness.session.sessionFile!;
-		harness.sessionManager.appendMessage(userMessage("retain this history"));
-		const leafId = harness.sessionManager.appendMessage(userMessage("branch here", TEST_TIMESTAMP + 1));
-		const branching =
-			mode === "branch"
-				? harness.session.branch(leafId)
-				: harness.session.branchFromSideQuestion(
-						"side question",
-						sideAnswer(),
-						leafId,
-						harness.sessionManager.getSessionId(),
-					);
-		await expect(branching).rejects.toThrow("branch failed after changing files");
-		const currentFile = harness.session.sessionFile!;
-		expect(currentFile).not.toBe(previousFile);
-		expect(readSessionLiveState(currentFile).fresh).toBe(true);
-		expect(readSessionLiveState(previousFile).fresh).toBe(false);
-	} finally {
-		branchSpy.mockRestore();
-		await closeHarness(harness);
-	}
-});
-
-test.each(["new", "fork", "move"])("moves the live marker after a %s session transition", async operation => {
+test.each(["new", "move"])("moves the live marker after a %s session transition", async operation => {
 	const harness = await createHarness(true);
 	try {
 		const previousFile = harness.session.sessionFile!;
 		harness.sessionManager.appendMessage(userMessage("persist the original session"));
 		await harness.sessionManager.flush();
 		if (operation === "new") expect(await harness.session.newSession()).toBe(true);
-		else if (operation === "fork") expect(await harness.session.fork()).toBe(true);
 		else await harness.session.moveSession(harness.agentDir, path.join(harness.agentDir, "moved-sessions"));
 
 		const nextFile = harness.session.sessionFile!;

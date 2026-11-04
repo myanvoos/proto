@@ -49,6 +49,7 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { CustomEditor } from "../../modes/components/custom-editor";
 import type { Theme } from "../../modes/theme/theme";
 import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/agent-session";
+import type { CommandScope } from "../../session/command-target";
 import type { CompactMode } from "../../session/compact-modes";
 import type { CustomMessage, CustomMessagePayload } from "../../session/messages";
 import type { ReadonlySessionManager, SessionManager } from "../../session/session-manager";
@@ -142,7 +143,15 @@ interface ExtensionAskDialogChatResult {
 	kind: "chat";
 }
 
-export type ExtensionAskDialogResult = ExtensionAskDialogSubmitResult | ExtensionAskDialogChatResult;
+export interface ExtensionAskDialogTimeoutResult {
+	kind: "timeout";
+	results: ExtensionAskDialogResultItem[];
+}
+
+export type ExtensionAskDialogResult =
+	| ExtensionAskDialogSubmitResult
+	| ExtensionAskDialogChatResult
+	| ExtensionAskDialogTimeoutResult;
 
 export function getExtensionUISelectOptionLabel(option: ExtensionUISelectItem): string {
 	return typeof option === "string" ? option : option.label;
@@ -775,6 +784,7 @@ export type AssistantThinkingRenderer = (
 
 export interface RegisteredCommand {
 	name: string;
+	scope?: CommandScope;
 	description?: string;
 	getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null;
 	handler: (args: string, ctx: ExtensionCommandContext) => Promise<void>;
@@ -860,6 +870,7 @@ export interface ExtensionAPI {
 		name: string,
 		options: {
 			description?: string;
+			scope?: CommandScope;
 			getArgumentCompletions?: RegisteredCommand["getArgumentCompletions"];
 			handler: RegisteredCommand["handler"];
 		},

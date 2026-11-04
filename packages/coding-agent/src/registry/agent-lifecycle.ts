@@ -1,7 +1,9 @@
 import * as fs from "node:fs/promises";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import { readNodeTopology } from "../session/node-topology";
 import { readSessionLiveState } from "../session/session-liveness";
+import { ExecutionAdmission } from "../task/execution-admission";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import {
 	type AgentRef,
@@ -98,6 +100,8 @@ export class AgentLifecycleManager {
 	readonly #parks = new Map<string, ParkInFlight>();
 
 	readonly #revivals = new Map<string, RevivingAgent>();
+	readonly #cleanupSessions = new Map<AgentRef, AgentSession>();
+	readonly #releases = new Map<AgentRef, Promise<boolean>>();
 	#focusHeldId: string | undefined;
 	#unsubscribe: (() => void) | undefined;
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
@@ -198,6 +202,40 @@ export class AgentLifecycleManager {
 		);
 	}
 
+	releaseRuntime(id: string): Promise<void> {
+		return this.park(id);
+	}
+
+	async stopTurn(id: string): Promise<void> {
+		const ref = this.#registry.getNode(id) ?? this.#registry.get(id);
+		if (ref?.session) await ref.session.abort();
+	}
+
+	async terminateSubtree(id: string, deadlineAt = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
+		const ref = this.#registry.getNode(id) ?? this.#registry.get(id);
+		if (!ref) throw new Error(`Unknown node "${id}"`);
+		const refs = [...this.#registry.descendants(ref.nodeId ?? id).reverse(), ref];
+		// Freeze every generation synchronously before cleanup can yield to a pending revival.
+		for (const node of refs) {
+			node.generation = (node.generation ?? 0) + 1;
+			node.nodeState = "stopped";
+			this.#registry.setStatus(node.id, "aborted", node);
+		}
+		const cleanup = Promise.all(refs.map(node => this.release(node.id, node, { tombstone: true }))).then(() => {});
+		try {
+			await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => cleanup);
+		} catch (error) {
+			if (Date.now() >= deadlineAt) trackLateCleanup(cleanup, { id, resource: "agent-subtree" });
+			throw error;
+		}
+	}
+
+	async closeTree(rootId: string): Promise<void> {
+		const ref = this.#registry.getNode(rootId);
+		if (!ref || ref.nodeId !== ref.rootId) throw new Error(`Unknown tree "${rootId}"`);
+		await this.terminateSubtree(rootId);
+	}
+
 	async park(id: string): Promise<void> {
 		const existing = this.#parks.get(id);
 		if (existing) return existing.promise;
@@ -207,7 +245,7 @@ export class AgentLifecycleManager {
 		const ref = this.#registry.get(id);
 		if (!ref || adopted.ref !== ref) return;
 		const session = ref.session;
-		if (!session) return;
+		if (!session || ref.status !== "idle") return;
 		// Parking disposes the session. A live monitor must retain its owner and wake sink.
 		if (session.hasActiveMonitors() || session.ircWakesPending) {
 			this.#armTimer(id, adopted);
@@ -254,15 +292,20 @@ export class AgentLifecycleManager {
 					logger.debug("Agent park cost snapshot failed", { id, error: String(error) });
 				}
 
-				park.detached = true;
-				this.#registry.detachSession(id, ref);
-				this.#registry.setStatus(id, "parked", ref);
-
-				try {
-					await session.dispose();
-				} catch (error) {
-					logger.warn("AgentLifecycleManager.park: session dispose failed", { id, error: String(error) });
-				}
+				await ExecutionAdmission.global().withMutation([ref.nodeId ?? id], () =>
+					session.prepareRuntimeRelease(async () => {
+						if (cancelled || this.#registry.get(id) !== ref || ref.status !== "idle") return;
+						park.detached = true;
+						this.#registry.detachSession(id, ref);
+						this.#registry.setStatus(id, "parked", ref);
+						try {
+							await session.dispose({ disposition: "runtime-release" });
+						} catch (error) {
+							this.#cleanupSessions.set(ref, session);
+							throw error;
+						}
+					}),
+				);
 			} finally {
 				if (this.#parks.get(id) === park) this.#parks.delete(id);
 				this.#trimParkedRevivers();
@@ -297,6 +340,16 @@ export class AgentLifecycleManager {
 				`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read history://${id}.`,
 			);
 		}
+		if (ref.sessionFile) {
+			const node = await readNodeTopology(ref.sessionFile);
+			if (node && (node.state !== "active" || node.generation !== ref.generation)) {
+				throw new Error(`Agent "${id}" generation is no longer active.`);
+			}
+		}
+		if (ref.status === "aborted" || (ref.nodeState !== undefined && ref.nodeState !== "active")) {
+			throw new Error(`Agent "${id}" is ${ref.nodeState ?? ref.status} and cannot be revived.`);
+		}
+		if (this.#cleanupSessions.has(ref)) throw new Error(`Agent "${id}" runtime cleanup is incomplete.`);
 		const inflight = this.#revivals.get(id);
 		if (inflight?.ref === ref) return inflight.promise;
 		if (ref.session) return ref.session;
@@ -311,6 +364,7 @@ export class AgentLifecycleManager {
 	}
 
 	async #resolveAndRevive(id: string, ref: AgentRef): Promise<AgentSession> {
+		const generation = ref.generation;
 		let adoption = this.#adopted.get(id);
 		let revive = adoption?.ref === ref ? adoption.revive : undefined;
 		let coldAdopted = false;
@@ -327,7 +381,11 @@ export class AgentLifecycleManager {
 				coldAdopted = true;
 			}
 		}
-		if (this.#registry.get(id) !== ref) {
+		if (
+			this.#registry.get(id) !== ref ||
+			ref.generation !== generation ||
+			(ref.nodeState !== undefined && ref.nodeState !== "active")
+		) {
 			throw new Error(`Agent "${id}" changed while its persisted session was being prepared.`);
 		}
 		if (ref.status !== "parked" || !revive || !adoption) {
@@ -353,6 +411,20 @@ export class AgentLifecycleManager {
 			adopted && (expected === undefined || adopted.ref === expected || adopted.ref.session === expected);
 		const ref = currentMatches ? current : adoptedMatches ? adopted.ref : undefined;
 		if (!ref) return false;
+		const pending = this.#releases.get(ref);
+		if (pending) return pending;
+		const { promise: release, resolve, reject } = Promise.withResolvers<boolean>();
+		this.#releases.set(ref, release);
+		void this.#releaseRef(id, ref, options).then(resolve, reject);
+		try {
+			return await release;
+		} finally {
+			if (this.#releases.get(ref) === release) this.#releases.delete(ref);
+		}
+	}
+
+	async #releaseRef(id: string, ref: AgentRef, options?: { tombstone?: boolean }): Promise<boolean> {
+		const adopted = this.#adopted.get(id);
 		if (adopted?.ref === ref) {
 			clearTimeout(adopted.timer);
 			this.#adopted.delete(id);
@@ -364,7 +436,7 @@ export class AgentLifecycleManager {
 			await park.promise;
 		}
 
-		const live = this.#registry.get(id) === ref ? ref.session : null;
+		const live = (this.#registry.get(id) === ref ? ref.session : null) ?? this.#cleanupSessions.get(ref);
 		// The terminal transition lands before any await: the dying session's dispose path unregisters every ref
 		// that is not already aborted and detached, so a later transition would let it delete the tombstone. Detach
 		// first, because `setStatus` notifies subscribers synchronously and they must never see an aborted ref that
@@ -375,46 +447,66 @@ export class AgentLifecycleManager {
 		) {
 			logger.warn("AgentLifecycleManager.release: terminal transition rejected", { id });
 		}
+		let persistenceFailure: { error: unknown } | undefined;
 		try {
 			// The sidecar keeps a later discovery pass from reviving this transcript as a fresh parked ref.
 			if (options?.tombstone && ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
-		} finally {
-			// Detaching removed the registry's only route to the session; dispose it even when the sidecar write fails.
-			if (live) {
-				try {
-					await live.dispose();
-				} catch (error) {
-					logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
-				}
+		} catch (error) {
+			persistenceFailure = { error };
+		}
+		// Cleanup remains required even if persisting the terminal receipt failed.
+		if (live) {
+			try {
+				await live.dispose();
+				await ExecutionAdmission.global().settleNode(ref.nodeId ?? id);
+				this.#cleanupSessions.delete(ref);
+			} catch (error) {
+				this.#cleanupSessions.set(ref, live);
+				logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
+				if (persistenceFailure)
+					throw new AggregateError(
+						[persistenceFailure.error, error],
+						"Agent termination persistence and cleanup failed",
+					);
+				throw error;
 			}
 		}
+		if (persistenceFailure) throw persistenceFailure.error;
+		if (ref.sessionFile) await this.#registry.closeJournal(ref.sessionFile);
 		if (!options?.tombstone) this.#registry.unregister(id, ref);
 		return true;
 	}
 
 	async #releaseWithinDeadline(refs: AgentRef[], deadlineAt: number): Promise<void> {
 		await Promise.all(
-			refs.map(async ref => {
-				const { id } = ref;
-				const release = this.release(id, ref).then(() => {});
-				try {
-					await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => release);
-				} catch (error) {
-					if (Date.now() >= deadlineAt) {
-						trackLateCleanup(release, { id, resource: "adopted-agent" });
+			refs
+				.filter(ref => !this.#releases.has(ref))
+				.map(async ref => {
+					const { id } = ref;
+					const release = this.release(id, ref).then(() => {});
+					try {
+						await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => release);
+					} catch (error) {
+						if (Date.now() >= deadlineAt) {
+							trackLateCleanup(release, { id, resource: "adopted-agent" });
+						}
+						logger.warn("Agent cleanup exceeded its deadline", {
+							id,
+							error: error instanceof Error ? error.message : String(error),
+						});
 					}
-					logger.warn("Agent cleanup exceeded its deadline", {
-						id,
-						error: error instanceof Error ? error.message : String(error),
-					});
-				}
-			}),
+				}),
 		);
 	}
 
 	disposeFleet(fleetRoot: string, deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
 		const refs = new Set(
-			[...this.#adopted.values(), ...this.#parks.values(), ...this.#revivals.values()].map(pending => pending.ref),
+			[
+				...this.#adopted.values(),
+				...this.#parks.values(),
+				...this.#revivals.values(),
+				...[...this.#cleanupSessions.keys()].map(ref => ({ ref })),
+			].map(pending => pending.ref),
 		);
 		return this.#releaseWithinDeadline(
 			[...refs].filter(ref => ref.fleetRoot === fleetRoot),
@@ -428,7 +520,12 @@ export class AgentLifecycleManager {
 		this.#focusHeldId = undefined;
 		this.#unsubscribe = undefined;
 		const refs = new Set(
-			[...this.#adopted.values(), ...this.#parks.values(), ...this.#revivals.values()].map(pending => pending.ref),
+			[
+				...this.#adopted.values(),
+				...this.#parks.values(),
+				...this.#revivals.values(),
+				...[...this.#cleanupSessions.keys()].map(ref => ({ ref })),
+			].map(pending => pending.ref),
 		);
 		await this.#releaseWithinDeadline([...refs], deadlineAt);
 		for (const adopted of this.#adopted.values()) clearTimeout(adopted.timer);
@@ -440,6 +537,7 @@ export class AgentLifecycleManager {
 	}
 
 	async #revive(id: string, revive: AgentReviver, ref: AgentRef, adopted: AdoptedAgent): Promise<AgentSession> {
+		const generation = ref.generation;
 		let session: AgentSession;
 		try {
 			session = await revive(ref);
@@ -462,8 +560,12 @@ export class AgentLifecycleManager {
 			}
 			throw error;
 		}
-		if (this.#disposed) {
-			await session.dispose();
+		if (
+			this.#disposed ||
+			ref.generation !== generation ||
+			(ref.nodeState !== undefined && ref.nodeState !== "active")
+		) {
+			await session.prepareRuntimeRelease(() => session.dispose({ disposition: "runtime-release" }));
 			throw new Error(
 				`Agent "${id}" revival aborted: its lifecycle was disposed while its persisted session was reviving.`,
 			);
@@ -503,7 +605,7 @@ export class AgentLifecycleManager {
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;
-			void this.park(id);
+			void this.park(id).catch(error => logger.warn("Idle runtime release refused", { id, error: String(error) }));
 		}, adopted.idleTtlMs);
 		timer.unref?.();
 		adopted.timer = timer;

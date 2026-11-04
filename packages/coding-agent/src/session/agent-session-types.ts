@@ -29,11 +29,13 @@ import type { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { ExtensionRunner } from "../extensibility/extensions";
-import type { ContextUsage } from "../extensibility/extensions/types";
+import type { ContextUsage, ExtensionUIContext } from "../extensibility/extensions/types";
 import type { Skill, SkillWarning } from "../extensibility/skills";
 import type { FileSlashCommand } from "../extensibility/slash-commands";
+import type { RootExtensionEnvironment } from "../sdk";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { XdevState } from "../tools/xdev";
+import type { AgentSession } from "./agent-session";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SubagentUsageTotals } from "./session-entries";
 import type { SessionManager } from "./session-manager";
@@ -49,6 +51,7 @@ export type AgentContinueSkipReason =
 	| "post-restore-unavailable";
 
 export interface AgentSessionDisposeOptions {
+	disposition?: "runtime-release" | "tree-close";
 	drainTimeoutMs?: number;
 
 	reason?: postmortem.Reason;
@@ -88,6 +91,10 @@ export interface InitialRetryFallbackState {
 }
 
 export interface AgentSessionConfig {
+	rootExtensionEnvironment?: RootExtensionEnvironment;
+	/** Construct a fresh root; never reuse the source worker runtime or ownership. */
+	createIndependentFork?: (manager: SessionManager) => Promise<AgentSession>;
+	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 	/** Defer IRC wake turns until the owning executor admits its initial assignment. */
 	awaitingAssignment?: boolean;
 	agent: Agent;
@@ -236,6 +243,9 @@ export interface AgentSessionConfig {
 }
 
 export interface PromptOptions {
+	/** UI authority for this explicitly invoked extension command only; never binds worker tools or events. */
+	extensionCommandUI?: ExtensionUIContext;
+
 	expandPromptTemplates?: boolean;
 
 	images?: ImageContent[];

@@ -11,7 +11,7 @@ mod count_fast {
 	use libc::{_SC_PAGESIZE, S_IFREG, sysconf};
 	use uucore::hardware::SimdPolicy;
 	#[cfg(any(target_os = "linux", target_os = "android"))]
-	use uucore::pipes::{MAX_ROOTLESS_PIPE_SIZE, pipe, splice, splice_exact};
+	use uucore::pipes::{MAX_ROOTLESS_PIPE_SIZE, drain_pipe, pipe, splice};
 
 	use super::{WordCountable, wc_simd_allowed, word_count::WordCount};
 
@@ -25,7 +25,7 @@ mod count_fast {
 	) -> Result<usize, usize> {
 		let null_file = uucore::pipes::dev_null().ok_or(0_usize)?;
 
-		let (pipe_rd, pipe_wr) = pipe().map_err(|_| 0_usize)?;
+		let (pipe_rd, pipe_wr) = pipe::<false>().map_err(|_| 0_usize)?;
 
 		let mut byte_count = 0;
 
@@ -39,7 +39,7 @@ mod count_fast {
 				Ok(res) => {
 					byte_count += res;
 
-					if splice_exact(&pipe_rd, &null_file, res).is_err() {
+					if drain_pipe(&pipe_rd, &null_file, res).is_err() {
 						return Err(byte_count);
 					}
 				},

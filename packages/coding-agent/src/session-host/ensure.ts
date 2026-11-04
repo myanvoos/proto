@@ -3,9 +3,12 @@ import type { DaemonBrokerClient } from "../launch/client";
 import { daemonClientForProject } from "../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../launch/ensure";
 import { daemonRuntimeDir } from "../launch/paths";
-import { resolveWorkerSpawnCmd } from "../subprocess/worker-client";
+import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
 import { connectSessionRpc, type SessionRpcConnection } from "./client";
+import { NODE_PROTOCOL_VERSION } from "./node-protocol";
 import {
+	SESSION_HOST_BROKER_RUNTIME_ENV,
+	SESSION_HOST_INTERACTIVE_ENV,
 	SESSION_HOST_READY_PATTERN,
 	SESSION_HOST_SOCKET_ENV,
 	SESSION_HOST_WORKER_ARG,
@@ -38,15 +41,28 @@ interface NegotiateResult {
  *   timeout — the worker is listening but still bootstrapping the session.
  * - "refused": no listener (worker dead or not started yet).
  */
-export async function negotiateSessionHost(socket: string, timeoutMs: number): Promise<NegotiateResult> {
+export async function negotiateSessionHost(
+	socket: string,
+	timeoutMs: number,
+	protocolVersion = 2,
+): Promise<NegotiateResult> {
 	let connection: SessionRpcConnection | undefined;
 	let connected = false;
 	try {
 		connection = await connectSessionRpc(socket);
 		connected = true;
-		connection.sendCommand({ type: "negotiate_protocol", protocolVersion: 2, id: "probe" });
+		connection.sendCommand({ type: "negotiate_protocol", protocolVersion, id: "probe" });
 		const response = await connection.frames.findResponse("probe", timeoutMs);
-		return response.type === "response" ? { socket: "live", response } : { socket: "refused" };
+		const data = response.data;
+		const compatible =
+			response.type === "response" &&
+			response.command === "negotiate_protocol" &&
+			response.success === true &&
+			typeof data === "object" &&
+			data !== null &&
+			"protocolVersion" in data &&
+			data.protocolVersion === protocolVersion;
+		return compatible ? { socket: "live", response } : { socket: "refused", response };
 	} catch (error) {
 		logger.debug("session host probe failed", {
 			socket,
@@ -63,8 +79,8 @@ export async function negotiateSessionHost(socket: string, timeoutMs: number): P
 	}
 }
 
-export async function probeSessionHost(socket: string): Promise<boolean> {
-	return (await negotiateSessionHost(socket, sessionHostProbeTimeoutMs())).socket === "live";
+export async function probeSessionHost(socket: string, protocolVersion = 2): Promise<boolean> {
+	return (await negotiateSessionHost(socket, sessionHostProbeTimeoutMs(), protocolVersion)).socket === "live";
 }
 
 /**
@@ -75,6 +91,10 @@ export async function probeSessionHost(socket: string): Promise<boolean> {
 export interface EnsureSessionHostOptions {
 	/** Overrides the shared per-project broker client (tests, custom scopes). */
 	client?: DaemonBrokerClient;
+	/** Explicit host environment overrides (isolated embedding/test scopes). */
+	env?: Record<string, string>;
+	/** Full TUI arguments after session selection; the same host owns rendering and node operations. */
+	interactive?: { argv: readonly string[] };
 }
 
 export async function ensureSessionHost(
@@ -87,24 +107,41 @@ export async function ensureSessionHost(
 	const runtimeDir = client.runtimeDir ?? daemonRuntimeDir(client.projectDir);
 	const socket = sessionHostEndpoint(runtimeDir, name);
 	const spawn = resolveWorkerSpawnCmd(SESSION_HOST_WORKER_ARG);
+	const protocolVersion = options.interactive ? NODE_PROTOCOL_VERSION : 2;
 
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
-		const first = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs());
+		const first = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs(), protocolVersion);
 		if (first.socket === "live") return { name, socket, created: false };
 		if (first.socket === "connecting") {
 			// Listener up but the RPC loop is still bootstrapping; give it the full
 			// ready window before concluding the worker is wedged.
-			const retry = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs());
+			const retry = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs(), protocolVersion);
 			if (retry.socket === "live") return { name, socket, created: false };
 			await stopQuietly(client, name, "session host");
 		}
 
 		const existing = await describeQuietly(client, name, "session host");
 		if (existing && existing.state !== "exited" && existing.state !== "failed") {
+			const described = await client.request({ op: "describe", name, expectedId: existing.id });
+			if (described.op !== "describe") throw new Error("Unexpected session host description");
+			const actualProtocol = described.spec.pty ? NODE_PROTOCOL_VERSION : 2;
+			if (actualProtocol !== protocolVersion) {
+				const live = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs(), actualProtocol);
+				if (live.socket === "live") {
+					if (options.interactive)
+						throw new Error(
+							"This session is already hosted without a terminal; its running work was not interrupted. Use proto attach to control it, or stop the host explicitly before opening the full interface.",
+						);
+					return { name, socket, created: false };
+				}
+			}
 			if (existing.readyAt === undefined) {
 				await waitReady(client, name, "session host", undefined, sessionHostReadyTimeoutMs());
 			}
-			const adopted = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs());
+			let adopted = await negotiateSessionHost(socket, sessionHostProbeTimeoutMs(), protocolVersion);
+			if (adopted.socket === "connecting") {
+				adopted = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs(), protocolVersion);
+			}
 			if (adopted.socket === "live") return { name, socket, created: false };
 			await stopQuietly(client, name, "session host");
 			continue;
@@ -116,20 +153,27 @@ export async function ensureSessionHost(
 				spec: {
 					name,
 					application: spawn.cmd[0]!,
-					args: [...spawn.cmd.slice(1), "--resume", sessionFile, "--mode", "rpc"],
-					env: {
+					args: [
+						...spawn.cmd.slice(1),
+						...(options.interactive?.argv ?? ["--resume", sessionFile, "--mode", "rpc"]),
+					],
+					env: workerEnvFromParent({
+						...options.env,
 						[SESSION_HOST_SOCKET_ENV]: socket,
-					},
+						[SESSION_HOST_BROKER_RUNTIME_ENV]: runtimeDir,
+						[SESSION_HOST_INTERACTIVE_ENV]: options.interactive ? "1" : "",
+					}),
+					inheritEnv: false,
 					cwd: client.projectDir,
-					pty: false,
+					pty: options.interactive !== undefined,
 					ready: { log: SESSION_HOST_READY_PATTERN, timeoutMs: sessionHostReadyTimeoutMs() },
 					restart: "on-failure",
-					persist: false,
+					persist: options.interactive !== undefined,
 					detached: false,
 				},
 			});
 			if (started.op !== "start") continue;
-			const probe = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs());
+			const probe = await negotiateSessionHost(socket, sessionHostReadyTimeoutMs(), protocolVersion);
 			if (probe.socket === "live") return { name, socket, created: true };
 			await stopQuietly(client, name, "session host");
 		} catch (error) {

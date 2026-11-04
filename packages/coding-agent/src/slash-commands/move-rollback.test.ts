@@ -75,7 +75,7 @@ test("a headless /move whose workspace cannot follow moves session and process b
 	expect(moved.result).toEqual({ consumed: true });
 	expect(moved.sessionManager.getSessionFile()).toBe(moved.originalFile);
 	expect(moved.sessionManager.getCwd()).toBe(moved.source);
-	expect(moved.processCwd).toBe(moved.source);
+	expect(fs.realpathSync(moved.processCwd)).toBe(moved.source);
 	expect(moved.output).toEqual([`Move failed: settings reload failed in ${moved.target}`]);
 	expect(moved.disposed).toBe(0);
 });

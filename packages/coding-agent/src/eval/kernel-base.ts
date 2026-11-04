@@ -88,6 +88,7 @@ interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions = Kerne
 }
 
 export type FrameType =
+	| "state"
 	| "tool_request"
 	| "stdin_request"
 	| "started"
@@ -99,6 +100,8 @@ export type FrameType =
 	| "done";
 
 export interface Frame {
+	value?: unknown;
+	stateError?: string;
 	type: FrameType;
 	requestId?: string;
 	payload?: { name: string; args: unknown; completionInvocationId?: string };
@@ -287,6 +290,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	#pending = new Map<string, PendingExecution>();
 	#completedOutputSinks = new Map<string, CompletedOutputSink>();
 	#controlPending = new Map<string, (report: KernelStatusReport | undefined) => void>();
+	#statePending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void }>();
 	#readChunks: string[] = [];
 	#readChars = 0;
 	#discardingOversizedFrame = false;
@@ -496,6 +500,21 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		}
 	}
 
+	async declaredState(action: "capture" | "restore", snapshot?: unknown): Promise<unknown> {
+		if (!this.isAlive()) throw new Error("Declared state kernel is not running");
+		const id = Snowflake.next();
+		const pending = Promise.withResolvers<unknown>();
+		this.#statePending.set(id, pending);
+		const timer = setTimeout(() => pending.reject(new Error("Declared state request timed out")), 15_000);
+		try {
+			void this.#writeLine(JSON.stringify({ type: "state", id, action, snapshot })).catch(pending.reject);
+			return await pending.promise;
+		} finally {
+			clearTimeout(timer);
+			this.#statePending.delete(id);
+		}
+	}
+
 	/** True when the kernel reports in-flight request tasks. Undefined = unknown (treat as busy). */
 	async isBusy(): Promise<boolean | undefined> {
 		const report = await this.requestStatus();
@@ -622,13 +641,11 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	}
 
 	async #writeLine(line: string): Promise<void> {
-		if (!this.#stdin) {
-			throw new Error(`${this.#options.languageName} kernel stdin is not open`);
-		}
 		if (this.#options.traceIpc) {
 			logger.debug(`${this.#options.languageName}Kernel send`, { preview: line.slice(0, 120) });
 		}
 		try {
+			if (!this.#stdin) throw new Error(`${this.#options.languageName} kernel stdin is not open`);
 			await this.#stdin.write(`${line}\n`);
 			await this.#stdin.flush();
 		} catch (error) {
@@ -786,6 +803,9 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 	}
 
 	#clearControlPending(): void {
+		for (const pending of this.#statePending.values())
+			pending.reject(new Error("Declared state kernel disconnected"));
+		this.#statePending.clear();
 		const pending = [...this.#controlPending.values()];
 		this.#controlPending.clear();
 		for (const resolve of pending) resolve(undefined);
@@ -902,6 +922,12 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		if (this.#options.onFrame?.(frame)) return;
 		const rid = frame.id;
 		if (!rid) return;
+		const state = this.#statePending.get(rid);
+		if (state) {
+			if (frame.stateError) state.reject(new Error(frame.stateError));
+			else state.resolve(frame.value);
+			return;
+		}
 		const control = this.#controlPending.get(rid);
 		if (control) {
 			this.#controlPending.delete(rid);

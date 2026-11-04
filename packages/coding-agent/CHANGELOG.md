@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- SDK session forks now return a new independent `AgentSession` instead of replacing the source session; adopt the returned root explicitly.
+- Persisted interactive sessions now run in a supervised host; scripted clients must use the typed node protocol for full-TUI hosts rather than the line-oriented attach interface.
+
+### Added
+
+- Preserve explicitly declared Python and JavaScript data across compatible session forks, temporal navigation and restarts with `declare_state` and `declareState`.
+- Set an optional Ask deadline without accepting a recommendation on silence; unanswered consequential actions still require approval.
+- Address live and parked session nodes through typed direct and RPC backends, with bounded history pages and stale-target protection.
+- Configure admitted-child and tree-size limits alongside fair execution scheduling across hosted session trees.
+
+### Changed
+
+- Retain twice as much recent main and fleet transcript history, with larger bounded history pages for clients.
+- Detach a full terminal interface with Ctrl+] and reattach without stopping its session or workers.
+- Fork any live session node into an independent root while preserving the source tree, trusted extension environment and shared workspace.
+- Keep abandoned continuation workers browse-only when navigating older history; model context rewind continues to preserve current computation.
+
+### Fixed
+
+- Complete nested worker waits at concurrency one without retaining the execution capacity their children need.
+- Route focused commands, selectors and keyboard actions to the selected node, refusing selections that became stale.
+- Show notifications and dialogs from manually invoked focused extension commands without granting interactive UI to autonomous workers.
+- Keep descendants, pending results and declared state available when a parent runtime is parked or revived.
+- Deliver settled worker results without waiting for slow cleanup, while retaining resource reservations until cleanup actually completes.
+- Preserve complete socket replies under backpressure, client replacement and reconnect, including large and non-ASCII frames.
+- Restore the committed foreground root and model after a host restart without replaying its initial prompt.
+- Keep blobs written during garbage collection until a later sweep can safely reclaim them.
+
+## [19.2.2] - 2026-11-03
+
+### Changed
+
+- Update JavaScript dependencies, including Anthropic SDK 1.4, Claude Agent SDK 0.3.317 and Puppeteer 25.16; use Node.js 26.13 LTS for development.
+
+### Fixed
+
+- Clarify that background commands reuse the main Python, Node and Bun kernels while keeping shell state isolated.
+
 ## [19.2.1] - 2026-11-03
 
 ### Changed

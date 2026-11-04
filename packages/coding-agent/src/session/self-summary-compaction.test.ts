@@ -13,7 +13,8 @@ import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mo
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
-import type { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRunner } from "../extensibility/extensions";
+import { ExtensionRuntime } from "../extensibility/extensions/loader";
 import { AgentSession } from "./agent-session";
 import { AuthStorage } from "./auth-storage";
 import { SessionManager } from "./session-manager";
@@ -94,6 +95,7 @@ describe("self-written compaction summary", () => {
 		};
 
 		const sessionManager = SessionManager.inMemory();
+		const modelRegistry = new ModelRegistry(authStorage!);
 		session = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -106,9 +108,9 @@ describe("self-written compaction summary", () => {
 				"compaction.selfSummary": options.selfSummary ?? true,
 				...(options.smolRole ? { "modelRoles.smol": `anthropic/${SMOL_MODEL_ID}` } : {}),
 			}),
-			modelRegistry: new ModelRegistry(authStorage!),
+			modelRegistry,
 			sideStreamFn: streamFn,
-			extensionRunner: extensionCompactor(options.native),
+			extensionRunner: extensionCompactor(sessionManager, modelRegistry, options.native),
 		});
 
 		appendWork(sessionManager);
@@ -149,7 +151,11 @@ describe("self-written compaction summary", () => {
 	 * compaction. Only the two members the session consults are stubbed; the cast is confined here
 	 * so the test states the hook contract rather than reconstructing the whole runner.
 	 */
-	function extensionCompactor(native?: "openai" | "anthropic"): ExtensionRunner {
+	function extensionCompactor(
+		sessionManager: SessionManager,
+		modelRegistry: ModelRegistry,
+		native?: "openai" | "anthropic",
+	): ExtensionRunner {
 		const preserveData =
 			native === "openai"
 				? {
@@ -174,7 +180,10 @@ describe("self-written compaction summary", () => {
 				},
 			}),
 		};
-		return stub as unknown as ExtensionRunner;
+		return Object.assign(
+			new ExtensionRunner([], new ExtensionRuntime(), process.cwd(), sessionManager, modelRegistry),
+			stub,
+		);
 	}
 
 	function committedSummary(sessionManager: SessionManager): string {

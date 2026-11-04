@@ -75,6 +75,7 @@ import {
 import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSession, AgentSessionEvent, DroppedPrompt } from "../session/agent-session";
+import type { SessionCommandTarget } from "../session/command-target";
 import type { CompactMode } from "../session/compact-modes";
 import { detachedSessionHolder } from "../session/detached-session-holder";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
@@ -82,6 +83,7 @@ import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
 import { getRecentSessions } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
+import type { HostedNodeService } from "../session-host/node-service";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
 import { formatDuration } from "../slash-commands/helpers/format";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
@@ -342,6 +344,7 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 const CTRL_L_APPEARANCE_RESPONSE_DEADLINE_MS = 2000;
 
 export class InteractiveMode implements InteractiveModeContext {
+	hostedNodeService: HostedNodeService | undefined;
 	#ownsStartedUi: boolean;
 	session: AgentSession;
 	refreshScopedModelsAfterLogin?: () => Promise<void>;
@@ -503,7 +506,6 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #sideQuestionController: SideQuestionController;
 	readonly #sideAgentController: SideAgentController;
 	readonly #commandController: CommandController;
-	readonly #checklistCommandController: ChecklistCommandController;
 	readonly #eventController: EventController;
 	get eventController(): EventController {
 		return this.#eventController;
@@ -533,7 +535,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#focusController.focusAgent(id);
 	}
 
-	attachSessionView(target: AgentSession): Promise<void> {
+	async attachSessionView(target: AgentSession): Promise<void> {
+		await this.hostedNodeService?.setSession(target);
 		const attached = this.#focusController.attachSwappedMain(target);
 
 		this.#subscribeToSessionScopedEvents();
@@ -734,7 +737,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController = new ExtensionUiController(this);
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
-		this.#checklistCommandController = new ChecklistCommandController(this);
 		this.#selectorController = new SelectorController(this);
 		this.#focusController = new SessionFocusController(this);
 		this.#inputController = new InputController(this);
@@ -2515,6 +2517,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		this.hostedNodeService?.close();
+		this.hostedNodeService = undefined;
 		this.#appearanceRefreshRequest = undefined;
 		if (this.loadingAnimation) {
 			this.#stopLoadingAnimation(false);
@@ -3030,20 +3034,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleDebugTranscriptCommand();
 	}
 
-	handleChecklistCommand(args: string): Promise<void> {
-		return this.#checklistCommandController.handleChecklistCommand(args);
+	handleChecklistCommand(args: string, target?: SessionCommandTarget): Promise<void> {
+		return new ChecklistCommandController(this, target).handleChecklistCommand(args);
 	}
 
-	handleAdvisorStatusCommand(): Promise<void> {
-		return this.#commandController.handleAdvisorStatusCommand();
+	handleAdvisorStatusCommand(target?: SessionCommandTarget): Promise<void> {
+		return this.#commandController.handleAdvisorStatusCommand(target);
 	}
 
-	handleJobsCommand(): Promise<void> {
-		return this.#commandController.handleJobsCommand();
+	handleJobsCommand(target?: SessionCommandTarget): Promise<void> {
+		return this.#commandController.handleJobsCommand(target);
 	}
 
-	handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {
-		return this.#commandController.handleUsageCommand(reports);
+	handleUsageCommand(reports?: UsageReport[] | null, target?: SessionCommandTarget): Promise<void> {
+		return this.#commandController.handleUsageCommand(reports, target);
 	}
 
 	handleHelpCommand(): void {
@@ -3054,12 +3058,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#commandController.handleHotkeysCommand();
 	}
 
-	handleToolsCommand(): void {
-		this.#commandController.handleToolsCommand();
+	handleToolsCommand(target?: SessionCommandTarget): void {
+		this.#commandController.handleToolsCommand(target);
 	}
 
-	handleContextCommand(): void {
-		this.#commandController.handleContextCommand();
+	handleContextCommand(target?: SessionCommandTarget): void {
+		this.#commandController.handleContextCommand(target);
 	}
 
 	prepareSessionSwitch(): void {
@@ -3073,21 +3077,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		await this.#commandController.handleClearCommand();
 	}
 
-	handleResetContextCommand(): Promise<void> {
-		return this.#commandController.handleResetContextCommand();
+	handleResetContextCommand(target?: SessionCommandTarget): Promise<void> {
+		return this.#commandController.handleResetContextCommand(target);
 	}
 
-	async handleForkCommand(): Promise<void> {
+	async handleForkCommand(target?: SessionCommandTarget): Promise<void> {
 		this.#sideQuestionController.dispose();
-		await this.#commandController.handleForkCommand();
+		await this.#commandController.handleForkCommand(target);
 	}
 
 	async handleMoveCommand(targetPath?: string): Promise<void> {
 		await this.#commandController.handleMoveCommand(targetPath);
 	}
 
-	handleRenameCommand(title: string): Promise<void> {
-		return this.#commandController.handleRenameCommand(title);
+	handleRenameCommand(title: string, target?: SessionCommandTarget): Promise<void> {
+		return this.#commandController.handleRenameCommand(title, target);
 	}
 
 	showAgentFleet(options?: { requireContent?: boolean; armCloseTap?: boolean }): void {
@@ -3125,8 +3129,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		target?: SessionCommandTarget,
 	): Promise<CompactionOutcome> {
-		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush);
+		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush, target);
 	}
 
 	executeCompaction(
@@ -3163,32 +3168,32 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#selectorController.showTrajectoryView();
 	}
 
-	showModelSelector(options?: { temporaryOnly?: boolean }): void {
-		this.#selectorController.showModelSelector(options);
+	showModelSelector(options?: { temporaryOnly?: boolean }, target?: SessionCommandTarget): void {
+		this.#selectorController.showModelSelector(options, target);
 	}
 
 	showPluginSelector(mode?: "install" | "uninstall"): void {
 		void this.#selectorController.showPluginSelector(mode);
 	}
 
-	showUserMessageSelector(): void {
-		this.#selectorController.showUserMessageSelector();
+	showUserMessageSelector(target?: SessionCommandTarget): void {
+		this.#selectorController.showUserMessageSelector(target);
 	}
 
 	showCopySelector(): void {
 		this.#selectorController.showCopySelector();
 	}
 
-	showTreeSelector(options?: { filterMode?: TreeFilterMode }): Promise<void> {
-		return this.#selectorController.showTreeSelector(options);
+	showTreeSelector(options?: { filterMode?: TreeFilterMode }, target?: SessionCommandTarget): Promise<void> {
+		return this.#selectorController.showTreeSelector(options, target);
 	}
 
-	annotateLastResponse(note?: string): Promise<void> {
-		return this.#selectorController.annotateLastResponse(note);
+	annotateLastResponse(note?: string, target?: SessionCommandTarget): Promise<void> {
+		return this.#selectorController.annotateLastResponse(note, target);
 	}
 
-	showBookmarks(): void {
-		this.#selectorController.showBookmarks();
+	showBookmarks(target?: SessionCommandTarget): void {
+		this.#selectorController.showBookmarks(target);
 	}
 
 	showSessionSelector(source?: ForeignSessionSource): void {

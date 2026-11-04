@@ -363,12 +363,12 @@ test("viewer pages a bounded tool-safe tail across a single-user autonomous hist
 		expect(viewer.render(100).join("\n")).toContain("newer →");
 		viewer.handleInput("\x1b[F");
 		viewer.handleInput("\x1b[6~");
-		expect(viewer.render(100).join("\n")).toContain("tool-result-0255");
+		expect(viewer.render(100).join("\n")).toContain("tool-result-0511");
 		viewer.handleInput("G");
 		expect(viewer.render(100).join("\n")).toContain("tool-result-0699");
 		viewer.handleInput("\x1b[H");
 		viewer.handleInput("\x1b[5~");
-		expect(viewer.render(100).join("\n")).toContain("tool-result-0443");
+		expect(viewer.render(100).join("\n")).toContain("tool-result-0187");
 	} finally {
 		viewer.dispose();
 	}
@@ -526,7 +526,7 @@ test("catching up after a long pause never constructs cards outside the newest b
 		);
 		vi.advanceTimersByTime(300);
 		expect(viewer.render(100).join("\n")).toContain("tool-result-1999");
-		expect(cards).toBeLessThanOrEqual(256);
+		expect(cards).toBe(512);
 		viewer.handleInput("g");
 		expect(viewer.render(100).join("\n")).toContain("initial");
 	} finally {

@@ -1603,6 +1603,13 @@ export class TUI extends Container {
 		}, TUI.#RESIZE_VIEWPORT_SETTLE_MS);
 	}
 
+	#retainedResizeRowCount(window: readonly string[], cursorOffset: number, width: number): number {
+		// Hosts may discard empty padding below the cursor rather than push history on a shrink.
+		let end = window.length;
+		while (end > cursorOffset + 1 && !Bun.stripANSI(window[end - 1]!).trim()) end--;
+		return this.#reflowedRowCount(window, 0, end, width);
+	}
+
 	/**
 	 * Blank the mutable live viewport on the normal screen before a resize
 	 * transaction waits out the drag. The terminal keeps reflowing the normal
@@ -1627,10 +1634,9 @@ export class TUI extends Container {
 			return "";
 		}
 		if (this.terminal.rows < this.#previousHeight) {
-			const staleRows = this.#reflowedRowCount(
+			const staleRows = this.#retainedResizeRowCount(
 				this.#providerWindow,
-				0,
-				this.#providerWindow.length,
+				this.#parkedViewportOffset,
 				this.terminal.columns,
 			);
 			const top = Math.max(0, Math.min(this.#providerViewportTop, this.terminal.rows - staleRows));
@@ -1832,7 +1838,7 @@ export class TUI extends Container {
 		// self-identifying and discarded by tag whenever they arrive.
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
-		const staleRows = this.#reflowedRowCount(probe.window, 0, probe.window.length, width);
+		const staleRows = this.#retainedResizeRowCount(probe.window, probe.offset, width);
 		const reportedTop =
 			reportedRow === undefined
 				? this.#providerViewportTop

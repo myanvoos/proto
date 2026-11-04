@@ -1970,7 +1970,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "interaction",
 			group: "Notifications",
 			label: "Ask Timeout",
-			description: "Auto-select the recommended ask option after this many seconds (0 disables)",
+			description: "Return without an answer after this many seconds (0 disables)",
 			options: [
 				{ value: "0", label: "Disabled" },
 				{ value: "15", label: "15 seconds" },
@@ -3350,6 +3350,27 @@ export const SETTINGS_SCHEMA = {
 				{ value: "32", label: "32 workers" },
 				{ value: "64", label: "64 workers" },
 			],
+		},
+	},
+
+	"orchestrator.maxChildrenPerNode": {
+		type: "number",
+		default: 256,
+		ui: {
+			tab: "tasks",
+			group: "Workers",
+			label: "Max Children Per Node",
+			description: "Maximum admitted child nodes owned by one session node; 0 disables this count limit",
+		},
+	},
+	"orchestrator.maxNodesPerTree": {
+		type: "number",
+		default: 4096,
+		ui: {
+			tab: "tasks",
+			group: "Workers",
+			label: "Max Nodes Per Tree",
+			description: "Maximum admitted worker nodes in one session ownership tree; 0 disables this count limit",
 		},
 	},
 

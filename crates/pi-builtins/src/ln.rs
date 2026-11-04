@@ -157,7 +157,7 @@ fn ln_main(matches: &ArgMatches, host: &mut Host) -> LnResult<()> {
 		OverwriteMode::NoClobber
 	};
 
-	let backup_mode = backup_control::determine_backup_mode(matches)
+	let backup_mode = backup_control::determine_backup_mode(host.var("VERSION_CONTROL").map(str::to_owned), matches)
 		.map_err(|error| LnError::Message(error.to_string()))?;
 	let backup_suffix = backup_control::determine_backup_suffix(matches);
 

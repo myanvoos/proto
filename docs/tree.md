@@ -1,16 +1,20 @@
 # `/tree` Command Reference
 
-`/tree` opens the interactive **Session Tree** navigator. It lets you jump to any entry in the current session file and continue from that point.
+`/tree` opens the interactive **Session Tree** navigator for the selected session node, including a focused worker. It lets you select a historical entry and continue that node from the corresponding boundary.
 
-This is an in-file leaf move, not a new session export.
+This is a user temporal transition within the same node and transcript, not a new session export. It restores supported declared interpreter state and can permanently abandon children of the discarded continuation; it is not merely a model-context edit.
 
 ## What `/tree` does
 
 - Builds a tree from current session entries (`SessionManager.getTree()`)
 - Opens `TreeSelectorComponent` with keyboard navigation, filters, and search
 - On selection, calls `AgentSession.navigateTree(targetId, { summarize, customInstructions })`
-- Rebuilds visible chat from the new leaf path
+- Freezes new admissions into the selected node's subtree and rejects running or already-admitted work there
+- Prepares the exact declared-state boundary before changing history or disposing kernels
+- Commits the new continuation and its generation durably, then rebuilds visible chat from that path
 - Optionally prefills editor text when selecting a user/custom message
+
+An independently active ancestor or sibling is not a reason to reject an idle node's navigation. A busy descendant is: the backend checks the affected subtree atomically, rather than relying only on the selector's earlier busy check.
 
 Primary implementation:
 
@@ -18,8 +22,10 @@ Primary implementation:
 - `src/modes/controllers/input-controller.ts` (keybinding wiring, double-escape behavior)
 - `src/modes/controllers/selector-controller.ts` (tree UI launch + summary prompt flow)
 - `src/modes/components/tree-selector.ts` (navigation, filters, search, labels, rendering)
-- `src/session/agent-session.ts` (`navigateTree` leaf switching + optional summary)
-- `src/session/session-manager.ts` (`getTree`, `branch`, `branchWithSummary`, `resetLeaf`, label persistence)
+- `src/session/agent-session.ts` (`navigateTree` transition + optional summary)
+- `src/session/temporal-operations.ts` (subtree/kernel gates, spawn-anchor abandonment, durable transition journal)
+- `src/session/state-manifest.ts` (exact declared-state capture, preparation and activation)
+- `src/session/session-manager.ts` (history, topology/generation persistence, transition recovery and labels)
 
 ## How to open it
 
@@ -191,13 +197,17 @@ Flow details:
 
 `navigateTree` internals:
 
-- flushes pending bash output and validates the target
-- collects abandoned-branch entries from old leaf to common ancestor
+- freezes subtree admissions, checks for running/admitted work, and holds the source kernel boundary gate across the transition
+- flushes pending bash output, validates the target, and collects entries from the old leaf to the common ancestor for any requested summary
 - emits cancellable `session_before_tree`; an extension may supply the requested summary
 - runs the default summarizer only when requested, entries need summarizing, and no hook summary was supplied
-- applies `branchWithSummary(...)`, `branch(newLeafId)`, or `resetLeaf()` as appropriate
-- rebuilds model context, checkpoint/rewind state, advisor state, checklist items, and provider sessions affected by the history rewrite
+- prepares and validates the exact declared-state boundary before the destructive part of the transition
+- durably journals the cut and abandoned child generations, replaces source kernels with the prepared state, and applies the selected history branch
+- persists the new state boundary and node generation; the journal makes an interrupted cut recoverable on reopen
+- rebuilds model context, checkpoint/rewind bookkeeping, advisor state, checklist items, and provider sessions affected by the history rewrite
 - emits `session_tree` and rebuilds again if handlers may have appended entries
+
+A failure after the durable cut has committed is not an undo: the damaged runtime is refused further execution and the committed history is recovered. Reopen the node rather than continuing stale runtime context.
 
 If summary is requested but there is nothing to summarize, navigation proceeds without a summary entry.
 
@@ -210,17 +220,32 @@ Label edits in tree UI call `appendLabelChange(targetId, label)`.
 - labels are stored as append-only `label` entries
 - tree nodes display resolved label state, not raw label-entry history
 
+## Child ownership and historical branches
+
+History remains browsable after a cut. Child ownership is decided by durable spawn-entry identity and the selected entry's ancestry, **not timestamps**:
+
+- An earlier child's spawn anchor on the retained lineage remains valid; that child stays addressable.
+- A child spawned only on the abandoned continuation, and its descendants, become **browse-only** in abandoned generations. Sends, revival and mutations are refused.
+- Abandonment survives restart and is permanent for those generations. Revisiting their old history does **not** reactivate them. It is distinct from explicitly stopping/killing a node.
+- A spawn racing navigation is either admitted before the freeze and prevents the cut, or refused while the subtree is frozen; it cannot silently appear outside the committed ownership graph.
+- Navigating a child does not rewrite an answer already recorded in its parent's transcript. A later accepted send continues the child from its new head.
+
 ## `/tree` vs adjacent operations
 
-| Operation | Scope                                            | Result                                                                                                                                                   |
-| --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/tree`   | Current session file                             | Moves leaf to selected point (same file)                                                                                                                 |
-| `/branch` | Usually current session file -> new session file | Branches from selected **user** message into a new session file (independent of `doubleEscapeAction`)                                                   |
-| `/fork`   | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
-| `/resume` | Session list                                     | Switches to another session file                                                                                                                         |
+| Operation | Scope | Result |
+| --- | --- | --- |
+| `/tree` | Selected session node | Changes its active continuation in the same transcript, with exact declared-state restoration and spawn-anchor abandonment |
+| `/branch` | Selected session node | Repositions before a selected **user** message and returns it as an editable draft; retains node identity and transcript |
+| `/fork` | Selected session node, at any supported depth | Constructs a fresh independent root from its active lineage and declared state, then adopts that root in the foreground |
+| `/resume` | Root-session selection | Opens another persisted session |
 
-Key distinction: `/tree` is a navigation/repositioning tool inside one session file. `/branch`, `/fork`, and `/resume` all change session-file context.
+An interactive fork leaves the source runtime, ownership tree and recorded results intact. The new root rebuilds root instructions/capabilities and has fresh scheduling/kernel ownership. Its inherited mission and lifecycle messages are history, not instructions to adopt source workers; live descendants and their transcript/artifact directories are not cloned. Readable output payloads are copied separately. The workspace remains shared: neither fork nor navigation snapshots or rolls back files, worktrees, external processes or other unmanaged resources.
 
+### User navigation is not model `rewind`
+
+Model [`checkpoint`/`rewind(report)`](./tools/rewind.md) compresses conversation context while keeping current computation and external state. It does not restore an earlier declared-state manifest or abandon workers just because exploratory prose was dropped. User `/tree` and `/branch` use the temporal operation described here instead.
+
+Declared continuity is selected-data restoration, not heap/process cloning. Missing exact captures, incompatible environments, corrupt manifests and unsupported aliases/resources in declared state are visible failures before destructive navigation. See [declared state at temporal boundaries](./session-operations.md#declared-state-at-temporal-boundaries) for the declaration APIs, supported scope and restart contract.
 ## Operator workflows
 
 ### Re-run from an earlier user prompt without losing current branch

@@ -378,6 +378,11 @@ function launchOutcome(
 
 function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 	switch (result.op) {
+		case "terminal_attach":
+		case "terminal_resize":
+		case "terminal_detach":
+		case "execution-acquire":
+		case "execution-release":
 		case "ping":
 		case "read":
 		case "shutdown":
@@ -452,6 +457,11 @@ async function toolDetails(result: DaemonRpcResult): Promise<LaunchToolDetails> 
 			return { op: "restart", daemon: result.daemon, timedOut: result.readyTimedOut, ready: result.ready };
 		case "describe":
 			return { op: "describe", daemon: result.daemon, spec: result.spec };
+		case "terminal_attach":
+		case "terminal_resize":
+		case "terminal_detach":
+		case "execution-acquire":
+		case "execution-release":
 		case "ping":
 		case "read":
 		case "shutdown":

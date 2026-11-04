@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { AsyncJobManager } from "../async/job-manager";
 import { isProviderEnabled } from "../capability";
 import { invalidModelSelectorReason, resolveAgentSpawnModelSelection } from "../config/model-resolver";
 import type { LocalProtocolOptions } from "../internal-urls";
@@ -16,6 +17,12 @@ import { isIrcEnabled } from "../tools/fleet";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
+import {
+	ExecutionAdmission,
+	ensureExecutionTopology,
+	executionIdentity,
+	type SpawnReservation,
+} from "./execution-admission";
 import { type ExecutorOptions, runSubprocess } from "./executor";
 import {
 	applyEligibleNestedPatches,
@@ -27,8 +34,6 @@ import {
 	renderIsolationSummary,
 	runIsolatedSubprocess,
 } from "./isolation-runner";
-import { generateWorkerName } from "./name-generator";
-import { AgentOutputManager } from "./output-manager";
 import { describeDisabledAgent, describeUnknownAgent, resolveSpawnPreflight } from "./spawn-policy";
 import type { AgentDefinition, AgentProgress, SingleResult } from "./types";
 import { recordSubagentRun } from "./usage-rollup";
@@ -156,12 +161,6 @@ function trimToUndefined(value: string | undefined): string | undefined {
 	return trimmed || undefined;
 }
 
-function sanitizeAgentId(value: string | undefined): string | undefined {
-	const trimmed = trimToUndefined(value);
-	const sanitized = trimmed?.replace(/[^A-Za-z0-9_-]+/g, "").slice(0, 48);
-	return sanitized || undefined;
-}
-
 function resolveSchema(request: StructuredSubagentRequest, agent: AgentDefinition): StructuredSubagentSchemaResolution {
 	const mode = request.schemaMode ?? request.session.outputSchemaMode ?? "permissive";
 	if (Object.hasOwn(request, "outputSchema")) {
@@ -282,16 +281,6 @@ export async function resolveEffectiveSubagentPolicy(
 	};
 }
 
-async function reserveStructuredSubagentId(
-	session: ToolSession,
-	identity: StructuredSubagentIdentity | undefined,
-): Promise<string> {
-	if (identity?.id) return identity.id;
-	const manager = session.agentOutputManager ?? new AgentOutputManager(session.getArtifactsDir ?? (() => null));
-	session.agentOutputManager ??= manager;
-	return manager.allocate(sanitizeAgentId(identity?.label) ?? generateWorkerName());
-}
-
 interface ArtifactLease {
 	sessionFile: string | null;
 	artifactsDir: string;
@@ -340,6 +329,11 @@ function buildExecutorOptions(
 	const restrictToolNames = session.restrictToolNames === true;
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
+		rootExtensionEnvironment: session.rootExtensionEnvironment,
+		agentDisplayName:
+			trimToUndefined(request.identity?.label) ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
+		parentNode: session.sessionManager?.getNodeTopology(),
+		spawnAnchorId: session.sessionManager?.getLeafId() ?? undefined,
 		cwd: session.cwd,
 		additionalDirectories: session.additionalDirectories,
 		getApiKey: session.getApiKey,
@@ -383,6 +377,8 @@ function buildExecutorOptions(
 		onProgress: request.onProgress,
 		authStorage: session.authStorage,
 		modelRegistry: session.modelRegistry,
+		streamFn: session.streamFn,
+		customTools: session.customTools,
 		settings: session.settings,
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		enableMCP,
@@ -479,6 +475,37 @@ function attachStructuredOutputMetadata(result: SingleResult, schema: Structured
 }
 
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {
+	await ensureExecutionTopology(request.session);
+	const identity = executionIdentity(request.session);
+	const manager = request.session.asyncJobManager ?? AsyncJobManager.instance();
+	if (!manager)
+		throw new StructuredSubagentError("preflight", "Subagent execution requires an async job admission owner");
+	const accepted = manager.reserve({
+		ownerId: request.session.getAsyncJobOwnerId?.() ?? identity.nodeId,
+		bytes: Buffer.byteLength(
+			JSON.stringify({
+				assignment: request.assignment,
+				context: request.context,
+				outputSchema: request.outputSchema,
+			}),
+		),
+	});
+	let settlement: Promise<void> | undefined;
+	try {
+		return await ExecutionAdmission.global().withWaitPermit(identity.nodeId, () =>
+			executeStructuredSubagent(request, completion => {
+				settlement = completion;
+			}),
+		);
+	} finally {
+		accepted.release(settlement);
+	}
+}
+
+async function executeStructuredSubagent(
+	request: StructuredSubagentRequest,
+	onSettlement: (completion: Promise<void>) => void,
+): Promise<StructuredSubagentResult> {
 	const policy = await resolveEffectiveSubagentPolicy(request);
 	const lease = await leaseArtifacts(request.session, request.invocationKind);
 	let changesApplied: boolean | null = null;
@@ -486,6 +513,8 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 	let requiresRecoveryArtifacts = false;
 	let completedSuccessfully = false;
 	let deferredCleanup: Promise<void> | undefined;
+	let nodeReservation: SpawnReservation | undefined;
+	let settlement: Promise<void> | undefined;
 	// Set once the child returns: later steps (metadata, isolation merge, nested patches) can still throw, and that
 	// failure must carry the exit status and artifact the child produced.
 	let settled: SingleResult | undefined;
@@ -495,117 +524,145 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			? (result: SingleResult) => request.session.recordEvalSubagentUsage?.(result.usage?.output ?? 0)
 			: undefined;
 	try {
-		const id = await reserveStructuredSubagentId(request.session, {
-			...request.identity,
-			label: request.identity?.label ?? (request.invocationKind === "eval" ? "EvalAgent" : undefined),
+		const id = request.identity?.id ?? `worker-${Snowflake.next()}`;
+		const identity = executionIdentity(request.session);
+		nodeReservation = ExecutionAdmission.global().reserveSpawn({
+			nodeId: id,
+			parentId: identity.nodeId,
+			treeId: identity.treeId,
+			maxChildren: request.session.settings.get("orchestrator.maxChildrenPerNode"),
+			maxNodes: request.session.settings.get("orchestrator.maxNodesPerTree"),
 		});
-		const requestedSkills = policy.agent.autoloadSkills;
-		if (requestedSkills?.some(name => !request.session.skills?.some(skill => skill.name === name))) {
-			await request.session.refreshSkills?.();
-		}
-		const baseOptions = buildExecutorOptions(request, policy, lease, id);
-		baseOptions.onCleanupDeferred = completion => {
-			deferredCleanup = completion;
-		};
-		let isolationContext: IsolationContext | null = null;
-		if (policy.isIsolated) {
-			try {
-				isolationContext = await prepareIsolationContext(request.session.cwd);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				throw new StructuredSubagentError(
-					"isolation",
-					`Isolated subagent execution could not be prepared: ${message}`,
-					{ cause: error },
-				);
-			}
-		}
-		let result: SingleResult;
-		if (!isolationContext) {
-			result = await runSubprocess(baseOptions);
-			onSubprocessResult?.(result);
-		} else {
-			result = await runIsolatedSubprocess({
-				baseOptions,
-				context: isolationContext,
-				preferredBackend: parseIsolationMode(request.session.settings.get("orchestrator.isolation.mode")),
-				agentId: id,
-				mergeMode: policy.mergeMode,
-				artifactsDir: lease.artifactsDir,
-				description: trimToUndefined(request.identity?.label),
-				buildCommitMessage: makeIsolationCommitMessage(request.session),
-				buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
-				onSubprocessResult,
-			});
-		}
-		settled = result;
-		attachStructuredOutputMetadata(result, policy.schema);
-		recordSubagentRun(request.session, result, {
-			agentId: result.id,
-			agent: result.agent,
-			...(request.identity?.label ? { label: request.identity.label } : {}),
-		});
-		requiresRecoveryArtifacts =
-			policy.isIsolated &&
-			(result.exitCode !== 0 || result.error !== undefined || result.aborted === true) &&
-			(result.patchPath !== undefined || result.branchName !== undefined || (result.nestedPatches?.length ?? 0) > 0);
-
-		if (
-			policy.isIsolated &&
-			isolationContext &&
-			policy.applyChanges &&
-			result.exitCode === 0 &&
-			!result.error &&
-			!result.aborted
-		) {
-			const outcome = await mergeIsolatedChanges({
-				result,
-				repoRoot: isolationContext.repoRoot,
-				mergeMode: policy.mergeMode,
-			});
-			mergeSummary = outcome.summary;
-			changesApplied = outcome.changesApplied;
-			if (outcome.changesApplied !== false) {
-				const nestedPatchSummary = await applyEligibleNestedPatches({
-					result,
-					repoRoot: isolationContext.repoRoot,
-					mergeMode: policy.mergeMode,
-					changesApplied: outcome.changesApplied,
-					mergedBranchForNestedPatches: outcome.mergedBranchForNestedPatches,
-					commitMessage: makeIsolationCommitMessage(request.session)(),
+		nodeReservation.commit();
+		return await ExecutionAdmission.global().runTurn(
+			{
+				nodeId: id,
+				treeId: identity.treeId,
+				maxConcurrency: request.session.settings.get("orchestrator.maxConcurrency"),
+				signal: request.signal ?? new AbortController().signal,
+				onSettlement: completion => {
+					settlement = completion;
+					onSettlement(completion);
+				},
+			},
+			async () => {
+				const requestedSkills = policy.agent.autoloadSkills;
+				if (requestedSkills?.some(name => !request.session.skills?.some(skill => skill.name === name))) {
+					await request.session.refreshSkills?.();
+				}
+				const baseOptions = buildExecutorOptions(request, policy, lease, id);
+				baseOptions.onCleanupDeferred = completion => {
+					deferredCleanup = completion;
+				};
+				let isolationContext: IsolationContext | null = null;
+				if (policy.isIsolated) {
+					try {
+						isolationContext = await prepareIsolationContext(request.session.cwd);
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						throw new StructuredSubagentError(
+							"isolation",
+							`Isolated subagent execution could not be prepared: ${message}`,
+							{ cause: error },
+						);
+					}
+				}
+				let result: SingleResult;
+				if (!isolationContext) {
+					result = await runSubprocess(baseOptions);
+					onSubprocessResult?.(result);
+				} else {
+					result = await runIsolatedSubprocess({
+						baseOptions,
+						context: isolationContext,
+						preferredBackend: parseIsolationMode(request.session.settings.get("orchestrator.isolation.mode")),
+						agentId: id,
+						mergeMode: policy.mergeMode,
+						artifactsDir: lease.artifactsDir,
+						description: trimToUndefined(request.identity?.label),
+						buildCommitMessage: makeIsolationCommitMessage(request.session),
+						buildFailureResult: buildFailureResult(request, policy, id, Date.now()),
+						onSubprocessResult,
+					});
+				}
+				settled = result;
+				attachStructuredOutputMetadata(result, policy.schema);
+				recordSubagentRun(request.session, result, {
+					agentId: result.id,
+					agent: result.agent,
+					...(request.identity?.label ? { label: request.identity.label } : {}),
 				});
-				mergeSummary += nestedPatchSummary;
-				requiresRecoveryArtifacts ||=
-					nestedPatchSummary.includes("<system-notification>") && (result.nestedPatches?.length ?? 0) > 0;
-			}
-		} else if (policy.isIsolated && isolationContext && result.exitCode === 0 && result.error && !result.aborted) {
-			// The agent finished but its changes could not be captured or committed; the error names the recovery route.
-			mergeSummary = renderIsolationSummary({
-				kind: "capture-error",
-				error: result.error,
-				branchName: result.branchName,
-				rootPatchPath: result.hasRootChanges === false ? undefined : result.patchPath,
-				nestedPatchPaths: result.nestedPatchPaths ?? [],
-			});
-		} else if (policy.isIsolated && isolationContext && !policy.applyChanges) {
-			mergeSummary = renderIsolationSummary({
-				kind: "captured",
-				branchName: result.branchName,
-				rootPatchPath: result.hasRootChanges === false ? undefined : result.patchPath,
-				nestedCount: result.nestedPatches?.length ?? 0,
-				nestedPatchPaths: result.nestedPatchPaths ?? [],
-			});
-		}
+				requiresRecoveryArtifacts =
+					policy.isIsolated &&
+					(result.exitCode !== 0 || result.error !== undefined || result.aborted === true) &&
+					(result.patchPath !== undefined ||
+						result.branchName !== undefined ||
+						(result.nestedPatches?.length ?? 0) > 0);
 
-		completedSuccessfully = result.exitCode === 0 && !result.error && !result.aborted;
-		return {
-			result,
-			policy,
-			mergeSummary,
-			changesApplied,
-			artifactsDir: lease.artifactsDir,
-			temporaryArtifacts: lease.temporary,
-		};
+				if (
+					policy.isIsolated &&
+					isolationContext &&
+					policy.applyChanges &&
+					result.exitCode === 0 &&
+					!result.error &&
+					!result.aborted
+				) {
+					const outcome = await mergeIsolatedChanges({
+						result,
+						repoRoot: isolationContext.repoRoot,
+						mergeMode: policy.mergeMode,
+					});
+					mergeSummary = outcome.summary;
+					changesApplied = outcome.changesApplied;
+					if (outcome.changesApplied !== false) {
+						const nestedPatchSummary = await applyEligibleNestedPatches({
+							result,
+							repoRoot: isolationContext.repoRoot,
+							mergeMode: policy.mergeMode,
+							changesApplied: outcome.changesApplied,
+							mergedBranchForNestedPatches: outcome.mergedBranchForNestedPatches,
+							commitMessage: makeIsolationCommitMessage(request.session)(),
+						});
+						mergeSummary += nestedPatchSummary;
+						requiresRecoveryArtifacts ||=
+							nestedPatchSummary.includes("<system-notification>") && (result.nestedPatches?.length ?? 0) > 0;
+					}
+				} else if (
+					policy.isIsolated &&
+					isolationContext &&
+					result.exitCode === 0 &&
+					result.error &&
+					!result.aborted
+				) {
+					// The agent finished but its changes could not be captured or committed; the error names the recovery route.
+					mergeSummary = renderIsolationSummary({
+						kind: "capture-error",
+						error: result.error,
+						branchName: result.branchName,
+						rootPatchPath: result.hasRootChanges === false ? undefined : result.patchPath,
+						nestedPatchPaths: result.nestedPatchPaths ?? [],
+					});
+				} else if (policy.isIsolated && isolationContext && !policy.applyChanges) {
+					mergeSummary = renderIsolationSummary({
+						kind: "captured",
+						branchName: result.branchName,
+						rootPatchPath: result.hasRootChanges === false ? undefined : result.patchPath,
+						nestedCount: result.nestedPatches?.length ?? 0,
+						nestedPatchPaths: result.nestedPatchPaths ?? [],
+					});
+				}
+
+				completedSuccessfully = result.exitCode === 0 && !result.error && !result.aborted;
+				return {
+					result,
+					policy,
+					mergeSummary,
+					changesApplied,
+					artifactsDir: lease.artifactsDir,
+					temporaryArtifacts: lease.temporary,
+				};
+			},
+		);
 	} catch (error) {
 		if (error instanceof StructuredSubagentError) throw error;
 		// The message points the parent at the child's artifact, so it must survive the cleanup below.
@@ -616,6 +673,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			{ cause: error, result: settled },
 		);
 	} finally {
+		if (!request.keepAlive || !completedSuccessfully) nodeReservation?.release(settlement);
 		const shouldRetainArtifacts =
 			retainSalvagedArtifact ||
 			(request.retainArtifacts && completedSuccessfully) ||

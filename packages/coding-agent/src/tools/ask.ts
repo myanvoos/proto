@@ -9,7 +9,6 @@ import {
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import {
 	type Component,
-	Ellipsis,
 	Markdown,
 	type MarkdownTheme,
 	renderInlineMarkdown,
@@ -19,18 +18,29 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { pluralize, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import { pluralize, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { ExtensionUISelectItem } from "../extensibility/extensions";
-import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
+import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
+import { AskDeadline } from "./ask-deadline";
+import { type AskSelectionUI, askSingleQuestion, OTHER_OPTION } from "./ask-selection";
+
+export { OTHER_OPTION } from "./ask-selection";
+
+import {
+	type AskToolDetails,
+	formatQuestionResult,
+	formatSingleQuestionResponse,
+	type QuestionResult,
+} from "./ask-result";
 import { formatErrorMessage, formatMeta, formatTitle, sanitizeCarriageReturns, wrapPrefixedLine } from "./render-utils";
 import { ToolAbortError } from "./tool-errors";
 
-export const OTHER_OPTION = "Other (type your own)";
+export type { AskToolDetails } from "./ask-result";
+
 const CHAT_ABOUT_THIS_OPTION = "Chat about this";
 const NEXT_OPTION = "Next →";
 const RESERVED_OPTION_LABELS: Record<string, true> = {
@@ -62,643 +72,15 @@ const QuestionItem = arkType({
 
 const askSchema = arkType({
 	questions: QuestionItem.array().atLeastLength(1).describe("questions to ask"),
+	"timeout?": arkType("number >= 0").describe("whole-form timeout in seconds; overrides ask.timeout; 0 disables"),
 });
 
 export type AskToolInput = typeof askSchema.infer;
 
-export function recoverAskQuestions(toolCallArguments: unknown): AskToolInput["questions"] | undefined {
+export function recoverAskInput(toolCallArguments: unknown): AskToolInput | undefined {
 	const parsed = askSchema(toolCallArguments);
 	if (parsed instanceof arkType.errors) return undefined;
-	return parsed.questions;
-}
-
-interface QuestionResult {
-	id: string;
-	question: string;
-	options: string[];
-	multi: boolean;
-	selectedOptions: string[];
-	customInput?: string;
-
-	note?: string;
-	noteOption?: string;
-
-	timedOut?: boolean;
-}
-
-export interface AskToolDetails {
-	question?: string;
-	options?: string[];
-	multi?: boolean;
-	selectedOptions?: string[];
-	customInput?: string;
-
-	note?: string;
-	noteOption?: string;
-
-	timedOut?: boolean;
-
-	results?: QuestionResult[];
-
-	chatRedirect?: boolean;
-
-	questions?: string[];
-}
-
-interface AskOption {
-	label: string;
-	description?: string;
-}
-
-function getAskOptionLabel(option: AskOption): string {
-	return option.label;
-}
-
-function getSelectOptionLabel(option: ExtensionUISelectItem): string {
-	return typeof option === "string" ? option : option.label;
-}
-
-function toSelectOption(option: AskOption, label = option.label): ExtensionUISelectItem {
-	return option.description ? { label, description: option.description } : label;
-}
-
-const RECOMMENDED_SUFFIX = " (Recommended)";
-
-const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
-
-function getDoneOptionLabel(): string {
-	return `${theme.status.success} Done selecting`;
-}
-
-function addRecommendedSuffix(options: AskOption[], recommendedIndex?: number): ExtensionUISelectItem[] {
-	if (recommendedIndex === undefined || recommendedIndex < 0 || recommendedIndex >= options.length) {
-		return options.map(option => toSelectOption(option));
-	}
-	return options.map((option, i) => {
-		const label =
-			i === recommendedIndex && !option.label.endsWith(RECOMMENDED_SUFFIX)
-				? option.label + RECOMMENDED_SUFFIX
-				: option.label;
-		return toSelectOption(option, label);
-	});
-}
-
-function getAutoSelectionOnTimeout(options: AskOption[], recommended?: number): string[] {
-	if (options.length === 0) return [];
-	if (typeof recommended === "number" && recommended >= 0 && recommended < options.length) {
-		return [options[recommended]!.label];
-	}
-	return [options[0]!.label];
-}
-
-function stripRecommendedSuffix(label: string): string {
-	return label.endsWith(RECOMMENDED_SUFFIX) ? label.slice(0, -RECOMMENDED_SUFFIX.length) : label;
-}
-
-interface CustomInputContext {
-	selectionMarker: "radio" | "checkbox";
-	checkedIndices?: readonly number[];
-	markableCount: number;
-}
-
-const MAX_CUSTOM_INPUT_OPTION_ROWS = 8;
-const MAX_CUSTOM_INPUT_TITLE_ROWS = 16;
-const MIN_CUSTOM_INPUT_CONTENT_WIDTH = 20;
-
-const CUSTOM_INPUT_CHROME_COLUMNS = 8;
-const CUSTOM_INPUT_DESCRIPTION_INDENT = "    ";
-
-function customInputContentWidth(): number {
-	const cols = process.stdout.columns ?? 80;
-	return Math.max(MIN_CUSTOM_INPUT_CONTENT_WIDTH, cols - CUSTOM_INPUT_CHROME_COLUMNS);
-}
-
-function clampLineToWidth(line: string, width: number): string {
-	if (visibleWidth(line) <= width) return line;
-	return truncateToWidth(line, width, Ellipsis.Unicode);
-}
-
-function flattenDescription(text: string): string {
-	return text.replace(/\s+/g, " ").trim();
-}
-
-function getSelectOptionDescription(option: ExtensionUISelectItem): string | undefined {
-	return typeof option === "string" ? undefined : option.description;
-}
-
-interface CustomInputOptionGap {
-	total: number;
-	checked: number;
-}
-
-interface CustomInputOptionWindow {
-	indices: number[];
-	gapBefore: Map<number, CustomInputOptionGap>;
-}
-
-function pickCustomInputOptionWindow(
-	total: number,
-	selectedIndex: number,
-	checked: ReadonlySet<number>,
-): CustomInputOptionWindow {
-	if (total === 0) return { indices: [], gapBefore: new Map() };
-	if (total <= MAX_CUSTOM_INPUT_OPTION_ROWS) {
-		return {
-			indices: Array.from({ length: total }, (_, i) => i),
-			gapBefore: new Map(),
-		};
-	}
-	const keep = new Set<number>();
-	const addIfRoom = (index: number) => {
-		if (index >= 0 && index < total && keep.size < MAX_CUSTOM_INPUT_OPTION_ROWS) {
-			keep.add(index);
-		}
-	};
-	addIfRoom(selectedIndex);
-	addIfRoom(0);
-	for (const i of [...checked].sort((a, b) => a - b)) {
-		addIfRoom(i);
-	}
-	for (let i = 0; i < total && keep.size < MAX_CUSTOM_INPUT_OPTION_ROWS; i++) {
-		addIfRoom(i);
-	}
-	const indices = [...keep].sort((a, b) => a - b);
-	const gapBefore = new Map<number, CustomInputOptionGap>();
-	const countCheckedBetween = (startInclusive: number, endExclusive: number): number => {
-		let count = 0;
-		for (const i of checked) {
-			if (i >= startInclusive && i < endExclusive) count++;
-		}
-		return count;
-	};
-	let prev = -1;
-	for (const idx of indices) {
-		if (idx > prev + 1) {
-			gapBefore.set(idx, {
-				total: idx - prev - 1,
-				checked: countCheckedBetween(prev + 1, idx),
-			});
-		}
-		prev = idx;
-	}
-	if (prev < total - 1) {
-		gapBefore.set(total, {
-			total: total - 1 - prev,
-			checked: countCheckedBetween(prev + 1, total),
-		});
-	}
-	return { indices, gapBefore };
-}
-
-interface CustomInputRow {
-	text: string;
-
-	priority: number;
-}
-
-function buildCustomInputRows(
-	question: string,
-	options: ExtensionUISelectItem[],
-	context: CustomInputContext,
-	contentWidth: number,
-): CustomInputRow[] {
-	const selectedIndex = options.findIndex(option => getSelectOptionLabel(option) === OTHER_OPTION);
-	const checked = new Set(context.checkedIndices ?? []);
-	const window = pickCustomInputOptionWindow(options.length, selectedIndex, checked);
-	const rows: CustomInputRow[] = [];
-	rows.push({ text: clampLineToWidth(question, contentWidth), priority: -1 });
-	rows.push({ text: "", priority: -1 });
-
-	const emitGap = (gap: CustomInputOptionGap) => {
-		const checkedSuffix = gap.checked > 0 ? `, ${gap.checked} checked` : "";
-		rows.push({
-			text: clampLineToWidth(
-				`    … ${gap.total} more option${gap.total === 1 ? "" : "s"}${checkedSuffix} …`,
-				contentWidth,
-			),
-			priority: 2,
-		});
-	};
-
-	for (const index of window.indices) {
-		const gap = window.gapBefore.get(index);
-		if (gap !== undefined) emitGap(gap);
-		const option = options[index]!;
-		const label = getSelectOptionLabel(option);
-		const isSelected = index === selectedIndex;
-		const isMarkable = index < context.markableCount;
-		const prefix =
-			context.selectionMarker === "radio" && (isMarkable || isSelected)
-				? `${isSelected ? theme.radio.selected : theme.radio.unselected} `
-				: context.selectionMarker === "checkbox" && isMarkable
-					? `${checked.has(index) ? theme.checkbox.checked : theme.checkbox.unchecked} `
-					: isSelected
-						? `${theme.nav.cursor} `
-						: "  ";
-		rows.push({ text: clampLineToWidth(prefix + label, contentWidth), priority: -1 });
-		const description = getSelectOptionDescription(option);
-		if (description) {
-			const flat = flattenDescription(description);
-			if (flat) {
-				rows.push({
-					text: clampLineToWidth(`${CUSTOM_INPUT_DESCRIPTION_INDENT}${flat}`, contentWidth),
-
-					priority: isSelected ? 2 : checked.has(index) ? 1 : 0,
-				});
-			}
-		}
-	}
-
-	const trailingGap = window.gapBefore.get(options.length);
-	if (trailingGap !== undefined) emitGap(trailingGap);
-	rows.push({ text: "", priority: -1 });
-	rows.push({ text: "Enter your response:", priority: -1 });
-	return rows;
-}
-
-function applyCustomInputRowBudget(rows: CustomInputRow[], budget: number): CustomInputRow[] {
-	if (rows.length <= budget) return rows;
-
-	const droppable = rows
-		.map((row, index) => ({ row, index }))
-		.filter(entry => entry.row.priority >= 0)
-		.sort((a, b) => a.row.priority - b.row.priority || b.index - a.index);
-	const removed = new Set<number>();
-	for (const { index } of droppable) {
-		if (rows.length - removed.size <= budget) break;
-		removed.add(index);
-	}
-	return rows.filter((_, i) => !removed.has(i));
-}
-
-function formatCustomInputTitle(
-	question: string,
-	options: ExtensionUISelectItem[],
-	context: CustomInputContext,
-): string {
-	const contentWidth = customInputContentWidth();
-	const rows = buildCustomInputRows(question, options, context, contentWidth);
-	return applyCustomInputRowBudget(rows, MAX_CUSTOM_INPUT_TITLE_ROWS)
-		.map(row => row.text)
-		.join("\n");
-}
-
-interface SelectionResult {
-	selectedOptions: string[];
-	customInput?: string;
-	note?: string;
-	noteOption?: string;
-	timedOut: boolean;
-	navigation?: "back" | "forward";
-	cancelled?: boolean;
-}
-
-interface NavigationControls {
-	allowBack: boolean;
-	allowForward: boolean;
-	progressText?: string;
-}
-interface AskSingleQuestionOptions {
-	recommended?: number;
-	timeout?: number;
-	signal?: AbortSignal;
-	initialSelection?: Pick<SelectionResult, "selectedOptions" | "customInput" | "note">;
-	navigation?: NavigationControls;
-}
-
-interface UIContext {
-	timeoutStartsOnPresentation?: boolean;
-	select(
-		prompt: string,
-		options: ExtensionUISelectItem[],
-		options_?: {
-			initialIndex?: number;
-			timeout?: number;
-			signal?: AbortSignal;
-			outline?: boolean;
-			onTimeout?: () => void;
-			onTimeoutStart?: () => void;
-			onTimeoutReset?: () => void;
-			onLeft?: () => void;
-			onRight?: () => void;
-			helpText?: string;
-			selectionMarker?: "radio" | "checkbox";
-			checkedIndices?: readonly number[];
-			markableCount?: number;
-		},
-	): Promise<string | undefined>;
-	editor(
-		title: string,
-		prefill?: string,
-		dialogOptions?: { signal?: AbortSignal },
-		editorOptions?: { promptStyle?: boolean },
-	): Promise<string | undefined>;
-}
-
-async function askSingleQuestion(
-	ui: UIContext,
-	question: string,
-	questionOptions: AskOption[],
-	multi: boolean,
-	options: AskSingleQuestionOptions = {},
-): Promise<SelectionResult> {
-	const { recommended, timeout, signal, initialSelection, navigation } = options;
-	const doneLabel = getDoneOptionLabel();
-	let selectedOptions = [...(initialSelection?.selectedOptions ?? [])];
-	let customInput = initialSelection?.customInput;
-	const note = initialSelection?.note;
-	let timedOut = false;
-
-	const selectOption = async (
-		prompt: string,
-		optionsToShow: ExtensionUISelectItem[],
-		initialIndex?: number,
-		marker?: { selectionMarker: "radio" | "checkbox"; checkedIndices?: readonly number[]; markableCount: number },
-	): Promise<{ choice: string | undefined; timedOut: boolean; navigation?: "back" | "forward" }> => {
-		let timeoutTriggered = false;
-		const onTimeout = () => {
-			timeoutTriggered = true;
-		};
-		let navigationAction: "back" | "forward" | undefined;
-		const helpText = navigation
-			? "up/down navigate  enter select  ←/→ question  esc cancel"
-			: "up/down navigate  enter select  esc cancel";
-		const timeoutMs = typeof timeout === "number" && timeout > 0 ? timeout : undefined;
-		const timeoutController = timeoutMs === undefined ? undefined : new AbortController();
-		const dialogSignal =
-			signal && timeoutController
-				? AbortSignal.any([signal, timeoutController.signal])
-				: (timeoutController?.signal ?? signal);
-		let timeoutId: NodeJS.Timeout | undefined;
-		let timeoutStartedMs = Date.now();
-		const armFallbackTimeout = (durationMs: number) => {
-			clearTimeout(timeoutId);
-			timeoutStartedMs = Date.now();
-			timeoutId = setTimeout(() => {
-				timeoutTriggered = true;
-				timeoutController?.abort();
-			}, durationMs);
-		};
-		const dialogOptions = {
-			initialIndex,
-			timeout,
-			signal: dialogSignal,
-			outline: true,
-			onTimeout,
-			onTimeoutStart: timeoutMs === undefined ? undefined : () => armFallbackTimeout(timeoutMs),
-			onTimeoutReset: timeoutMs === undefined ? undefined : () => armFallbackTimeout(timeoutMs),
-			helpText,
-			selectionMarker: marker?.selectionMarker,
-			checkedIndices: marker?.checkedIndices,
-			markableCount: marker?.markableCount,
-			onLeft: navigation?.allowBack
-				? () => {
-						navigationAction = "back";
-					}
-				: undefined,
-			onRight: navigation?.allowForward
-				? () => {
-						navigationAction = "forward";
-					}
-				: undefined,
-		};
-		try {
-			const runSelect = () => {
-				const selection = ui.select(prompt, optionsToShow, dialogOptions);
-				if (timeoutMs !== undefined && !ui.timeoutStartsOnPresentation) {
-					armFallbackTimeout(timeoutMs);
-				}
-				return selection;
-			};
-			const choice = dialogSignal ? await untilAborted(dialogSignal, runSelect) : await runSelect();
-			if (!timeoutTriggered && choice === undefined && typeof timeout === "number") {
-				const elapsed = Date.now() - timeoutStartedMs;
-				timeoutTriggered = elapsed >= timeout && elapsed <= timeout + TIMEOUT_DETECTION_TOLERANCE_MS;
-			}
-			return { choice, timedOut: timeoutTriggered, navigation: navigationAction };
-		} catch (error) {
-			if (timeoutTriggered && error instanceof Error && error.name === "AbortError") {
-				return { choice: undefined, timedOut: true, navigation: navigationAction };
-			}
-			throw error;
-		} finally {
-			clearTimeout(timeoutId);
-		}
-	};
-
-	const promptForCustomInput = async (
-		title: string,
-		optionsToShow: ExtensionUISelectItem[],
-		context: CustomInputContext,
-	): Promise<{ input: string | undefined }> => {
-		const dialogOptions = signal ? { signal } : undefined;
-		const editorTitle = formatCustomInputTitle(title, optionsToShow, context);
-		const showCustomInput = () => ui.editor(editorTitle, undefined, dialogOptions, { promptStyle: true });
-		const input = signal ? await untilAborted(signal, showCustomInput) : await showCustomInput();
-		return { input };
-	};
-
-	const promptWithProgress = navigation?.progressText ? `${question} (${navigation.progressText})` : question;
-	if (multi) {
-		const selected = new Set<string>(selectedOptions);
-		let cursorIndex = Math.min(Math.max(recommended ?? 0, 0), Math.max(questionOptions.length - 1, 0));
-		const firstSelected = selectedOptions[0];
-		if (firstSelected) {
-			const selectedIndex = questionOptions.findIndex(option => option.label === firstSelected);
-			if (selectedIndex >= 0) cursorIndex = selectedIndex;
-		}
-		while (true) {
-			const opts: ExtensionUISelectItem[] = questionOptions.map(opt => toSelectOption(opt));
-
-			if (selected.size > 0) {
-				opts.push(doneLabel);
-			}
-			opts.push(OTHER_OPTION);
-
-			const checkedIndices: number[] = [];
-			for (let i = 0; i < questionOptions.length; i++) {
-				if (selected.has(questionOptions[i]!.label)) checkedIndices.push(i);
-			}
-			const prefix = selected.size > 0 ? `(${selected.size} selected) ` : "";
-			const {
-				choice,
-				timedOut: selectTimedOut,
-				navigation: arrowNavigation,
-			} = await selectOption(`${prefix}${promptWithProgress}`, opts, cursorIndex, {
-				selectionMarker: "checkbox",
-				checkedIndices,
-				markableCount: questionOptions.length,
-			});
-
-			if (arrowNavigation) {
-				return { selectedOptions: Array.from(selected), customInput, note, timedOut, navigation: arrowNavigation };
-			}
-			if (choice === undefined) {
-				if (selectTimedOut) {
-					timedOut = true;
-					break;
-				}
-				return { selectedOptions: Array.from(selected), customInput, note, timedOut, cancelled: true };
-			}
-			if (choice === doneLabel) break;
-
-			if (choice === OTHER_OPTION) {
-				if (selectTimedOut) {
-					timedOut = true;
-					break;
-				}
-				const customResult = await promptForCustomInput(`${prefix}${promptWithProgress}`, opts, {
-					selectionMarker: "checkbox",
-					checkedIndices,
-					markableCount: questionOptions.length,
-				});
-				if (customResult.input === undefined) {
-					continue;
-				}
-				customInput = customResult.input;
-				break;
-			}
-
-			const selectedIdx = opts.findIndex(opt => getSelectOptionLabel(opt) === choice);
-			if (selectedIdx >= 0) {
-				cursorIndex = selectedIdx;
-			}
-
-			if (selected.has(choice)) {
-				selected.delete(choice);
-			} else {
-				selected.add(choice);
-			}
-
-			if (selectTimedOut) {
-				timedOut = true;
-				break;
-			}
-		}
-		selectedOptions = Array.from(selected);
-	} else {
-		while (true) {
-			const displayOptions = addRecommendedSuffix(questionOptions, recommended);
-			const optionsWithNavigation: ExtensionUISelectItem[] = [...displayOptions, OTHER_OPTION];
-
-			let initialIndex = recommended;
-			const previouslySelected = selectedOptions[0];
-			if (previouslySelected) {
-				const selectedIndex = questionOptions.findIndex(option => option.label === previouslySelected);
-				if (selectedIndex >= 0) initialIndex = selectedIndex;
-			} else if (customInput !== undefined) {
-				initialIndex = displayOptions.length;
-			}
-			if (initialIndex !== undefined) {
-				const maxIndex = Math.max(optionsWithNavigation.length - 1, 0);
-				initialIndex = Math.max(0, Math.min(initialIndex, maxIndex));
-			}
-
-			const {
-				choice,
-				timedOut: selectTimedOut,
-				navigation: arrowNavigation,
-			} = await selectOption(promptWithProgress, optionsWithNavigation, initialIndex, {
-				selectionMarker: "radio",
-				markableCount: displayOptions.length,
-			});
-			timedOut = selectTimedOut;
-
-			if (arrowNavigation) {
-				return { selectedOptions, customInput, note, timedOut, navigation: arrowNavigation };
-			}
-			if (choice === undefined) {
-				if (!timedOut) {
-					return { selectedOptions, customInput, note, timedOut, cancelled: true };
-				}
-				break;
-			}
-			if (choice === OTHER_OPTION) {
-				if (selectTimedOut) {
-					break;
-				}
-				const customResult = await promptForCustomInput(promptWithProgress, optionsWithNavigation, {
-					selectionMarker: "radio",
-					markableCount: displayOptions.length,
-				});
-				if (customResult.input === undefined) {
-					continue;
-				}
-				customInput = customResult.input;
-				selectedOptions = [];
-				break;
-			}
-			selectedOptions = [stripRecommendedSuffix(choice)];
-			customInput = undefined;
-			break;
-		}
-		if (timedOut && selectedOptions.length === 0 && customInput === undefined) {
-			selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
-		}
-		if (navigation?.allowForward) {
-			return { selectedOptions, customInput, note, timedOut, navigation: "forward" };
-		}
-	}
-
-	if (timedOut && selectedOptions.length === 0 && customInput === undefined) {
-		selectedOptions = getAutoSelectionOnTimeout(questionOptions, recommended);
-	}
-
-	return { selectedOptions, customInput, note, timedOut };
-}
-
-function formatQuestionResult(result: QuestionResult): string {
-	const noteOn = result.noteOption === undefined ? "" : ` on ${result.noteOption}`;
-	const noteSuffix = result.note ? ` (note${noteOn}: ${result.note})` : "";
-	const custom = result.customInput === undefined ? undefined : `"${result.customInput}"`;
-	if (result.selectedOptions.length === 0) {
-		if (custom !== undefined) return `${result.id}: ${custom}${noteSuffix}`;
-		return result.multi ? `${result.id}: []${noteSuffix}` : `${result.id}: (cancelled)${noteSuffix}`;
-	}
-	const picked = result.multi ? `[${result.selectedOptions.join(", ")}]` : result.selectedOptions[0];
-	const answer = custom === undefined ? picked : `${picked} + ${custom}`;
-	const timeoutSuffix = result.timedOut ? " (auto-selected after timeout)" : "";
-	return `${result.id}: ${answer}${timeoutSuffix}${noteSuffix}`;
-}
-
-function formatSingleQuestionResponse(result: {
-	selectedOptions: string[];
-	customInput?: string;
-	note?: string;
-	noteOption?: string;
-	timedOut?: boolean;
-	multi: boolean;
-}): string {
-	const responseParts: string[] = [];
-	if (result.selectedOptions.length > 0) {
-		const selectedText = result.multi
-			? `User selected: ${result.selectedOptions.join(", ")}`
-			: `User selected: ${result.selectedOptions[0]}`;
-		responseParts.push(result.timedOut ? `${selectedText} (auto-selected after timeout)` : selectedText);
-	}
-	if (result.customInput !== undefined) {
-		responseParts.push(
-			result.customInput.includes("\n")
-				? `User provided custom input:\n${result.customInput
-						.split("\n")
-						.map(line => `  ${line}`)
-						.join("\n")}`
-				: `User provided custom input: ${result.customInput}`,
-		);
-	}
-	if (result.note) {
-		const label = `User added note${result.noteOption === undefined ? "" : ` on ${result.noteOption}`}:`;
-		responseParts.push(
-			result.note.includes("\n")
-				? `${label}\n${result.note
-						.split("\n")
-						.map(line => `  ${line}`)
-						.join("\n")}`
-				: `${label} ${result.note}`,
-		);
-	}
-	if (responseParts.length > 0) return responseParts.join("\n");
-	return result.multi ? "User did not select any options" : "User cancelled the selection";
+	return parsed;
 }
 
 type AskParams = AskToolInput;
@@ -788,260 +170,162 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			throw new ToolAbortError("Ask tool requires interactive mode");
 		}
 
+		if (params.questions.length === 0) {
+			return { content: [{ type: "text", text: "Error: questions must not be empty" }], details: {} };
+		}
+
 		params = sanitizeAskDisplayText(params);
 
 		const extensionUi = context.ui;
-		const ui: UIContext = {
-			timeoutStartsOnPresentation: extensionUi.timeoutStartsOnPresentation,
+		const ui: AskSelectionUI = {
 			select: (prompt, options, dialogOptions) => extensionUi.select(prompt, options, dialogOptions),
 			editor: (title, prefill, dialogOptions, editorOptions) =>
 				extensionUi.editor(title, prefill, dialogOptions, editorOptions),
 		};
 
-		const timeoutSeconds = this.session.settings.get("ask.timeout");
-		const timeout = timeoutSeconds === 0 ? null : timeoutSeconds * 1000;
-		const cancelAsk: () => never = () => {
+		const timeoutSeconds = params.timeout ?? this.session.settings.get("ask.timeout");
+		const deadline = new AskDeadline(timeoutSeconds * 1000, signal);
+		const confirmed = new Map<number, QuestionResult>();
+		const cancelAsk = (): never => {
 			if (signal?.reason === TOOL_INTERRUPT_ABORT_REASON) throw new ToolAbortError("Ask interrupted by message");
 			context.abort();
 			throw new ToolAbortError("Ask tool was cancelled by the user");
 		};
-
-		this.#sendAskNotification();
-
-		if (params.questions.length === 0) {
+		const unanswered = (q: AskParams["questions"][number]): QuestionResult => ({
+			id: q.id,
+			question: q.question,
+			options: q.options.map(option => option.label),
+			multi: q.multi ?? false,
+			selectedOptions: [],
+			timedOut: true,
+		});
+		const finish = (results: QuestionResult[], timedOut = false): AgentToolResult<AskToolDetails> => {
+			if (params.questions.length === 1) {
+				const { id: _id, ...details } = results[0]!;
+				return {
+					content: [
+						{
+							type: "text",
+							text: `${timedOut && !details.timedOut ? "Ask form timed out; confirmed answer retained.\n" : ""}${formatSingleQuestionResponse(details)}`,
+						},
+					],
+					details: { ...details, ...(timedOut ? { timedOut: true } : {}) },
+				};
+			}
 			return {
-				content: [{ type: "text" as const, text: "Error: questions must not be empty" }],
-				details: {},
+				content: [
+					{
+						type: "text",
+						text: `${timedOut ? "Ask timed out; confirmed answers only:" : "User answers:"}\n${results.map(formatQuestionResult).join("\n")}`,
+					},
+				],
+				details: { results, ...(timedOut ? { timedOut: true } : {}) },
 			};
-		}
-
-		// A background agent borrows the main TUI's dialogs, so an unlabelled question gives the user no
-		// way to tell who is asking. Fall back to the agent id as the chip when the model supplied none.
+		};
+		this.#sendAskNotification();
 		const askingAgentId = this.session.getAgentId?.();
 		const fallbackHeader = askingAgentId && askingAgentId !== MAIN_AGENT_ID ? askingAgentId : undefined;
-
-		const richAskDialog = extensionUi.askDialog;
-		if (richAskDialog) {
-			try {
-				const showRichDialog = () =>
-					richAskDialog(
+		try {
+			const response = await deadline.run(async () => {
+				const richAskDialog = extensionUi.askDialog;
+				if (richAskDialog) {
+					const richResult = await richAskDialog(
 						params.questions.map(q => ({
-							id: q.id,
-							question: q.question,
+							...q,
 							...(q.header?.trim() ? { header: q.header } : fallbackHeader ? { header: fallbackHeader } : {}),
-							options: q.options.map(option => ({
-								label: option.label,
-								...(option.description?.trim() ? { description: option.description.trim() } : {}),
-								...(option.preview?.trim() ? { preview: option.preview } : {}),
-							})),
-							...(q.multi !== undefined ? { multi: q.multi } : {}),
-							...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
 						})),
-						{ timeout: timeout ?? undefined, signal },
+						{ timeout: deadline.timeoutMs > 0 ? deadline.timeoutMs : undefined, signal: deadline.signal },
 					);
-				const richResult = signal ? await untilAborted(signal, showRichDialog) : await showRichDialog();
-				if (!richResult) {
-					cancelAsk();
-				}
-				if (richResult.kind === "chat") {
-					const questionText = params.questions.map(q => q.question).join("\n");
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: `User chose to chat about this instead of answering.\n\nQuestions asked:\n${questionText}`,
-							},
-						],
-						details: { chatRedirect: true, questions: params.questions.map(q => q.question) },
-					};
-				}
-				if (richResult.results.length !== params.questions.length) {
-					throw new Error("Ask dialog returned a result count that does not match the requested questions");
-				}
-				const results: QuestionResult[] = [];
-				for (let index = 0; index < params.questions.length; index++) {
-					const question = params.questions[index];
-					const result = richResult.results[index];
-					if (!question || !result || result.id !== question.id) {
-						throw new Error("Ask dialog returned results that do not match the requested question order");
+					if (deadline.signal.aborted) return undefined;
+					if (!richResult) return cancelAsk();
+					if (richResult.kind === "chat") {
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: `User chose to chat about this instead of answering.\n\nQuestions asked:\n${params.questions.map(q => q.question).join("\n")}`,
+								},
+							],
+							details: { chatRedirect: true, questions: params.questions.map(q => q.question) },
+						};
 					}
-					results.push({
-						id: question.id,
-						question: question.question,
-						options: question.options.map(option => option.label),
-						multi: question.multi ?? false,
-						selectedOptions: result.selectedOptions,
-						customInput: result.customInput,
-						note: result.note,
-						noteOption: result.noteOption,
-						timedOut: result.timedOut,
+					if (richResult.results.length !== params.questions.length)
+						throw new Error("Ask dialog returned a result count that does not match the requested questions");
+					const results = params.questions.map((q, index) => {
+						const result = richResult.results[index];
+						if (!result || result.id !== q.id)
+							throw new Error("Ask dialog returned results that do not match the requested question order");
+						// A timeout marker never conveys an answer or approval, even from an older host.
+						if (result.timedOut) return unanswered(q);
+						return {
+							...unanswered(q),
+							selectedOptions: result.selectedOptions,
+							customInput: result.customInput,
+							note: result.note,
+							noteOption: result.noteOption,
+							timedOut: undefined,
+						};
 					});
-				}
-				if (params.questions.length === 1) {
-					const result = results[0];
-
 					if (
-						!result ||
-						(!result.timedOut &&
-							!result.multi &&
-							result.selectedOptions.length === 0 &&
-							result.customInput === undefined)
-					) {
-						cancelAsk();
-					}
-					const details: AskToolDetails = {
-						question: result.question,
-						options: result.options,
-						multi: result.multi,
-						selectedOptions: result.selectedOptions,
-						customInput: result.customInput,
-						note: result.note,
-						noteOption: result.noteOption,
-						timedOut: result.timedOut,
-					};
-					const responseText = formatSingleQuestionResponse(result);
-					return { content: [{ type: "text" as const, text: responseText }], details };
+						richResult.kind === "submit" &&
+						results.length === 1 &&
+						!results[0]!.multi &&
+						!results[0]!.timedOut &&
+						results[0]!.selectedOptions.length === 0 &&
+						results[0]!.customInput === undefined
+					)
+						return cancelAsk();
+					return finish(results, richResult.kind === "timeout" || results.some(result => result.timedOut));
 				}
-				const details: AskToolDetails = { results };
-				const responseText = `User answers:\n${results.map(formatQuestionResult).join("\n")}`;
-				return { content: [{ type: "text" as const, text: responseText }], details };
-			} catch (error) {
-				if (error instanceof Error && error.name === "AbortError") {
-					throw new ToolAbortError(
-						signal?.reason === TOOL_INTERRUPT_ABORT_REASON
-							? "Ask interrupted by message"
-							: "Ask input was cancelled",
-					);
-				}
-				throw error;
-			}
-		}
-
-		const askQuestion = async (
-			q: AskParams["questions"][number],
-			options?: { previous?: QuestionResult; navigation?: NavigationControls },
-		) => {
-			const questionOptions = q.options.map(option => ({
-				label: option.label,
-				...(option.description?.trim() ? { description: option.description.trim() } : {}),
-			}));
-			const optionLabels = questionOptions.map(getAskOptionLabel);
-			try {
-				const { selectedOptions, customInput, note, navigation, cancelled, timedOut } = await askSingleQuestion(
-					ui,
-					q.question,
-					questionOptions,
-					q.multi ?? false,
-					{
+				let index = 0;
+				while (index < params.questions.length) {
+					const q = params.questions[index]!;
+					const previous = confirmed.get(index);
+					const selection = await askSingleQuestion(ui, q.question, q.options, q.multi ?? false, {
 						recommended: q.recommended,
-						timeout: timeout ?? undefined,
-						signal,
-						initialSelection: options?.previous,
-						navigation: options?.navigation,
-					},
-				);
-				return { optionLabels, selectedOptions, customInput, note, navigation, cancelled, timedOut };
-			} catch (error) {
-				if (error instanceof Error && error.name === "AbortError") {
-					throw new ToolAbortError(
-						signal?.reason === TOOL_INTERRUPT_ABORT_REASON
-							? "Ask interrupted by message"
-							: "Ask input was cancelled",
-					);
+						signal: deadline.signal,
+						initialSelection: previous,
+						navigation:
+							params.questions.length > 1
+								? {
+										allowBack: index > 0,
+										allowForward: true,
+										progressText: `${index + 1}/${params.questions.length}`,
+									}
+								: undefined,
+					});
+					if (deadline.signal.aborted) return undefined;
+					if (selection.cancelled) return cancelAsk();
+					// Arrow navigation does not confirm an unfinished multi-select draft.
+					if (
+						!selection.navigation ||
+						(!q.multi && (selection.selectedOptions.length > 0 || selection.customInput !== undefined))
+					) {
+						confirmed.set(index, { ...unanswered(q), ...selection, timedOut: undefined });
+					}
+					index = selection.navigation === "back" ? Math.max(0, index - 1) : index + 1;
 				}
-				throw error;
-			}
-		};
-
-		if (params.questions.length === 1) {
-			const [q] = params.questions;
-			const { optionLabels, selectedOptions, customInput, note, cancelled, timedOut } = await askQuestion(q);
-
-			if (!timedOut && (cancelled || (selectedOptions.length === 0 && customInput === undefined))) {
-				cancelAsk();
-			}
-			const details: AskToolDetails = {
-				question: q.question,
-				options: optionLabels,
-				multi: q.multi ?? false,
-				selectedOptions,
-				customInput,
-				note,
-				timedOut: timedOut || undefined,
-			};
-
-			const responseText = formatSingleQuestionResponse({
-				selectedOptions,
-				customInput,
-				note,
-				timedOut: timedOut || undefined,
-				multi: q.multi ?? false,
+				return finish(
+					params.questions.map((q, index) => confirmed.get(index) ?? { ...unanswered(q), timedOut: undefined }),
+				);
 			});
-
-			return { content: [{ type: "text" as const, text: responseText }], details };
-		}
-
-		const resultsByIndex: Array<QuestionResult | undefined> = Array.from({ length: params.questions.length });
-		let questionIndex = 0;
-		while (questionIndex < params.questions.length) {
-			const q = params.questions[questionIndex];
-			if (!q) throw new Error("Ask question index exceeded the requested question list");
-			const previous = resultsByIndex[questionIndex];
-			const navigation: NavigationControls = {
-				allowBack: questionIndex > 0,
-				allowForward: true,
-				progressText: `${questionIndex + 1}/${params.questions.length}`,
-			};
-			const {
-				optionLabels,
-				selectedOptions,
-				customInput,
-				note,
-				navigation: navAction,
-				cancelled,
-				timedOut,
-			} = await askQuestion(q, { previous, navigation });
-
-			if (cancelled && !timedOut) {
-				cancelAsk();
+			return (
+				response ??
+				finish(
+					params.questions.map((q, index) => confirmed.get(index) ?? unanswered(q)),
+					true,
+				)
+			);
+		} catch (error) {
+			if (error instanceof Error && error.name === "AbortError") {
+				throw new ToolAbortError(
+					signal?.reason === TOOL_INTERRUPT_ABORT_REASON
+						? "Ask interrupted by message"
+						: "Ask input was cancelled",
+				);
 			}
-
-			resultsByIndex[questionIndex] = {
-				id: q.id,
-				question: q.question,
-				options: optionLabels,
-				multi: q.multi ?? false,
-				selectedOptions,
-				customInput,
-				note,
-				timedOut: timedOut || undefined,
-			};
-
-			if (navAction === "back") {
-				questionIndex = Math.max(0, questionIndex - 1);
-				continue;
-			}
-
-			questionIndex += 1;
+			throw error;
 		}
-
-		const results = params.questions.map((q, index) => {
-			const result = resultsByIndex[index];
-			if (result) return result;
-			return {
-				id: q.id,
-				question: q.question,
-				options: q.options.map(o => o.label),
-				multi: q.multi ?? false,
-				selectedOptions: [],
-			};
-		});
-
-		const details: AskToolDetails = { results };
-		const responseLines = results.map(formatQuestionResult);
-		const responseText = `User answers:\n${responseLines.join("\n")}`;
-
-		return { content: [{ type: "text" as const, text: responseText }], details };
 	}
 }
 
@@ -1301,6 +585,7 @@ export const askToolRenderer = {
 							width,
 						),
 					];
+					if (r.timedOut) lines.push(uiTheme.fg("dim", "timed out — no response; not approval"));
 					return { label: uiTheme.fg("dim", `[${r.id}]`), lines };
 				});
 				return {
@@ -1342,7 +627,12 @@ export const askToolRenderer = {
 				...renderAnswerOptionLines(uiTheme, mdTheme, dOptions, dSelected, dMulti, dCustom, dNote, width),
 			];
 			if (dTimedOut) {
-				bodyLines.push(uiTheme.fg("dim", "auto-selected after timeout — not a user choice"));
+				bodyLines.push(
+					uiTheme.fg(
+						"dim",
+						hasSelection ? "form timed out — confirmed answer retained" : "timed out — no response; not approval",
+					),
+				);
 			}
 			return {
 				header,

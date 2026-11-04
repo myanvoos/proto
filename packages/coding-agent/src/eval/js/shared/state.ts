@@ -50,7 +50,7 @@ type Encoded =
 	| number
 	| string
 	| { type: string; value: Encoded[] | [string, Encoded][] | string; kind?: string };
-interface Snapshot {
+export interface Snapshot {
 	format: string;
 	version: number;
 	language: StateLanguage;
@@ -105,12 +105,16 @@ function encode(value: unknown, active: Set<object>, budget: Budget, depth = 0):
 		throw new Error(
 			"state supports only plain JSON values and bytes; objects, proxies, and resources are unsupported",
 		);
+	if (active.has(value)) throw new Error("state cannot contain cycles or shared aliases");
+	active.add(value);
 	const prototype = Object.getPrototypeOf(value);
 	let bytes: Buffer | undefined;
 	let kind: string | undefined;
 	if (types.isUint8Array(value) && (prototype === Uint8Array.prototype || prototype === Buffer.prototype)) {
 		const buffer: ArrayBuffer = typedBuffer.call(value);
 		if (types.isSharedArrayBuffer(buffer)) throw new Error("state cannot contain shared-memory resources");
+		if (active.has(buffer)) throw new Error("state cannot contain shared backing-memory aliases");
+		active.add(buffer);
 		const length: number = typedLength.call(value);
 		budget.visit(depth, Math.ceil(length / 3) * 4);
 		bytes = Buffer.from(buffer, typedOffset.call(value), length);
@@ -124,37 +128,31 @@ function encode(value: unknown, active: Set<object>, budget: Budget, depth = 0):
 	const array = Array.isArray(value);
 	if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null)
 		throw new Error("state supports only plain JSON values and bytes; objects and resources are unsupported");
-	if (active.has(value)) throw new Error("state cannot contain cycles");
-	active.add(value);
-	try {
-		const descriptors = Object.getOwnPropertyDescriptors(value);
-		const keys = Reflect.ownKeys(descriptors);
-		if (array) {
-			const length: number = descriptors.length.value;
-			if (length > MAX_NODES || keys.length !== length + 1)
-				throw new Error("state arrays must be dense and contain only indexed values");
-			const items: Encoded[] = [];
-			for (let index = 0; index < length; index++) {
-				const descriptor = descriptors[index];
-				if (!descriptor || !("value" in descriptor) || !descriptor.enumerable)
-					throw new Error("state cannot contain accessors or sparse arrays");
-				items.push(encode(descriptor.value, active, budget, depth + 1));
-			}
-			return { type: "array", value: items };
+	const descriptors = Object.getOwnPropertyDescriptors(value);
+	const keys = Reflect.ownKeys(descriptors);
+	if (array) {
+		const length: number = descriptors.length.value;
+		if (length > MAX_NODES || keys.length !== length + 1)
+			throw new Error("state arrays must be dense and contain only indexed values");
+		const items: Encoded[] = [];
+		for (let index = 0; index < length; index++) {
+			const descriptor = descriptors[index];
+			if (!descriptor || !("value" in descriptor) || !descriptor.enumerable)
+				throw new Error("state cannot contain accessors or sparse arrays");
+			items.push(encode(descriptor.value, active, budget, depth + 1));
 		}
-		const entries: [string, Encoded][] = [];
-		for (const key of keys) {
-			if (typeof key !== "string") throw new Error("state object keys must be strings");
-			const descriptor = descriptors[key];
-			if (!("value" in descriptor) || !descriptor.enumerable)
-				throw new Error("state cannot contain accessors or non-enumerable properties");
-			budget.visit(depth + 1, key.length);
-			entries.push([key, encode(descriptor.value, active, budget, depth + 1)]);
-		}
-		return { type: prototype === null ? "null-object" : "object", value: entries };
-	} finally {
-		active.delete(value);
+		return { type: "array", value: items };
 	}
+	const entries: [string, Encoded][] = [];
+	for (const key of keys) {
+		if (typeof key !== "string") throw new Error("state object keys must be strings");
+		const descriptor = descriptors[key];
+		if (!("value" in descriptor) || !descriptor.enumerable)
+			throw new Error("state cannot contain accessors or non-enumerable properties");
+		budget.visit(depth + 1, key.length);
+		entries.push([key, encode(descriptor.value, active, budget, depth + 1)]);
+	}
+	return { type: prototype === null ? "null-object" : "object", value: entries };
 }
 
 function fields(value: unknown, expected: string[]): Record<string, unknown> {
@@ -223,7 +221,7 @@ function decode(value: unknown, budget: Budget, depth = 0): unknown {
 	throw new Error("unknown encoded state value type");
 }
 
-function validate(
+export function validateKernelState(
 	snapshot: unknown,
 	reserved: ReadonlySet<string>,
 ): { snapshot: Snapshot; restored: Map<string, unknown> } {
@@ -258,12 +256,11 @@ function summary(path: string, snapshot: Snapshot): StateResult {
 	};
 }
 
-export async function saveKernelState(
-	path: string,
+export function captureKernelState(
 	names: unknown,
 	namespace: Record<string, unknown>,
 	reserved: ReadonlySet<string>,
-): Promise<StateResult> {
+): Snapshot {
 	// Validate the selection through the same descriptor-only encoder, too.
 	const selection = encode(names, new Set(), new Budget());
 	if (
@@ -278,11 +275,12 @@ export async function saveKernelState(
 	const selected = selection.value.map(name => bindingName(name, reserved));
 	if (new Set(selected).size !== selected.length) throw new Error("state names must not contain duplicates");
 	const budget = new Budget();
+	const seen = new Set<object>();
 	const bindings = selected.map(name => {
 		const descriptor = Object.getOwnPropertyDescriptor(namespace, name);
 		if (!descriptor) throw new Error(`selected state binding does not exist: ${name}`);
 		if (!("value" in descriptor)) throw new Error("state cannot save an accessor binding");
-		return { name, value: encode(descriptor.value, new Set(), budget) };
+		return { name, value: encode(descriptor.value, seen, budget) };
 	});
 	const snapshot: Snapshot = {
 		format: FORMAT,
@@ -293,7 +291,17 @@ export async function saveKernelState(
 	};
 	const encoded = `${JSON.stringify(snapshot)}\n`;
 	if (Buffer.byteLength(encoded) > MAX_BYTES) throw new Error("state snapshot exceeds the 16 MiB size limit");
-	await atomicWriteFile(path, encoded);
+	return snapshot;
+}
+
+export async function saveKernelState(
+	path: string,
+	names: unknown,
+	namespace: Record<string, unknown>,
+	reserved: ReadonlySet<string>,
+): Promise<StateResult> {
+	const snapshot = captureKernelState(names, namespace, reserved);
+	await atomicWriteFile(path, `${JSON.stringify(snapshot)}\n`);
 	return summary(path, snapshot);
 }
 
@@ -333,7 +341,18 @@ export async function loadKernelState(
 	} catch {
 		throw new Error("invalid state snapshot JSON");
 	}
-	const { snapshot, restored } = validate(raw, reserved);
+	const snapshot = restoreKernelState(raw, namespace, reserved, collision, beforeCommit);
+	return summary(path, snapshot);
+}
+
+export function restoreKernelState(
+	raw: unknown,
+	namespace: Record<string, unknown>,
+	reserved: ReadonlySet<string>,
+	collision: "reject" | "overwrite" = "reject",
+	beforeCommit?: (names: readonly string[]) => void,
+): Snapshot {
+	const { snapshot, restored } = validateKernelState(raw, reserved);
 	const descriptors: Record<string, PropertyDescriptor> = Object.create(null);
 	for (const [name, value] of restored) {
 		const existing = Object.getOwnPropertyDescriptor(namespace, name);
@@ -349,5 +368,5 @@ export async function loadKernelState(
 	// No await or user code between preflight and commit to the ordinary global object.
 	beforeCommit?.([...restored.keys()]);
 	Object.defineProperties(namespace, descriptors);
-	return summary(path, snapshot);
+	return snapshot;
 }

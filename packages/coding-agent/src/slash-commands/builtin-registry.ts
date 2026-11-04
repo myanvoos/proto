@@ -1,4 +1,9 @@
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
+import {
+	type CommandScope,
+	captureSessionCommandTarget,
+	isSessionCommandTargetCurrent,
+} from "../session/command-target";
 import { BUILTIN_COLLABORATION_SLASH_COMMANDS } from "./builtin-collaboration";
 import {
 	buildArgumentCompletions,
@@ -112,6 +117,21 @@ export async function executeBuiltinSlashCommand(text: string, runtime: BuiltinS
 		runtime.ctx.showStatus(`/${parsed.name} does not take arguments`);
 		return true;
 	}
+	const scope = resolveBuiltinCommandScope(command, parsed);
+	const session = scope === "node" ? runtime.ctx.viewSession : runtime.ctx.session;
+	runtime = {
+		...runtime,
+		target:
+			scope === "application"
+				? undefined
+				: scope === "node" && runtime.target
+					? runtime.target
+					: captureSessionCommandTarget(session),
+	};
+	if (scope === "node" && runtime.target && !isSessionCommandTargetCurrent(runtime.target, runtime.ctx.viewSession)) {
+		runtime.ctx.showStatus("Selection expired: the session changed");
+		return true;
+	}
 	if (command.handleTui) {
 		await command.handleTui(parsed, runtime);
 		return true;
@@ -119,10 +139,10 @@ export async function executeBuiltinSlashCommand(text: string, runtime: BuiltinS
 	if (command.handle) {
 		const ctx = runtime.ctx;
 		const adapted: SlashCommandRuntime = {
-			session: ctx.session,
-			sessionManager: ctx.sessionManager,
+			session: runtime.target?.session ?? session,
+			sessionManager: runtime.target?.sessionManager ?? session.sessionManager,
 			settings: ctx.settings,
-			cwd: ctx.sessionManager.getCwd(),
+			cwd: (runtime.target?.sessionManager ?? session.sessionManager).getCwd(),
 			output: (text: string) => {
 				ctx.showStatus(text);
 			},
@@ -134,6 +154,10 @@ export async function executeBuiltinSlashCommand(text: string, runtime: BuiltinS
 		return true;
 	}
 	return false;
+}
+
+export function resolveBuiltinCommandScope(command: SlashCommandSpec, parsed: ParsedSlashCommand): CommandScope {
+	return typeof command.scope === "function" ? command.scope(parsed) : command.scope;
 }
 
 export function lookupBuiltinSlashCommand(name: string): SlashCommandSpec | undefined {

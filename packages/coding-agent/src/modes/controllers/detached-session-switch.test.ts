@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream, type Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -338,7 +339,8 @@ test("starting a new session keeps a streaming turn running in the background un
 		expect(a.session.isStreaming).toBe(true);
 		// Session lists read from disk: the parked first turn must be listed to be resumable.
 		const listed = await SessionManager.list(tempDir.path(), tempDir.path());
-		expect(listed.map(info => info.path)).toContain(a.file);
+		const listedPaths = await Promise.all(listed.map(info => fs.realpath(info.path)));
+		expect(listedPaths).toContain(await fs.realpath(a.file));
 
 		a.release();
 		await runA;

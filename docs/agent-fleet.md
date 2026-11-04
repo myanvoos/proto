@@ -2,7 +2,7 @@
 
 Agent Fleet is the interactive TUI for watching and controlling subagents associated with the current session. It combines a live roster, per-agent activity and usage, transcript access, steering, revive, and kill controls. The main agent is not listed because its conversation is the ambient session view.
 
-When opened for a disk-backed session (including a resumed session), the Fleet also discovers parked subagents from that session's persisted artifacts. Advisor transcript files appear as read-only rows.
+When opened for a disk-backed session (including a resumed session), the Fleet rebuilds its node index from durable topology and journals and discovers parked subagents in the existing artifact locations. Advisor transcript files appear as read-only rows. Parent/root identity comes from ownership metadata, not display labels or directory ancestry.
 
 ## Open the Fleet
 
@@ -53,10 +53,10 @@ The transcript viewer bounds its headers, footer hints, notices, and reply edito
 | `Tab`                       | Toggle the inspector on narrow terminals.                                    |
 | `PageUp` / `PageDown`       | Scroll an open inspector.                                                    |
 | `r`                         | Revive the selected parked non-advisor agent.                                |
-| `x`                         | Abort a running turn if necessary, then kill and release the selected agent. |
+| `x`                         | Terminate the selected node and its descendants, retaining their stopped history. |
 | `Esc`                       | Clear a range selection; otherwise close the inspector first on narrow terminals, then close the Fleet. |
 
-Only parked, non-advisor agents can be revived. `x` is immediate; use it only when you intend to discard that agent instance.
+Only active-generation parked, non-advisor agents can be revived. Stopped and abandoned generations remain browse-only. `x` is an immediate subtree-termination request, not a turn-only interrupt; siblings and other roots are unaffected, and cleanup failure is not reported as freed resources.
 
 ## Read and steer a subagent
 
@@ -85,7 +85,11 @@ While you read an older window, appended output does not replace that window. Re
 
 ## Persisted agents and advisors
 
-Opening the Fleet for a persisted session scans that session's artifact tree. Historical subagent JSONL files become parked rows; a killed agent's tombstone keeps it aborted. Nested subagents retain their parent/child lineage. Output and patch artifacts are attached to the corresponding inspector row.
+Opening the Fleet for a persisted session rebuilds explicit ownership from session metadata and journals while retaining existing transcript and artifact paths. Legacy relationships are imported once; normal reads do not infer ancestry from filenames. The rebuild validates identities and parent/root edges, including cycles, missing parents, duplicates, and terminal ancestry. A killed agent's tombstone keeps it aborted; nested workers retain their IDs and parent/child lineage after restart. Output and patch artifacts are attached to the corresponding inspector row.
+
+`parked` means the node remains addressable without its expensive live runtime. Releasing a parent's runtime does not cancel a running descendant. The durable owner journal accepts descendant usage and completion receipts while parked, and revival uses that same journal. A failed declared-state snapshot refuses eviction while the runtime is still attached. Runtime release, cancelling one turn, terminating a subtree, and closing a root tree are separate operations. Opening/closing an observation surface or changing focus does not change ownership or cancel descendants.
+
+A user fork starts a new root: its source is provenance, not its parent. It does not adopt the source's live descendants or execute copied lifecycle receipts. The source tree and its delivered results stay unchanged. Worker spawn authority is still derived from the parent and agent definition on creation and revival. The default `orchestrator.maxRecursionDepth: 2` counts worker-to-worker levels, so it already permits a main → worker → worker → worker chain (workers at depth three below main). Runnable concurrency, admitted-node counts, and accepted-work bytes are separate limits; idle and parked nodes still consume admitted-node reservations. See [Orchestration admission and execution limits](./orchestration.md#admission-and-execution-limits) for defaults and the scope of hosted broker limits.
 
 Advisor transcript files (`__advisor*.jsonl`) appear as `advisor`-kind rows under their owning session. They are observability records, not peers:
 

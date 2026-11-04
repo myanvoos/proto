@@ -3,6 +3,7 @@ import * as net from "node:net";
 import * as path from "node:path";
 import { getGlobalDaemonRuntimeDir, isEexist, isEnoent, logger, postmortem } from "@oh-my-pi/pi-utils";
 import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../subprocess/worker-client";
+import { SocketWriter } from "../utils/socket-writer";
 import { canonicalProjectDir, daemonBrokerEndpoint, daemonRuntimeDir } from "./paths";
 import {
 	DAEMON_BROKER_WORKER_ARG,
@@ -107,6 +108,8 @@ async function readOrCreateToken(runtimeDir: string): Promise<string> {
 
 function requestTimeoutMs(operation: DaemonOperation): number {
 	switch (operation.op) {
+		case "execution-acquire":
+			return DAEMON_MAX_TIMEOUT_MS;
 		case "start":
 			return (operation.spec.ready?.timeoutMs ?? CONNECT_TIMEOUT_MS) + 5_000;
 		case "wait":
@@ -164,6 +167,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #inFlightCompletionIds = new Set<string>();
 	readonly #completionSubscriptionId = crypto.randomUUID();
 	#socket: net.Socket | undefined;
+	#writer: SocketWriter | undefined;
 	/** Handshake result for one connection: a reconnect may reach a different broker process. */
 	#handshake: { socket: net.Socket; ping: Promise<Extract<DaemonRpcResult, { op: "ping" }>> } | undefined;
 	#connectPromise: Promise<void> | undefined;
@@ -246,7 +250,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			pending.removeAbort = () => signal.removeEventListener("abort", abort);
 		}
 		this.#pending.set(id, pending);
-		socket.write(
+		this.#sendFrame(
 			`${JSON.stringify({
 				id,
 				token: this.#token,
@@ -274,6 +278,8 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#closed = true;
 		clearTimeout(this.#completionReconnectTimer);
 		this.#completionReconnectTimer = undefined;
+		this.#writer?.close();
+		this.#writer = undefined;
 		this.#socket?.destroy();
 		this.#completionSinks.clear();
 		this.#preservedCompletionOwners.clear();
@@ -389,16 +395,45 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			socket.destroy();
 			throw new Error("Daemon broker client is closed");
 		}
+		this.#writer?.close();
 		this.#socket = socket;
+		const writer = new SocketWriter(
+			bytes => socket.write(bytes),
+			error => {
+				if (this.#socket === socket) this.#rejectPending(error);
+				logger.warn("Daemon broker client transport failed", { error: error.message });
+				socket.destroy(error);
+			},
+		);
+		this.#writer = writer;
+		socket.on("drain", () => writer.drain());
 		this.#buffer = "";
 		socket.setEncoding("utf8");
-		socket.on("data", chunk => this.#onData(chunk));
+		socket.on("data", chunk => {
+			if (this.#socket === socket) this.#onData(chunk);
+		});
 		socket.on("error", () => {});
 		socket.on("close", () => {
-			if (this.#socket === socket) this.#socket = undefined;
+			writer.close();
+			if (this.#socket !== socket) return;
+			this.#socket = undefined;
+			this.#writer = undefined;
 			this.#rejectPending(new Error("Daemon broker connection closed"));
 			this.#scheduleCompletionReconnect();
 		});
+	}
+
+	#sendFrame(frame: string): void {
+		const writer = this.#writer;
+		if (!writer) {
+			this.#rejectPending(new Error("Daemon broker socket is unavailable"));
+			return;
+		}
+		try {
+			writer.send(frame);
+		} catch {
+			// Failure callback rejects requests before closing this connection.
+		}
 	}
 
 	#onData(chunk: string | Buffer): void {
@@ -487,7 +522,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	#ackCompletion(completionId: string): void {
 		const socket = this.#socket;
 		if (!socket || socket.destroyed) return;
-		socket.write(
+		this.#sendFrame(
 			`${JSON.stringify({
 				id: crypto.randomUUID(),
 				token: this.#token,
@@ -537,9 +572,15 @@ export async function createDaemonBrokerClient(
 	return new SocketDaemonClient(canonical, runtimeDir, token, options);
 }
 
-export async function daemonClientForProject(projectDir: string): Promise<DaemonBrokerClient> {
+export async function daemonClientForProject(
+	projectDir: string,
+	options: DaemonBrokerClientOptions = {},
+): Promise<DaemonBrokerClient> {
 	const canonical = await canonicalProjectDir(projectDir);
-	return sharedDaemonClient(`project:${canonical}`, () => createDaemonBrokerClient(canonical));
+	const runtimeDir = await canonicalProjectDir(options.runtimeDir ?? daemonRuntimeDir(canonical));
+	return sharedDaemonClient(`project:${JSON.stringify([canonical, runtimeDir])}`, () =>
+		createDaemonBrokerClient(canonical, { ...options, runtimeDir }),
+	);
 }
 
 export async function daemonClientForGlobal(service: string): Promise<DaemonBrokerClient> {

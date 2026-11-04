@@ -117,6 +117,8 @@ interface KernelSessionRegistryDescriptor<
 	admission?: KernelAdmission;
 	/** Busy probe for the reap check. Undefined/true/unknown = not idle, keep the kernel. */
 	kernelBusy?: (kernel: TKernel) => Promise<boolean | undefined>;
+	/** Residency can end only when the declared state of this generation is safe to restore. */
+	kernelSafeToReap?: (kernel: TKernel) => boolean;
 	/** Called on the next execute for a session key that was idle-reaped, so callers can surface the state wipe. */
 	notifySessionReaped?: (options: TOptions, note: KernelReapNote) => void;
 	languageLabel: string;
@@ -324,7 +326,7 @@ export function createKernelSessionRegistry<
 				? await descriptor.kernelBusy(session.kernel)
 				: true
 			: false;
-		if (busy !== false) {
+		if (busy !== false || descriptor.kernelSafeToReap?.(session.kernel) === false) {
 			armReap(sessionKey);
 			return;
 		}

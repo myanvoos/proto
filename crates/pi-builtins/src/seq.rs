@@ -6,7 +6,7 @@ use std::{
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use num_bigint::BigUint;
+use bigdecimal::num_bigint::BigUint;
 use num_traits::{ToPrimitive, Zero};
 use uucore::{
 	extendedbigdecimal::ExtendedBigDecimal,

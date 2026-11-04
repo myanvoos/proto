@@ -12,6 +12,14 @@ import { ToolAbortError, ToolError } from "../../tools/tool-errors";
 import { safeSend as safeSendIpc } from "../../utils/ipc";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP } from "../bridge-timeout";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
+import {
+	type DeclaredKernelState,
+	declaredStateLane,
+	discardDeclaredStateKernel,
+	enterDeclaredStateKernel,
+	isDeclaredStateKernelSafeToRelease,
+	withDeclaredStateExecution,
+} from "../declared-state";
 import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "../idle-timeout";
 import { kernelAdmission } from "../kernel-admission";
@@ -103,6 +111,7 @@ interface CompletedRunSink {
 }
 
 interface JsSession {
+	runtime: JsKernelRuntime;
 	sessionKey: string;
 	sessionId: string;
 	cwd: string;
@@ -176,6 +185,7 @@ async function reapSessionFire(session: JsSession): Promise<void> {
 	// awaited tool/agent bridges, completion calls. Reset cycles also block reaping.
 	if (
 		session.pending.size > 0 ||
+		!isDeclaredStateKernelSafeToRelease(session.info.generation!) ||
 		startingSessions.has(session.sessionKey) ||
 		resettingSessions.has(session.sessionKey)
 	) {
@@ -252,20 +262,82 @@ export async function executeInVmContext(options: {
 	timeoutMs?: number;
 	runState: VmRunState;
 }): Promise<VmRunResult> {
-	if (options.runState.signal?.aborted) {
-		throw reasonToError(options.runState.signal.reason, "Execution aborted");
-	}
-	const session = await prepareVmSession({ ...options, signal: options.runState.signal });
-	const sessionKey = session.sessionKey;
-	session.info.lastActivityAt = Date.now();
-	armSessionReap(session);
-	try {
-		return await runOnce(session, options);
-	} finally {
-		if (sessions.get(sessionKey) === session && session.state === "alive") {
-			session.info.lastActivityAt = Date.now();
-			armSessionReap(session);
+	return withDeclaredStateExecution(options.ownerId ?? options.sessionId, async () => {
+		if (options.runState.signal?.aborted) {
+			throw reasonToError(options.runState.signal.reason, "Execution aborted");
 		}
+		const session = await prepareVmSession({ ...options, signal: options.runState.signal });
+		await enterDeclaredStateKernel(
+			options.ownerId ?? options.sessionId,
+			{
+				namespace: options.sessionId,
+				generation: session.info.generation!,
+				metadata: {
+					language: options.runtime,
+					lane: declaredStateLane(options.sessionId),
+					cwd: session.cwd,
+					interpreter: session.info.interpreter,
+					target: session.info.target,
+				},
+				alive: () => session.state === "alive",
+				request: (action, snapshot) => requestDeclaredState(session, action, snapshot),
+			},
+			options.reset,
+		);
+		const sessionKey = session.sessionKey;
+		session.info.lastActivityAt = Date.now();
+		armSessionReap(session);
+		try {
+			return await runOnce(session, options);
+		} finally {
+			if (sessions.get(sessionKey) === session && session.state === "alive") {
+				session.info.lastActivityAt = Date.now();
+				armSessionReap(session);
+			}
+		}
+	});
+}
+
+export async function validateVmDeclaredState(state: DeclaredKernelState): Promise<void> {
+	if (state.language === "python") throw new Error("Expected JavaScript declared state");
+	const id = `state-preflight:${crypto.randomUUID()}`;
+	const session = await prepareVmSession({
+		runtime: state.language,
+		sessionKey: id,
+		sessionId: id,
+		ownerId: id,
+		cwd: state.cwd,
+		interpreter: state.interpreter,
+		target: state.target,
+	});
+	try {
+		await requestDeclaredState(session, "restore", state.snapshot);
+	} finally {
+		await closeVmKernelSession(session.sessionKey, true, id);
+	}
+}
+
+async function requestDeclaredState(
+	session: JsSession,
+	action: "capture" | "restore",
+	snapshot?: unknown,
+): Promise<unknown> {
+	const id = Snowflake.next();
+	const pending = Promise.withResolvers<unknown>();
+	const off = session.worker.onMessage(message => {
+		if (message.type !== "state" || message.id !== id) return;
+		if (message.error) pending.reject(new Error(message.error));
+		else pending.resolve(message.value);
+	});
+	const offError = session.worker.onError(error => pending.reject(error));
+	const timer = setTimeout(() => pending.reject(new Error("Declared state request timed out")), 15_000);
+	try {
+		session.worker.send({ type: "state", id, action, snapshot });
+		return await pending.promise;
+	} finally {
+		clearTimeout(timer);
+		off();
+		offError();
 	}
 }
 
@@ -349,7 +421,20 @@ export function listVmKernelSessions(ownerId?: string): KernelSessionInfo[] {
 }
 
 export async function startVmKernelSession(options: VmSessionOptions): Promise<KernelSessionInfo> {
-	return vmSessionInfo(await prepareVmSession(options));
+	const session = await prepareVmSession(options);
+	if (options.reset)
+		discardDeclaredStateKernel(
+			options.ownerId ?? options.sessionId,
+			{
+				language: options.runtime,
+				lane: declaredStateLane(options.sessionId),
+				cwd: session.cwd,
+				interpreter: session.info.interpreter,
+				target: session.info.target,
+			},
+			options.sessionId,
+		);
+	return vmSessionInfo(session);
 }
 
 export async function closeVmKernelSession(
@@ -387,6 +472,19 @@ export async function closeVmKernelSession(
 	resettingSessions.set(sessionKey, operation);
 	try {
 		await operation;
+		if (existing) {
+			discardDeclaredStateKernel(
+				ownerId ?? existing.sessionId,
+				{
+					language: existing.runtime,
+					lane: declaredStateLane(existing.sessionId),
+					cwd: existing.cwd,
+					interpreter: existing.info.interpreter,
+					target: existing.info.target,
+				},
+				existing.sessionId,
+			);
+		}
 	} finally {
 		if (resettingSessions.get(sessionKey) === operation) resettingSessions.delete(sessionKey);
 	}
@@ -621,6 +719,7 @@ async function acquireSession(
 		const worker = await spawnJsWorker(runtime, snapshot);
 		startupWorkerStopped = false;
 		const session: JsSession = {
+			runtime,
 			sessionKey,
 			sessionId: snapshot.sessionId,
 			cwd: snapshot.cwd,

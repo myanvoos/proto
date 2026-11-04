@@ -1225,8 +1225,6 @@ async function executeBashInLane(command: string, options?: BashExecutorOptions)
 			}
 		}
 
-		// Report actual native session loss, not an ordinary `exit` that preserves lane state.
-		if (winner.result.sessionEnded) lostShell = `shell exited with code ${winner.result.exitCode ?? "unknown"}`;
 		return withExecutionMetadata({
 			exitCode: winner.result.exitCode,
 			cancelled: false,

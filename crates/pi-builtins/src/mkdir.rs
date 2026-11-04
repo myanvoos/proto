@@ -32,7 +32,7 @@ struct Config {
 
 fn get_mode(matches: &ArgMatches, umask: u32) -> Result<u32, String> {
 	if let Some(mode_arg) = matches.get_one::<String>(options::MODE) {
-		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, umask)
+		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, umask).map_err(|error| error.to_string())
 	} else {
 		Ok(!umask & DEFAULT_PERM)
 	}
@@ -294,8 +294,6 @@ fn create_single_dir(
 	host: &mut Host,
 ) -> Result<(), MkdirError> {
 	let fs_path = host.resolve(path);
-	#[cfg(all(unix, target_os = "linux"))]
-	let path_exists = fs_path.exists();
 
 	#[cfg(unix)]
 	let create_mode = if is_parent {

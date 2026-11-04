@@ -212,6 +212,7 @@ async function handleSessionPinCommand(
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "checklist",
+		scope: "node",
 		description: "View or modify the agent's checklist",
 		acpDescription: "Manage checklist items",
 		acpInputHint: "<subcommand>",
@@ -249,12 +250,13 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 		handle: handleChecklistAcp,
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleChecklistCommand(command.args);
+			await runtime.ctx.handleChecklistCommand(command.args, runtime.target);
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "session",
+		scope: command => (command.args.trim().split(/\s+/)[0] === "delete" ? "root" : "node"),
 		description: "Session management commands",
 		acpDescription: "Show or configure the current session",
 		acpInputHint: "[info|delete|pin [account]]",
@@ -299,10 +301,10 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			// Remaining subcommands (info/pin) run through the shared handler
 			// so the TUI honors the args its own autocomplete advertises.
 			await runSessionCommand(command, {
-				session: runtime.ctx.session,
-				sessionManager: runtime.ctx.sessionManager,
+				session: runtime.target?.session ?? runtime.ctx.viewSession,
+				sessionManager: runtime.target?.sessionManager ?? runtime.ctx.viewSession.sessionManager,
 				settings: runtime.ctx.settings,
-				cwd: runtime.ctx.sessionManager.getCwd(),
+				cwd: (runtime.target?.sessionManager ?? runtime.ctx.viewSession.sessionManager).getCwd(),
 				output: text => runtime.ctx.showStatus(text),
 				refreshCommands: () => runtime.ctx.refreshSlashCommandState(),
 				reloadPlugins: () => reloadTuiPluginState(runtime.ctx),
@@ -313,6 +315,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "jobs",
+		scope: "node",
 		description: "Show async background jobs status",
 		acpDescription: "Show background jobs",
 		acpInputHint: "[kill <id>|kill all]",
@@ -359,17 +362,20 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
 			if (verb === "kill") {
-				await handleJobsKillCommand(rest, runtime.ctx.session, text => runtime.ctx.showStatus(text));
+				await handleJobsKillCommand(rest, runtime.target?.session ?? runtime.ctx.viewSession, text =>
+					runtime.ctx.showStatus(text),
+				);
 			} else if (verb) {
 				runtime.ctx.showStatus("Usage: /jobs [kill <id>|kill all]");
 			} else {
-				await runtime.ctx.handleJobsCommand();
+				await runtime.ctx.handleJobsCommand(runtime.target);
 			}
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "usage",
+		scope: command => (command.args.trim().split(/\s+/)[0] === "reset" ? "application" : "node"),
 		description: "Show provider usage and limits",
 		acpDescription: "Show token usage",
 		acpInputHint: "[show|reset [provider/credential-id|provider/active]]",
@@ -397,7 +403,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
 			if (!verb || (verb === "show" && !rest)) {
-				await runtime.ctx.handleUsageCommand();
+				await runtime.ctx.handleUsageCommand(undefined, runtime.target);
 				clearSubmittedText(runtime);
 				return;
 			}
@@ -416,6 +422,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "history",
+		scope: "node",
 		description: "Page through transcript history",
 		allowArgs: true,
 		subcommands: [
@@ -440,6 +447,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "help",
+		scope: "application",
 		aliases: ["?"],
 		description: "Show commands, shortcuts and where to look next",
 		handleTui: (_command, runtime) => {
@@ -449,6 +457,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "hotkeys",
+		scope: "application",
 		description: "Show all keyboard shortcuts",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.handleHotkeysCommand();
@@ -457,11 +466,12 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "tools",
+		scope: "node",
 		description: "Show tools currently visible to the agent",
 		acpDescription: "Show available tools",
 		getTuiAutocompleteDescription: runtime => {
-			const active = runtime.ctx.session.getActiveToolNames().length;
-			const all = runtime.ctx.session.getAllToolNames().length;
+			const active = runtime.ctx.viewSession.getActiveToolNames().length;
+			const all = runtime.ctx.viewSession.getAllToolNames().length;
 			return all === 0 ? "Tools: none available" : `Tools: ${active} active / ${all} available`;
 		},
 		handle: async (_command, runtime) => {
@@ -479,16 +489,17 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {
-			runtime.ctx.handleToolsCommand();
+			runtime.ctx.handleToolsCommand(runtime.target);
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "context",
+		scope: "node",
 		description: "Show estimated context usage breakdown",
 		acpDescription: "Show context usage",
 		getTuiAutocompleteDescription: runtime => {
-			const usage = runtime.ctx.session.getContextUsage();
+			const usage = runtime.ctx.viewSession.getContextUsage();
 			if (!usage) return "Context: unavailable";
 			return `Context: ${Math.round(usage.percent)}% (${formatTokenCount(usage.tokens)}/${formatTokenCount(usage.contextWindow)})`;
 		},
@@ -497,12 +508,13 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: (_command, runtime) => {
-			runtime.ctx.handleContextCommand();
+			runtime.ctx.handleContextCommand(runtime.target);
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "extensions",
+		scope: "application",
 		aliases: ["status"],
 		description: "Open Extension Control Center dashboard",
 		handleTui: (_command, runtime) => {
@@ -512,6 +524,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "agents",
+		scope: "tree",
 		description: "Open the agents view",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showAgentsView("current");
@@ -520,30 +533,34 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "branch",
+		scope: "node",
 		description: "Create a new branch from a previous message",
 		handleTui: (_command, runtime) => {
-			runtime.ctx.showUserMessageSelector();
+			runtime.ctx.showUserMessageSelector(runtime.target);
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "fork",
+		scope: "node",
 		description: "Create a new fork from a previous message",
 		handleTui: async (_command, runtime) => {
 			clearSubmittedText(runtime);
-			await runtime.ctx.handleForkCommand();
+			await runtime.ctx.handleForkCommand(runtime.target);
 		},
 	},
 	{
 		name: "tree",
+		scope: "node",
 		description: "Navigate session tree (switch branches)",
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showTreeSelector();
+		handleTui: async (_command, runtime) => {
+			await runtime.ctx.showTreeSelector(undefined, runtime.target);
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "annotate",
+		scope: "node",
 		description: "Bookmark the last response (labels it in the session tree)",
 		allowArgs: true,
 		subcommands: [{ name: "view", description: "Browse bookmarked points in the session tree" }],
@@ -551,14 +568,15 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			clearSubmittedText(runtime);
 			const arg = command.args.trim();
 			if (arg === "view") {
-				runtime.ctx.showBookmarks();
+				runtime.ctx.showBookmarks(runtime.target);
 				return;
 			}
-			await runtime.ctx.annotateLastResponse(arg.length > 0 ? arg : undefined);
+			await runtime.ctx.annotateLastResponse(arg.length > 0 ? arg : undefined, runtime.target);
 		},
 	},
 	{
 		name: "login",
+		scope: "application",
 		description: "Login with OAuth provider",
 		inlineHint: "[provider|redirect URL]",
 		allowArgs: true,
@@ -611,6 +629,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "logout",
+		scope: "application",
 		description: "Logout from OAuth provider",
 		inlineHint: "[provider]",
 		allowArgs: true,
@@ -633,6 +652,10 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "mcp",
+		scope: command =>
+			/(?:^smithery-(?:login|logout)(?:\s|$)|--scope(?:=|\s+)user(?:\s|$))/.test(command.args.trim())
+				? "application"
+				: "tree",
 		description: "Manage MCP servers (add, list, remove, test)",
 		acpDescription: "Manage MCP servers",
 		inlineHint: "<subcommand>",

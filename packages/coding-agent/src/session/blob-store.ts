@@ -36,8 +36,20 @@ export interface BlobPutResult {
 
 export type BlobReader = (hash: string) => Promise<Buffer | null>;
 
-const inFlightBlobWrites = new Set<string>();
+const inFlightBlobWrites = new Map<string, number>();
+const activeBlobSweeps = new Set<Set<string>>();
 const blobClaims = new Map<string, { locked: boolean; waiters: Array<() => void> }>();
+
+/** Protect accepted writes for every sweep they overlap, even after the write itself completes. */
+function beginBlobWrite(blobPath: string): () => void {
+	inFlightBlobWrites.set(blobPath, (inFlightBlobWrites.get(blobPath) ?? 0) + 1);
+	for (const protectedWrites of activeBlobSweeps) protectedWrites.add(blobPath);
+	return () => {
+		const remaining = (inFlightBlobWrites.get(blobPath) ?? 1) - 1;
+		if (remaining === 0) inFlightBlobWrites.delete(blobPath);
+		else inFlightBlobWrites.set(blobPath, remaining);
+	};
+}
 
 function tryClaimBlob(key: string): (() => void) | null {
 	let claim = blobClaims.get(key);
@@ -53,7 +65,9 @@ async function claimBlob(key: string): Promise<() => void> {
 	const release = tryClaimBlob(key);
 	if (release) return release;
 	const claim = blobClaims.get(key)!;
-	await new Promise<void>(resolve => claim.waiters.push(resolve));
+	const { promise, resolve } = Promise.withResolvers<void>();
+	claim.waiters.push(resolve);
+	await promise;
 	return () => releaseBlobClaim(key, claim);
 }
 
@@ -200,131 +214,137 @@ export async function sweepUnreferencedBlobs(
 	sessionsDir: string,
 	options: { graceMs?: number; now?: number } = {},
 ): Promise<BlobSweepResult> {
-	const references = await collectBlobReferences(sessionsDir);
-	if (!references) {
-		logger.warn("Blob sweep skipped because the persisted-session reference scan was incomplete", { sessionsDir });
-		return { marked: 0, removed: 0, keptYoung: 0, aborted: true };
-	}
-	const cutoff = (options.now ?? Date.now()) - (options.graceMs ?? DEFAULT_BLOB_GRACE_MS);
-	let marked = 0;
-	let removed = 0;
-	let keptYoung = 0;
-	let aborted = false;
-	const candidates: Array<{
-		name: string;
-		path: string;
-		dev: number;
-		ino: number;
-		size: number;
-		mtimeMs: number;
-		ctimeMs: number;
-	}> = [];
+	const protectedWrites = new Set(inFlightBlobWrites.keys());
+	activeBlobSweeps.add(protectedWrites);
 	try {
-		for (const entry of await fsp.readdir(blobDir, { withFileTypes: true })) {
-			if (!entry.isFile() || !BLOB_HASH_RE.test(entry.name) || references.has(entry.name)) continue;
-			marked++;
-			const candidate = path.join(blobDir, entry.name);
-			if (inFlightBlobWrites.has(candidate)) {
-				keptYoung++;
-				continue;
-			}
-			try {
-				const stat = await fsp.stat(candidate);
-				if (!stat.isFile() || stat.mtimeMs > cutoff) {
-					keptYoung++;
-					continue;
-				}
-				candidates.push({
-					name: entry.name,
-					path: candidate,
-					dev: stat.dev,
-					ino: stat.ino,
-					size: stat.size,
-					mtimeMs: stat.mtimeMs,
-					ctimeMs: stat.ctimeMs,
-				});
-			} catch (error) {
-				if (!isEnoent(error)) throw error;
-			}
+		const references = await collectBlobReferences(sessionsDir);
+		if (!references) {
+			logger.warn("Blob sweep skipped because the persisted-session reference scan was incomplete", { sessionsDir });
+			return { marked: 0, removed: 0, keptYoung: 0, aborted: true };
 		}
-		const batchSize = 32;
-		for (let offset = 0; offset < candidates.length; offset += batchSize) {
-			const batch = candidates.slice(offset, offset + batchSize);
-			const currentReferences = await collectBlobReferences(sessionsDir);
-			if (!currentReferences) {
-				keptYoung += batch.length;
-				aborted = true;
-				break;
-			}
-			for (const candidate of batch) {
-				const release = tryClaimBlob(candidate.path);
-				if (!release) {
+		const cutoff = (options.now ?? Date.now()) - (options.graceMs ?? DEFAULT_BLOB_GRACE_MS);
+		let marked = 0;
+		let removed = 0;
+		let keptYoung = 0;
+		let aborted = false;
+		const candidates: Array<{
+			name: string;
+			path: string;
+			dev: number;
+			ino: number;
+			size: number;
+			mtimeMs: number;
+			ctimeMs: number;
+		}> = [];
+		try {
+			for (const entry of await fsp.readdir(blobDir, { withFileTypes: true })) {
+				if (!entry.isFile() || !BLOB_HASH_RE.test(entry.name) || references.has(entry.name)) continue;
+				marked++;
+				const candidate = path.join(blobDir, entry.name);
+				if (protectedWrites.has(candidate)) {
 					keptYoung++;
 					continue;
 				}
 				try {
-					try {
-						const current = await fsp.stat(candidate.path);
-						if (!current.isFile() || current.mtimeMs > cutoff) {
-							keptYoung++;
-							continue;
-						}
-					} catch (error) {
-						if (!isEnoent(error)) throw error;
-						continue;
-					}
-					const latestReferences = await collectBlobReferences(sessionsDir);
-					if (!latestReferences) {
-						keptYoung++;
-						aborted = true;
-						break;
-					}
-					if (inFlightBlobWrites.has(candidate.path) || latestReferences.has(candidate.name)) {
+					const stat = await fsp.stat(candidate);
+					if (!stat.isFile() || stat.mtimeMs > cutoff) {
 						keptYoung++;
 						continue;
 					}
-					// Recheck after the final reference scan; putSync may have atomically
-					// replaced this path while that scan was awaiting filesystem I/O.
-					try {
-						const current = fs.statSync(candidate.path);
-						if (
-							!current.isFile() ||
-							current.dev !== candidate.dev ||
-							current.ino !== candidate.ino ||
-							current.size !== candidate.size ||
-							current.mtimeMs !== candidate.mtimeMs ||
-							current.ctimeMs !== candidate.ctimeMs ||
-							current.mtimeMs > cutoff
-						) {
-							keptYoung++;
-							continue;
-						}
-						// Keep validation and unlink in one non-yielding sequence so putSync
-						// cannot replace this path between the identity check and deletion.
-						// Cross-process replacement needs separate coordination.
-						fs.unlinkSync(candidate.path);
-						removed++;
-					} catch (error) {
-						if (!isEnoent(error)) throw error;
-					}
-				} finally {
-					release();
+					candidates.push({
+						name: entry.name,
+						path: candidate,
+						dev: stat.dev,
+						ino: stat.ino,
+						size: stat.size,
+						mtimeMs: stat.mtimeMs,
+						ctimeMs: stat.ctimeMs,
+					});
+				} catch (error) {
+					if (!isEnoent(error)) throw error;
 				}
-				// Yield after the non-yielding validation+unlink window so a large
-				// batch cannot monopolize the event loop on slow filesystems.
-				await Bun.sleep(0);
+			}
+			const batchSize = 32;
+			for (let offset = 0; offset < candidates.length; offset += batchSize) {
+				const batch = candidates.slice(offset, offset + batchSize);
+				const currentReferences = await collectBlobReferences(sessionsDir);
+				if (!currentReferences) {
+					keptYoung += batch.length;
+					aborted = true;
+					break;
+				}
+				for (const candidate of batch) {
+					const release = tryClaimBlob(candidate.path);
+					if (!release) {
+						keptYoung++;
+						continue;
+					}
+					try {
+						try {
+							const current = await fsp.stat(candidate.path);
+							if (!current.isFile() || current.mtimeMs > cutoff) {
+								keptYoung++;
+								continue;
+							}
+						} catch (error) {
+							if (!isEnoent(error)) throw error;
+							continue;
+						}
+						const latestReferences = await collectBlobReferences(sessionsDir);
+						if (!latestReferences) {
+							keptYoung++;
+							aborted = true;
+							break;
+						}
+						if (protectedWrites.has(candidate.path) || latestReferences.has(candidate.name)) {
+							keptYoung++;
+							continue;
+						}
+						// Recheck after the final reference scan; putSync may have atomically
+						// replaced this path while that scan was awaiting filesystem I/O.
+						try {
+							const current = fs.statSync(candidate.path);
+							if (
+								!current.isFile() ||
+								current.dev !== candidate.dev ||
+								current.ino !== candidate.ino ||
+								current.size !== candidate.size ||
+								current.mtimeMs !== candidate.mtimeMs ||
+								current.ctimeMs !== candidate.ctimeMs ||
+								current.mtimeMs > cutoff
+							) {
+								keptYoung++;
+								continue;
+							}
+							// Keep validation and unlink in one non-yielding sequence so putSync
+							// cannot replace this path between the identity check and deletion.
+							// Cross-process replacement needs separate coordination.
+							fs.unlinkSync(candidate.path);
+							removed++;
+						} catch (error) {
+							if (!isEnoent(error)) throw error;
+						}
+					} finally {
+						release();
+					}
+					// Yield after the non-yielding validation+unlink window so a large
+					// batch cannot monopolize the event loop on slow filesystems.
+					await Bun.sleep(0);
+					if (aborted) break;
+				}
 				if (aborted) break;
 			}
-			if (aborted) break;
+		} catch (error) {
+			if (!isEnoent(error)) {
+				logger.warn("Blob sweep stopped after filesystem error", { error: String(error) });
+				aborted = true;
+			}
 		}
-	} catch (error) {
-		if (!isEnoent(error)) {
-			logger.warn("Blob sweep stopped after filesystem error", { error: String(error) });
-			aborted = true;
-		}
+		logger.info("Blob sweep completed", { marked, removed, keptYoung, aborted });
+		return { marked, removed, keptYoung, aborted };
+	} finally {
+		activeBlobSweeps.delete(protectedWrites);
 	}
-	logger.info("Blob sweep completed", { marked, removed, keptYoung, aborted });
-	return { marked, removed, keptYoung, aborted };
 }
 
 const IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
@@ -482,21 +502,22 @@ export class BlobStore {
 
 	async put(data: Buffer, options?: BlobPutOptions): Promise<BlobPutResult> {
 		const result = createBlobPutResult(this.dir, data, options);
-		const release = await claimBlob(result.path);
-		inFlightBlobWrites.add(result.path);
+		const endWrite = beginBlobWrite(result.path);
+		let release: (() => void) | undefined;
 		try {
+			release = await claimBlob(result.path);
 			if (!(await reuseStoredBlob(result.path, data.length))) await writeBlobAtomically(result.path, data);
 			await ensureDisplayPath(result.path, result.displayPath, data);
 			return result;
 		} finally {
-			inFlightBlobWrites.delete(result.path);
-			release();
+			endWrite();
+			release?.();
 		}
 	}
 
 	putSync(data: Buffer, options?: BlobPutOptions): BlobPutResult {
 		const result = createBlobPutResult(this.dir, data, options);
-		inFlightBlobWrites.add(result.path);
+		const endWrite = beginBlobWrite(result.path);
 		try {
 			if (!reuseStoredBlobSync(result.path, data.length)) {
 				fs.mkdirSync(this.dir, { recursive: true });
@@ -505,7 +526,7 @@ export class BlobStore {
 			ensureDisplayPathSync(result.path, result.displayPath, data);
 			return result;
 		} finally {
-			inFlightBlobWrites.delete(result.path);
+			endWrite();
 		}
 	}
 

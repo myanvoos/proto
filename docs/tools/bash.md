@@ -150,6 +150,7 @@ An anchored rule such as `^\s*git\s+commit\b` can therefore match the `git commi
    - Supports interactive input; `Esc` kills the session from the overlay.
 4. Explicit background job
    - Requires `async: true` and `async.enabled`.
+   - Without an explicit `lane`, shell state is isolated per job but Python, Node and Bun cells reuse the main lane's kernels. With an explicit lane, both shell and kernel state belong to that lane.
    - Registers a job with `session.asyncJobManager` and returns `{ state: "running", jobId }` immediately. `timeout: 0` leaves the job without a tool-imposed deadline.
 5. Auto-backgrounded non-PTY job
    - Requires `bash.autoBackground.enabled` (default `false`), no PTY/client-terminal bridge, and an async job manager below its running-job cap.

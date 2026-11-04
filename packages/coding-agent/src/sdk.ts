@@ -78,6 +78,7 @@ import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "./cursor";
 import autolearnCaptureRefused from "./prompts/system/autolearn-capture-refused.md" with { type: "text" };
+import { readNodeTopology } from "./session/node-topology";
 import { shutdownTinyTitleClient } from "./tiny/title-client";
 import "./discovery";
 import { createImageUrlServiceFromSettings } from "./blob-broker/service";
@@ -333,6 +334,16 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 
 export class SessionModelRestoreError extends Error {}
 
+/** Trusted root definitions, independent of a worker's local tool/extension restrictions. */
+export interface RootExtensionEnvironment {
+	readonly preparedExtensions?: readonly PreparedExtension[];
+	readonly extensions: readonly ExtensionFactory[];
+	readonly customToolPaths: readonly ToolPathWithSource[];
+	readonly customTools: readonly (CustomTool | ToolDefinition)[];
+	readonly additionalExtensionPaths: readonly string[];
+	readonly disableExtensionDiscovery: boolean;
+}
+
 export interface CreateAgentSessionOptions {
 	cwd?: string;
 
@@ -415,6 +426,9 @@ export interface CreateAgentSessionOptions {
 	preloadedPreparedExtensions?: readonly PreparedExtension[];
 
 	preloadedCustomToolPaths?: ToolPathWithSource[];
+
+	/** Root provenance carried unchanged through child execution options, not local worker grants. */
+	rootExtensionEnvironment?: RootExtensionEnvironment;
 
 	eventBus?: EventBus;
 
@@ -1193,8 +1207,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 	applyProviderGlobalsFromSettings(settings);
 
+	const suppliedSessionManager = options.sessionManager;
+	const suppliedSessionFile = suppliedSessionManager?.getSessionFile();
+	const sharedJournal = suppliedSessionFile
+		? (options.agentRegistry ?? AgentRegistry.global()).getJournal(suppliedSessionFile)
+		: undefined;
 	const sessionManager =
-		options.sessionManager ?? logger.time("sessionManager", () => createDefaultSessionManager(cwd, agentDir));
+		sharedJournal ??
+		suppliedSessionManager ??
+		logger.time("sessionManager", () => createDefaultSessionManager(cwd, agentDir));
+	if (sharedJournal && suppliedSessionManager && sharedJournal !== suppliedSessionManager)
+		suppliedSessionManager.releaseRetainedEntries();
 	const configuredDirs = options.additionalDirectories
 		? options.additionalDirectories
 		: settings.get("workspace.additionalDirectories");
@@ -1413,7 +1436,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
 
 	const asyncJobManager =
-		settings.get("async.enabled") && !options.parentTaskPrefix
+		settings.get("async.enabled") && !options.asyncJobManager
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
 
@@ -1425,7 +1448,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
 	const resolvedAgentDisplayName =
 		options.agentDisplayName ?? ((options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? "sub" : "main");
-	const agentKind = (options.taskDepth ?? 0) > 0 || options.parentTaskPrefix ? ("sub" as const) : ("main" as const);
+	const agentKind =
+		options.parentAgentId !== undefined ||
+		options.expectedAgentRef?.kind === "sub" ||
+		(options.taskDepth ?? 0) > 0 ||
+		options.parentTaskPrefix
+			? ("sub" as const)
+			: ("main" as const);
 	// Merging peer messaging into fleet must not grant worker authority to restricted
 	// or explicitly tooled subagents. Main sessions keep their existing worker defaults.
 	const sessionSpawns =
@@ -1603,6 +1632,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const syncAgentRegistrySessionScope = (): void => {
 			const ref = registeredAgentRef;
 			if (!ref) return;
+			const topology = sessionManager.getNodeTopology();
+			if (topology) {
+				ref.nodeId = topology.id;
+				ref.parentNodeId = topology.parentId;
+				ref.rootId = topology.rootId;
+				ref.spawnAnchorId = topology.spawnAnchorId;
+				ref.generation = topology.generation;
+				ref.nodeState = topology.state;
+			}
+			const file = sessionManager.getSessionFile();
+			if (file) agentRegistry.retainJournal(file, sessionManager);
 			agentRegistry.updateSessionScope(
 				resolvedAgentId,
 				{
@@ -1789,6 +1829,29 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		toolSession.preparedExtensions = extensionsResult.preparedExtensions;
+		const sourceRootId = sessionManager.getNodeTopology()?.rootId;
+		const inheritedRootEnvironment = sourceRootId
+			? agentRegistry.getNode(sourceRootId)?.session?.rootExtensionEnvironment
+			: undefined;
+		const rootDefinitionsAvailable =
+			!options.preloadedExtensions ||
+			extensionsResult.preparedExtensions !== undefined ||
+			extensionsResult.extensions.length === 0;
+		const rootExtensionEnvironment: RootExtensionEnvironment | undefined =
+			options.rootExtensionEnvironment ??
+			(agentKind === "main" && rootDefinitionsAvailable
+				? {
+						preparedExtensions: [...(extensionsResult.preparedExtensions ?? [])],
+						extensions: [...(options.extensions ?? [])],
+						customToolPaths: [...customToolPaths],
+						customTools: [...(options.customTools ?? [])],
+						additionalExtensionPaths: [...(options.additionalExtensionPaths ?? [])],
+						disableExtensionDiscovery: options.disableExtensionDiscovery === true,
+					}
+				: agentKind === "main"
+					? undefined
+					: inheritedRootEnvironment);
+		toolSession.rootExtensionEnvironment = rootExtensionEnvironment;
 
 		if (!restrictToolNames && !extensionsResult.extensions.some(extension => extension.commands.has("memory"))) {
 			const memoryExtension = await loadExtensionFromFactory(
@@ -2721,8 +2784,50 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			initialToolNames.push("read");
 		}
 
+		const topologyFile = sessionManager.getSessionFile();
+		let node = (topologyFile ? await readNodeTopology(topologyFile) : undefined) ?? sessionManager.getNodeTopology();
+		if (registryKind !== "main" && node?.id === sessionManager.getSessionId() && node.id !== resolvedAgentId)
+			node = undefined;
+		if (!node) {
+			const sessionFile = sessionManager.getSessionFile();
+			node = sessionFile ? await readNodeTopology(sessionFile) : undefined;
+			if (!node) {
+				const parent = options.parentAgentId ? agentRegistry.get(options.parentAgentId) : undefined;
+				const nodeId = registryKind === "main" ? sessionManager.getSessionId() : resolvedAgentId;
+				const parentNodeId = parent?.nodeId ?? parent?.session?.sessionManager.getSessionId();
+				let spawnAnchorId: string | undefined;
+				for (const entry of parent?.session?.sessionManager.iterateCustomEntries("orchestrator-worker-lifecycle") ??
+					[]) {
+					const data = entry.data as { action?: string; id?: string } | undefined;
+					if (data?.action === "spawn" && data.id === nodeId) spawnAnchorId = entry.id;
+				}
+				node = {
+					id: nodeId,
+					rootId: parent?.rootId ?? parentNodeId ?? nodeId,
+					parentId: parentNodeId,
+					spawnAnchorId,
+					parentSessionFile: parent?.sessionFile ?? undefined,
+					rootSessionFile:
+						parent?.session?.sessionManager.getNodeTopology()?.rootSessionFile ??
+						parent?.sessionFile ??
+						sessionFile,
+					generation: 0,
+					state: "active",
+				};
+			}
+			await sessionManager.setNodeTopology(node);
+		}
+		if (node.state !== "active") throw new Error(`Node "${node.id}" is ${node.state} and cannot start a runtime.`);
+		const journalFile = sessionManager.getSessionFile();
+		if (journalFile) agentRegistry.retainJournal(journalFile, sessionManager);
 		const registrationInput = {
 			id: resolvedAgentId,
+			nodeId: node.id,
+			parentNodeId: node.parentId,
+			rootId: node.rootId,
+			spawnAnchorId: node.spawnAnchorId,
+			generation: node.generation,
+			nodeState: node.state,
 			label: resolvedAgentDisplayName,
 			kind: registryKind,
 			parentId: options.parentAgentId,
@@ -3018,6 +3123,38 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const sessionFile = sessionManager.getSessionFile();
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionFile);
 		session = new AgentSession({
+			rootExtensionEnvironment,
+			setToolUIContext,
+			createIndependentFork: async manager => {
+				if (!rootExtensionEnvironment)
+					throw new Error(
+						"Independent fork requires trusted root extension provenance; reopen the owning root first",
+					);
+				const fork = await createAgentSession({
+					cwd: manager.getCwd(),
+					agentDir: options.agentDir,
+					enableMCP: options.enableMCP,
+					sessionManager: manager,
+					authStorage,
+					modelRegistry,
+					model: session?.model,
+					thinkingLevel: session?.thinkingLevel,
+					settings,
+					hasUI: options.hasUI,
+					interactivePrompts: options.interactivePrompts,
+					streamFn: options.streamFn,
+					rootExtensionEnvironment,
+					preloadedPreparedExtensions: rootExtensionEnvironment.preparedExtensions,
+					extensions: [...rootExtensionEnvironment.extensions],
+					preloadedCustomToolPaths: [...rootExtensionEnvironment.customToolPaths],
+					customTools: [...rootExtensionEnvironment.customTools],
+					additionalExtensionPaths: [...rootExtensionEnvironment.additionalExtensionPaths],
+					disableExtensionDiscovery: rootExtensionEnvironment.disableExtensionDiscovery,
+				});
+				const context = toolContextStore.getContext();
+				if (context.ui) fork.setToolUIContext(context.ui, context.hasUI === true);
+				return fork.session;
+			},
 			advisorWatchdogPrompt,
 			advisorContextPrompt,
 			advisorSharedInstructions: discoveredAdvisors.sharedInstructions,
@@ -3247,56 +3384,66 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		{
 			const originalDispose = session.dispose.bind(session);
 			let tinyClientReleased = false;
-			session.dispose = async () => {
-				let shouldDisposeSharedAsyncJobManager = false;
-				try {
-					session.beginDispose();
-					const orchestrator = OrchestratorRuntime.global();
-					await orchestrator.suspendScope(orchestrator.ownerScope(orchestratorParent()), scopedAsyncJobManager);
-					if (agentKind === "main") {
-						const hasOtherMain =
-							registeredAgentRef !== undefined &&
-							agentRegistry.hasOtherRegistration(resolvedAgentId, registeredAgentRef);
-						shouldDisposeSharedAsyncJobManager = !hasOtherMain;
-						const lifecycle = AgentLifecycleManager.global();
-						if (lifecycle.manages(agentRegistry)) {
-							if (hasOtherMain && registeredAgentRef?.fleetRoot) {
-								await lifecycle.disposeFleet(registeredAgentRef.fleetRoot);
-							} else {
-								await lifecycle.dispose();
+			session.dispose = async (disposeOptions = {}) =>
+				session.prepareDispose(disposeOptions, async () => {
+					let shouldDisposeSharedAsyncJobManager = false;
+					try {
+						const disposition = disposeOptions.disposition ?? "tree-close";
+						session.beginDispose(disposition);
+						if (disposition === "tree-close") {
+							const orchestrator = OrchestratorRuntime.global();
+							await orchestrator.suspendScope(
+								orchestrator.ownerScope(orchestratorParent()),
+								scopedAsyncJobManager,
+							);
+						} else {
+							const orchestrator = OrchestratorRuntime.global();
+							orchestrator.releaseScopeRuntime(orchestrator.ownerScope(orchestratorParent()));
+						}
+						if (agentKind === "main" && disposition === "tree-close") {
+							const hasOtherMain =
+								registeredAgentRef !== undefined &&
+								agentRegistry.hasOtherRegistration(resolvedAgentId, registeredAgentRef);
+							shouldDisposeSharedAsyncJobManager = !hasOtherMain;
+							const lifecycle = AgentLifecycleManager.global();
+							if (lifecycle.manages(agentRegistry)) {
+								if (hasOtherMain && registeredAgentRef?.fleetRoot) {
+									await lifecycle.disposeFleet(registeredAgentRef.fleetRoot);
+								} else {
+									await lifecycle.dispose();
+								}
 							}
 						}
-					}
-					await originalDispose();
-					if (
-						shouldDisposeSharedAsyncJobManager &&
-						scopedAsyncJobManager &&
-						AsyncJobManager.instance() === scopedAsyncJobManager
-					) {
-						AsyncJobManager.setInstance(undefined);
-						await scopedAsyncJobManager.dispose({ timeoutMs: 3_000 });
-					}
-				} finally {
-					if (shouldDisposeSharedAsyncJobManager && !tinyClientReleased) {
-						tinyClientReleased = true;
-						try {
-							await shutdownTinyTitleClient();
-						} catch (error) {
-							logger.warn("Session dispose: tiny-model client shutdown failed", { error: String(error) });
+						await originalDispose(disposeOptions);
+						if (
+							shouldDisposeSharedAsyncJobManager &&
+							scopedAsyncJobManager &&
+							AsyncJobManager.instance() === scopedAsyncJobManager
+						) {
+							AsyncJobManager.setInstance(undefined);
+							await scopedAsyncJobManager.dispose({ timeoutMs: 3_000 });
 						}
-					}
-					unregisterUnlessParked();
-					unsubscribeCredentialDisabled?.();
-					unsubscribeMcpNotifications?.();
-					unregisterMcpDebouncePostmortem?.();
-					unregisterMcpPostmortem?.();
-					runDisposeCallbacks();
+					} finally {
+						if (shouldDisposeSharedAsyncJobManager && !tinyClientReleased) {
+							tinyClientReleased = true;
+							try {
+								await shutdownTinyTitleClient();
+							} catch (error) {
+								logger.warn("Session dispose: tiny-model client shutdown failed", { error: String(error) });
+							}
+						}
+						unregisterUnlessParked();
+						unsubscribeCredentialDisabled?.();
+						unsubscribeMcpNotifications?.();
+						unregisterMcpDebouncePostmortem?.();
+						unregisterMcpPostmortem?.();
+						runDisposeCallbacks();
 
-					unsubscribeMcpNotifications = undefined;
-					unregisterMcpDebouncePostmortem = undefined;
-					unregisterMcpPostmortem = undefined;
-				}
-			};
+						unsubscribeMcpNotifications = undefined;
+						unregisterMcpDebouncePostmortem = undefined;
+						unregisterMcpPostmortem = undefined;
+					}
+				});
 		}
 
 		const prewarmModel = session.model;

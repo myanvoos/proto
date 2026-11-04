@@ -120,10 +120,9 @@ type Offered = { width: number } & (
 
 const MAX_LIVE_BLOCKS = 256;
 /** Recent committed replay; durable session history, not this window, is authoritative. */
-export const RETAINED_COMMITTED_BLOCKS = 1000;
+export const RETAINED_COMMITTED_BLOCKS = 2000;
 export const RETAINED_COMMITTED_BYTES = TRANSCRIPT_WINDOW_BYTES;
-const REPLAY_WINDOW_NOTICE =
-	"Older transcript blocks left the replay window (1000 blocks / 2 MiB). Full history: Alt+PgUp or /history; saved session data is unchanged.";
+const REPLAY_WINDOW_NOTICE = `Older transcript blocks left the replay window (${RETAINED_COMMITTED_BLOCKS} blocks / ${RETAINED_COMMITTED_BYTES / (1024 * 1024)} MiB). Full history: Alt+PgUp or /history; saved session data is unchanged.`;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
 const EMPTY_ROWS: readonly string[] = [];

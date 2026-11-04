@@ -390,11 +390,6 @@ pub struct ShellRunResult {
 	pub fs_observations:      Vec<FsObservation>,
 	pub protolens_dispatches: Vec<String>,
 	pub stage_records:        Vec<String>,
-	/// The command ended the persistent session (`exit`, `exec`, top-level
-	/// `return`/`break`), so its variables, functions and aliases are gone and
-	/// the next run starts a fresh shell.
-	#[serde(default)]
-	pub session_ended:        bool,
 }
 
 struct CommandOutcome {
@@ -428,17 +423,16 @@ impl CommandOutcome {
 		}
 	}
 
-	fn into_result(self, session_ended: bool) -> ShellRunResult {
+	fn into_result(self) -> ShellRunResult {
 		ShellRunResult {
-			exit_code: Some(exit_code(&self.exec)),
-			cancelled: false,
-			timed_out: false,
-			minimized: self.minimized,
-			working_dir: self.working_dir,
-			fs_observations: self.fs_observations,
+			exit_code:            Some(exit_code(&self.exec)),
+			cancelled:            false,
+			timed_out:            false,
+			minimized:            self.minimized,
+			working_dir:          self.working_dir,
+			fs_observations:      self.fs_observations,
 			protolens_dispatches: self.protolens_dispatches,
-			stage_records: self.stage_records,
-			session_ended,
+			stage_records:        self.stage_records,
 		}
 	}
 }
@@ -454,7 +448,6 @@ impl ShellRunResult {
 			fs_observations:      Vec::new(),
 			protolens_dispatches: Vec::new(),
 			stage_records:        Vec::new(),
-			session_ended:        false,
 		}
 	}
 }
@@ -746,7 +739,7 @@ async fn run_shell_session(
 	if res.is_err() {
 		*session.lock().await = None;
 	}
-	Ok(res?.into_result(false))
+	Ok(res?.into_result())
 }
 
 async fn run_shell_oneshot(
@@ -801,7 +794,7 @@ async fn run_shell_oneshot(
 	let _ = process_cancel_bridge.await;
 	let res = run_result
 		.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
-	Ok(res?.into_result(false))
+	Ok(res?.into_result())
 }
 
 async fn run_shell_oneshot_streams(
@@ -857,7 +850,7 @@ async fn run_shell_oneshot_streams(
 	let _ = process_cancel_bridge.await;
 	let res = run_result
 		.unwrap_or_else(|err| Err(Error::msg(format!("Shell execution task failed: {err}"))));
-	Ok(res?.into_result(false))
+	Ok(res?.into_result())
 }
 
 fn null_file() -> Result<OpenFile> {

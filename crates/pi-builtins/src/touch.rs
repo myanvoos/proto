@@ -665,7 +665,7 @@ fn parse_date(ref_zoned: Zoned, s: &str, time_zone: &TimeZone) -> Result<FileTim
 		return Ok(FileTime::from_unix_time(*ts, 0));
 	}
 
-	if let Ok(zoned) = parse_datetime::parse_datetime_at_date(ref_zoned, s) {
+	if let Ok(parse_datetime::ParsedDateTime::InRange(zoned)) = parse_datetime::parse_datetime_at_date(ref_zoned, s) {
 		return Ok(timestamp_to_filetime(zoned.timestamp()));
 	}
 

@@ -47,6 +47,7 @@ async function createRuntime(
 	};
 	const ctx = {
 		session,
+		viewSession: session,
 		sessionManager,
 		settings,
 		editor: { setText: () => {}, addToHistory: () => {} },

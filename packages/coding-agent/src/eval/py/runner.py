@@ -1994,6 +1994,8 @@ def _magic_whos(_args: str) -> list[tuple[str, str]]:
 
 @line_magic("reset")
 def _magic_reset(_args: str) -> None:
+    global _DECLARED_STATE_NAMES
+    _DECLARED_STATE_NAMES = []
     _STATE.user_ns.clear()
     _STATE.user_ns.update({"__name__": "__main__", "__doc__": None})
     _install_builtins(_STATE.user_ns)
@@ -2569,6 +2571,38 @@ def _state_path(path):
     return str(resolver(path) if resolver else Path(path).expanduser())
 
 
+_DECLARED_STATE_NAMES = []
+
+
+def __proto_declare_state(names):
+    global _DECLARED_STATE_NAMES
+    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
+    selected = [] if type(names) is list and not names else _persistence._names(names, reserved)
+    if selected:
+        _persistence.capture_state(selected, _STATE.user_ns, reserved)
+    _DECLARED_STATE_NAMES = selected
+    return list(selected)
+
+
+def _declared_state_request(req):
+    global _DECLARED_STATE_NAMES
+    reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
+    if _DECLARED_STATE_NAMES and any(not task.done() for task in _STATE.retained):
+        raise ValueError("Declared state cannot cross a boundary with retained tasks")
+    if _DECLARED_STATE_NAMES and any(thread.is_alive() for thread in list(_STATE.thread_owners)):
+        raise ValueError("Declared state cannot cross a boundary with live user threads")
+    if req.get("action") == "capture":
+        return _persistence.capture_state(_DECLARED_STATE_NAMES, _STATE.user_ns, reserved) if _DECLARED_STATE_NAMES else None
+    if req.get("action") != "restore":
+        raise ValueError("Invalid declared state operation")
+    snapshot = req.get("snapshot")
+    names = _persistence.restore_state(snapshot, _STATE.user_ns, reserved, compatible=True)
+    _DECLARED_STATE_NAMES = names
+    for name in names:
+        _STATE.defs[name] = _STATE.execution_count
+    return None
+
+
 def __proto_save_state(path, names) -> dict:
     reserved = set(_runner_exports()) | set(_STATE.prelude_exports)
     return _persistence.save_state(_state_path(path), names, _STATE.user_ns, reserved)
@@ -2651,6 +2685,7 @@ def _runner_exports() -> dict[str, Any]:
         "defs": __proto_defs_view,
         "kernel_state": __proto_kernel_state,
         "retain_task": __proto_retain_task,
+        "declare_state": __proto_declare_state,
         "save_state": __proto_save_state,
         "load_state": __proto_load_state,
     }
@@ -3370,6 +3405,14 @@ def main() -> None:
             if req.get("type") == "exit":
                 break
             rid = str(req.get("id"))
+            if req.get("type") == "state":
+                try:
+                    _emit({"type": "state", "id": rid, "value": _declared_state_request(req)})
+                except BaseException as exc:
+                    _emit({"type": "state", "id": rid, "stateError": str(exc)})
+                finally:
+                    _STATE.pending_request_ids.discard(rid)
+                continue
             _STATE.active_request_id = rid
             try:
                 if rid in _STATE.cancelled_request_ids:

@@ -24,7 +24,16 @@ import { LocalModuleLoader } from "./local-module-loader";
 import { NativeStdio } from "./native-stdio";
 import { JAVASCRIPT_PRELUDE_SOURCE } from "./prelude";
 import { diagnoseCellSyntaxError, wrapCode } from "./rewrite-imports";
-import { type LoadStateOptions, loadKernelState, runtimeInterpreter, type StateResult, saveKernelState } from "./state";
+import {
+	captureKernelState,
+	type LoadStateOptions,
+	loadKernelState,
+	restoreKernelState,
+	runtimeInterpreter,
+	type Snapshot,
+	type StateResult,
+	saveKernelState,
+} from "./state";
 import type { JsDisplayOutput, JsStatusEvent } from "./types";
 
 export interface RuntimeHooks {
@@ -192,6 +201,8 @@ export class JsRuntime {
 	#definitions = new Map<string, number>();
 	#tasks = new Map<string, { id: string; kind: "cell" | "tool"; state: "running"; cell: number }>();
 	#baseline = new Set<string>();
+	#declaredStateNames: string[] = [];
+	#hasRetainedResources = false;
 	#env: Map<string, string>;
 	#als = new AsyncLocalStorage<RunContext>();
 	#moduleLoader: LocalModuleLoader;
@@ -508,6 +519,47 @@ export class JsRuntime {
 		return namespace;
 	}
 
+	declareState(names: unknown): string[] {
+		this.#activateGlobals("declare state");
+		const snapshot =
+			!util.types.isProxy(names) && Array.isArray(names) && names.length === 0 && Reflect.ownKeys(names).length === 1
+				? null
+				: captureKernelState(names, this.#stateNamespace(), this.#baseline);
+		this.#declaredStateNames = snapshot?.bindings.map(binding => binding.name) ?? [];
+		return [...this.#declaredStateNames];
+	}
+
+	captureDeclaredState(): Snapshot | null {
+		this.#activateGlobals("capture declared state");
+		if (this.#declaredStateNames.length && this.#hasRetainedResources)
+			throw new Error("Declared state cannot cross a boundary with retained resources");
+		return this.#declaredStateNames.length
+			? captureKernelState(this.#declaredStateNames, this.#stateNamespace(), this.#baseline)
+			: null;
+	}
+
+	restoreDeclaredState(raw: unknown): void {
+		this.#activateGlobals("restore declared state");
+		const namespace = this.#stateNamespace();
+		const candidate = raw as Snapshot;
+		const current = runtimeInterpreter();
+		if (
+			candidate?.language !== "javascript" ||
+			candidate.interpreter?.implementation !== current.implementation ||
+			candidate.interpreter?.version !== current.version ||
+			candidate.interpreter?.executable !== current.executable
+		)
+			throw new Error("Declared state interpreter is incompatible");
+		const snapshot = restoreKernelState(raw, namespace, this.#baseline);
+		for (const binding of snapshot.bindings) {
+			this.#ownGlobal(binding.name, true);
+			Object.defineProperty(globalThis, binding.name, Object.getOwnPropertyDescriptor(namespace, binding.name)!);
+			this.#definitions.set(binding.name, this.#executionCount);
+			recordGlobalValue(binding.name, this.#globalOwner);
+		}
+		this.#declaredStateNames = snapshot.bindings.map(binding => binding.name);
+	}
+
 	async saveState(snapshotPath: string, names: unknown): Promise<StateResult> {
 		this.#activateGlobals("save state");
 		return await saveKernelState(
@@ -696,6 +748,7 @@ export class JsRuntime {
 						"retainTask expects a resource with unref(); unresolved promises already do not keep the event loop alive",
 					);
 				resource.unref();
+				this.#hasRetainedResources = true;
 				return resource;
 			},
 			__proto_native_console__: this.#nativeStdio?.console,
@@ -703,6 +756,7 @@ export class JsRuntime {
 			__proto_session__: this.#session,
 			__proto_helpers__: this.helpers,
 			kernelState: (options?: { limit?: number }) => this.kernelState(options),
+			declareState: (names: unknown) => this.declareState(names),
 			saveState: (snapshotPath: string, names: unknown) => this.saveState(snapshotPath, names),
 			loadState: (snapshotPath: string, options?: LoadStateOptions) => this.loadState(snapshotPath, options),
 			defs: () =>

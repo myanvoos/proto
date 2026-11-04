@@ -904,9 +904,12 @@ export class ExtensionRunner {
 		this.#managedTimers.clearAll();
 	}
 
-	createCommandContext(): ExtensionCommandContext {
+	createCommandContext(invocationUI?: ExtensionUIContext): ExtensionCommandContext {
 		return {
 			...this.createContext(),
+			ui: invocationUI ?? this.#uiContext,
+			hasUI: invocationUI !== undefined || this.hasUI(),
+			mode: invocationUI ? "tui" : this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
 			waitForIdle: () => this.#waitForIdleFn(),
 			newSession: options => this.#newSessionHandler(options),

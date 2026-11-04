@@ -3,6 +3,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import { type AgentRef, type AgentRegistry, MAIN_AGENT_ID } from "../../../registry/agent-registry";
 import { registerPersistedSubagents } from "../../../registry/persisted-agents";
+import { readNodeTopology } from "../../../session/node-topology";
 import type { SessionInfo } from "../../../session/session-listing";
 import { formatCost } from "../../../tools/render-utils";
 import { agentRefMetrics } from "../agent-fleet-projection";
@@ -116,14 +117,13 @@ export async function collectSessionTreeAgents(options: {
 	const { registry, currentSessionFile, ownAgentId } = options;
 	if (!currentSessionFile) return [];
 	await registerPersistedSubagents(registry, currentSessionFile);
-	const artifactRoot = path.resolve(currentSessionFile.slice(0, -".jsonl".length));
+	const node =
+		(await readNodeTopology(currentSessionFile)) ??
+		(ownAgentId ? registry.get(ownAgentId)?.session?.sessionManager.getNodeTopology() : undefined);
+	if (!node) return [];
 	const rows: Array<TreeAgentEntry & { lastActivity: number }> = [];
-	for (const ref of registry.list()) {
+	for (const ref of registry.descendants(node.id, node.rootId)) {
 		if (ref.kind !== "sub" && ref.kind !== "side") continue;
-		const refFile = ref.sessionFile ? path.resolve(ref.sessionFile) : undefined;
-		const inSubtree = refFile?.startsWith(`${artifactRoot}${path.sep}`) ?? false;
-		const liveChild = ownAgentId !== undefined && ref.parentId === ownAgentId;
-		if (!inSubtree && !liveChild) continue;
 		const title = ref.label && !GENERIC_LABEL.test(ref.label) ? ref.label : ref.id;
 		rows.push({
 			id: ref.id,

@@ -1,6 +1,7 @@
 import type { Settings } from "../config/settings";
 import type { InteractiveModeContext, SubmittedUserInput } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
+import type { CommandScope, SessionCommandTarget } from "../session/command-target";
 import type { SessionManager } from "../session/session-manager";
 
 export interface SubcommandDef {
@@ -33,6 +34,7 @@ export interface ParsedSlashCommand {
 export type SlashCommandResult = undefined | { consumed: true };
 
 export interface SlashCommandRuntime {
+	target?: SessionCommandTarget;
 	session: AgentSession;
 	sessionManager: SessionManager;
 	settings: Settings;
@@ -51,6 +53,7 @@ export interface SlashCommandRuntime {
 }
 
 export interface TuiSlashCommandRuntime {
+	target?: SessionCommandTarget;
 	ctx: InteractiveModeContext;
 
 	input?: Pick<SubmittedUserInput, "images" | "imageLinks">;
@@ -59,6 +62,7 @@ export interface TuiSlashCommandRuntime {
 }
 
 export interface SlashCommandSpec extends BuiltinSlashCommand {
+	scope: CommandScope | ((command: ParsedSlashCommand) => CommandScope);
 	allowArgs?: boolean;
 
 	acpDescription?: string;

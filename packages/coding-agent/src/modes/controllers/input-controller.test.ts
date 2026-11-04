@@ -8,6 +8,8 @@ import { EDITOR_LIMITS } from "@oh-my-pi/pi-tui";
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import type { AgentSession } from "../../session/agent-session";
+import type { SessionCommandTarget } from "../../session/command-target";
+import { SessionManager } from "../../session/session-manager";
 import * as commandUsage from "../../utils/command-usage";
 import { COMPOSER_IMAGE_LIMITS } from "../components/custom-editor";
 import { initThemeSync } from "../theme/theme";
@@ -205,6 +207,7 @@ function focusedSubmitHarness() {
 	const statuses: string[] = [];
 	const prompted: Array<{ text: string; streamingBehavior?: string; synthetic?: boolean }> = [];
 	let modelSelectors = 0;
+	const targeted: Array<{ command: string; session?: AgentSession }> = [];
 	const editor = {
 		onSubmit: undefined as ((text: string) => Promise<void>) | undefined,
 		text: "",
@@ -230,6 +233,7 @@ function focusedSubmitHarness() {
 		maybeStartTitleGeneration: () => {},
 	} as unknown as AgentSession;
 	const viewSession = {
+		sessionManager: SessionManager.inMemory(),
 		isStreaming: false,
 		queuedMessageCount: 0,
 		prompt: (text: string, options: { streamingBehavior?: string; synthetic?: boolean }) => {
@@ -249,10 +253,27 @@ function focusedSubmitHarness() {
 		skillCommands: new Map(),
 		fileSlashCommands: new Set<string>(),
 		isKnownSlashCommand: () => false,
+		getToolUIContext: () => undefined,
 		withLocalSubmission: (_text: string, run: () => Promise<void>) => run(),
 		updatePendingMessagesDisplay: () => {},
-		showModelSelector: () => {
+		showModelSelector: (_options: unknown, target?: SessionCommandTarget) => {
 			modelSelectors++;
+			targeted.push({ command: "model", session: target?.session });
+		},
+		handleCompactCommand: (
+			_instructions: unknown,
+			_mode: unknown,
+			_beforeFlush: unknown,
+			target?: SessionCommandTarget,
+		) => {
+			targeted.push({ command: "compact", session: target?.session });
+			return Promise.resolve("ok");
+		},
+		handleContextCommand: (target?: SessionCommandTarget) =>
+			targeted.push({ command: "context", session: target?.session }),
+		handleJobsCommand: (target?: SessionCommandTarget) => {
+			targeted.push({ command: "jobs", session: target?.session });
+			return Promise.resolve();
 		},
 		ui: { requestRender: () => {} },
 		showStatus: (message: string) => statuses.push(message),
@@ -265,6 +286,8 @@ function focusedSubmitHarness() {
 		submit: (text: string) => editor.onSubmit?.(text) ?? Promise.resolve(),
 		followUp: () => controller.handleFollowUp(),
 		viewSession,
+		context,
+		targeted,
 		editor,
 		statuses,
 		prompted,
@@ -298,15 +321,67 @@ test("a focused agent takes plain messages as steers and follow-ups instead of t
 	expect(harness.statuses).toEqual([]);
 });
 
-test("/model retargets the focused agent while other commands still bounce to the main session", async () => {
+test("focused model, compact, context and jobs share selected-node dispatch while root is busy", async () => {
 	const harness = focusedSubmitHarness();
-
+	Object.assign(harness.context.session, { isStreaming: true });
 	await harness.submit("/model");
 	await harness.submit("/compact");
-
+	harness.editor.text = "/context";
+	await harness.followUp();
+	await harness.submit("/jobs");
 	expect(harness.modelSelectors).toBe(1);
-	expect(harness.statuses).toEqual(["Commands run in the main session — press Esc to return first"]);
+	expect(harness.targeted).toEqual(
+		["model", "compact", "context", "jobs"].map(command => ({ command, session: harness.viewSession })),
+	);
+	expect(harness.statuses).toEqual([]);
 	expect(harness.prompted).toEqual([]);
+});
+
+test("focused undeclared extension commands fail closed without sending to root or child", async () => {
+	const harness = focusedSubmitHarness();
+	await harness.submit("/unsafe-extension");
+	expect(harness.statuses).toEqual(["Extension commands require an explicit scope before use in a focused session"]);
+	expect(harness.prompted).toEqual([]);
+});
+
+test("declared node extensions execute on the selected runner rather than root", async () => {
+	const harness = focusedSubmitHarness();
+	Object.assign(harness.viewSession, { extensionRunner: { getCommand: () => ({ scope: "node" }) } });
+	await harness.submit("/declared inspect");
+	expect(harness.prompted).toEqual([{ text: "/declared inspect", streamingBehavior: "steer" }]);
+	expect(harness.statuses).toEqual([]);
+});
+
+test("declared application extensions execute on root without prompting the focused node", async () => {
+	const harness = focusedSubmitHarness();
+	const invoked: string[] = [];
+	Object.assign(harness.context.session, {
+		extensionRunner: { getCommand: () => ({ scope: "application" }) },
+		prompt: async (text: string) => {
+			invoked.push(text);
+		},
+	});
+	await harness.submit("/declared configure");
+	expect(invoked).toEqual(["/declared configure"]);
+	expect(harness.prompted).toEqual([]);
+});
+
+test("a declared extension refuses focus changes while builtin lookup is awaiting completion", async () => {
+	const harness = focusedSubmitHarness();
+	Object.assign(harness.viewSession, { extensionRunner: { getCommand: () => ({ scope: "node" }) } });
+	const pending = harness.submit("/declared inspect");
+	Object.assign(harness.context, { viewSession: harness.context.session });
+	await pending;
+	expect(harness.prompted).toEqual([]);
+	expect(harness.statuses).toEqual(["Selection expired: the session changed"]);
+});
+
+test("a root-only node extension cannot silently execute on root while a child is focused", async () => {
+	const harness = focusedSubmitHarness();
+	Object.assign(harness.context.session, { extensionRunner: { getCommand: () => ({ scope: "node" }) } });
+	await harness.submit("/declared inspect");
+	expect(harness.prompted).toEqual([]);
+	expect(harness.statuses).toEqual(["Extension command is unavailable in the selected session"]);
 });
 
 test("bare c continues the agent, except as an answer during the guided goal interview", async () => {
@@ -743,6 +818,7 @@ test("Ctrl+Enter follow-ups pass through extension input handlers before dispatc
 				prompts.push(text);
 			},
 		},
+		getToolUIContext: () => undefined,
 		withLocalSubmission: (_text: string, fn: () => Promise<void>) => fn(),
 		updatePendingMessagesDisplay: () => {},
 		ui: { requestRender: () => {} },

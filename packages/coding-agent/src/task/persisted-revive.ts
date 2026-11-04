@@ -124,6 +124,7 @@ export function createPersistedSubagentReviverFactory(
 			let session: AgentSession;
 			try {
 				({ session } = await createAgentSession({
+					rootExtensionEnvironment: ctx.session.rootExtensionEnvironment,
 					cwd: ctx.session.sessionManager.getCwd(),
 					authStorage: ctx.authStorage,
 					modelRegistry: ctx.modelRegistry,

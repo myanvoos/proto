@@ -155,6 +155,7 @@ import checkpointActiveNoticeTemplate from "../prompts/system/checkpoint-active-
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import rewindReportTemplate from "../prompts/system/rewind-report.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
+import type { RootExtensionEnvironment } from "../sdk";
 import {
 	deobfuscateAssistantContent,
 	deobfuscateSessionContext,
@@ -162,10 +163,11 @@ import {
 	obfuscateProviderContext,
 } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
+import { ExecutionAdmission, executionIdentity } from "../task/execution-admission";
 import { parseThinkingLevel, shouldDisableReasoning, toReasoningEffort } from "../thinking";
 import { isLowSignalTitleInput } from "../tiny/text";
 import type { ImageAttachmentEntry } from "../tools";
-import { type AskToolDetails, type AskToolInput, recoverAskQuestions } from "../tools/ask";
+import { type AskToolDetails, type AskToolInput, recoverAskInput } from "../tools/ask";
 import { releaseTabsForOwner } from "../tools/browser/tab-supervisor";
 import type { ChecklistPhase } from "../tools/checklist";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
@@ -313,7 +315,7 @@ import {
 import {
 	cleanupEmptyMoveSession,
 	copySessionArtifacts,
-	type SessionManager,
+	SessionManager,
 	type SessionManagerStateSnapshot,
 } from "./session-manager";
 import { buildSessionMetadata } from "./session-metadata";
@@ -321,6 +323,8 @@ import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./ses
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
 import { SessionTools, type SessionToolsHost } from "./session-tools";
 import { skillPromptTitleInput } from "./skill-title-input";
+import { activateSessionStateRestore, captureSessionState, prepareSessionStateRestore } from "./state-manifest";
+import { abandonContinuationChildren, withTemporalMutation } from "./temporal-operations";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
@@ -526,7 +530,10 @@ class PromptPreflightError extends Error {}
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
+	readonly rootExtensionEnvironment: RootExtensionEnvironment | undefined;
 	readonly settings: Settings;
+	readonly #createIndependentFork: AgentSessionConfig["createIndependentFork"];
+	readonly setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	#setMcpServerInstructionsSource: AgentSessionConfig["setMcpServerInstructionsSource"];
@@ -904,8 +911,11 @@ export class AgentSession {
 		const generation = this.#promptGeneration;
 		const inFlightEpoch = this.#beginInFlight();
 		let turnError: unknown;
-		void this.agent
-			.prompt(records)
+		void this.#runAdmittedTurn(
+			() => this.agent.prompt(records),
+			undefined,
+			Buffer.byteLength(JSON.stringify(records)),
+		)
 			.catch(error => {
 				turnError = error;
 				logger.warn("IRC wake turn failed", { error: String(error) });
@@ -1053,7 +1063,10 @@ export class AgentSession {
 	constructor(config: AgentSessionConfig) {
 		this.#awaitingAssignment = config.awaitingAssignment === true;
 		this.agent = config.agent;
+		this.#createIndependentFork = config.createIndependentFork;
+		this.setToolUIContext = config.setToolUIContext ?? (() => {});
 		this.sessionManager = config.sessionManager;
+		this.rootExtensionEnvironment = config.rootExtensionEnvironment;
 		this.#liveHeartbeat = createSessionLiveHeartbeat(this.sessionManager.getSessionFile());
 		// Losing the oversized-entry cache is silent degradation otherwise: the user sees an old
 		// entry shrink with no explanation of why, or what to change so it stops happening.
@@ -1322,7 +1335,11 @@ export class AgentSession {
 				const inFlightEpoch = this.#beginInFlight();
 				let turnError: unknown;
 				try {
-					await this.agent.prompt(messages.length === 1 ? first : messages);
+					await this.#runAdmittedTurn(
+						() => this.agent.prompt(messages.length === 1 ? first : messages),
+						undefined,
+						Buffer.byteLength(JSON.stringify(messages)),
+					);
 				} catch (error) {
 					turnError = error;
 					throw error;
@@ -1885,7 +1902,10 @@ export class AgentSession {
 			const previous = this.#asyncCleanupTask;
 			// Finite jobs retain their manager's bounded shutdown; monitor processes must be reaped
 			// even when this session does not own the shared manager.
-			this.#asyncCleanupTask = Promise.all([previous, ...monitors.map(job => job.promise)]).then(() => {
+			this.#asyncCleanupTask = Promise.all([
+				previous,
+				...monitors.map(job => manager.waitForJobSettlement(job.id)),
+			]).then(() => {
 				manager.evictCompletedJobs({ ownerId });
 			});
 		}
@@ -1952,9 +1972,11 @@ export class AgentSession {
 		const manager = this.#asyncJobManager;
 		const ownerId = this.getAsyncJobOwnerId();
 		if (!manager || !ownerId) return;
-		await manager.waitForOwnerJobs(ownerId, { excludeSuppressed: true, excludeMonitors: true });
-		await manager.drainDeliveries({ filter: { ownerId, excludeMonitors: true } });
-		await this.waitForIdle();
+		await ExecutionAdmission.global().withWaitPermit(executionIdentity(this).nodeId, async () => {
+			await manager.waitForOwnerJobs(ownerId, { excludeSuppressed: true, excludeMonitors: true });
+			await manager.drainDeliveries({ filter: { ownerId, excludeMonitors: true } });
+			await this.waitForIdle();
+		});
 	}
 
 	async #deliverAsyncJobResult(manager: AsyncJobManager, jobId: string, text: string, job?: AsyncJob): Promise<void> {
@@ -2031,7 +2053,7 @@ export class AgentSession {
 		this.sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, data);
 	}
 
-	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
+	#recordSessionExit(reason: postmortem.Reason | "dispose", durability: "sync" | "transaction" = "sync"): void {
 		if (this.#exitRecorded) return;
 		this.#exitRecorded = true;
 		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getActiveBranch());
@@ -2054,7 +2076,7 @@ export class AgentSession {
 		if (pendingToolCalls.length > 0) data.pendingToolCalls = pendingToolCalls;
 		try {
 			this.sessionManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, data);
-			this.sessionManager.flushSync();
+			if (durability === "sync") this.sessionManager.flushSync();
 
 			const exitLog = pendingToolCalls.length > 0 || kind !== "normal" ? logger.warn : logger.debug;
 			exitLog("Session exit recorded", {
@@ -3058,7 +3080,7 @@ export class AgentSession {
 			}
 			for (;;) {
 				try {
-					await this.agent.continue(signal);
+					await this.#runAdmittedTurn(() => this.agent.continue(signal), signal);
 					return { status: "completed" };
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
@@ -3712,7 +3734,7 @@ export class AgentSession {
 		else this.#disposers.add(dispose);
 	}
 
-	beginDispose(): void {
+	beginDispose(disposition: "runtime-release" | "tree-close" = "tree-close"): void {
 		this.#isDisposed = true;
 		for (const dispose of this.#disposers) {
 			try {
@@ -3738,19 +3760,56 @@ export class AgentSession {
 		this.agent.setAsideMessageProvider(undefined);
 		this.agent.hasIrcInterrupts = undefined;
 		this.#advisors.stopRuntime();
-		this.#cancelOwnAsyncJobs();
+		if (disposition === "tree-close") this.#cancelOwnAsyncJobs();
 		this.#eval.beginDispose();
 	}
 
+	/** Release the expensive runtime, not the durable node's descendants or delivery queue. */
+	prepareRuntimeRelease<T>(release: () => Promise<T>): Promise<T> {
+		return this.#eval.prepareRuntimeRelease(release);
+	}
+
+	releaseRuntime(): Promise<void> {
+		return this.prepareRuntimeRelease(() => this.dispose({ disposition: "runtime-release" }));
+	}
+
+	prepareDispose<T>(options: AgentSessionDisposeOptions, release: () => Promise<T>): Promise<T> {
+		if (this.#isDisposed) return release();
+		if (options.disposition === "runtime-release") return this.#eval.prepareRuntimeRelease(release);
+		// Refuse unsafe state before shutdown hooks; commit their history and the exit receipt before teardown.
+		return this.#eval.prepareRuntimeRelease(async () => {
+			if (!this.#shutdownEventEmitted) {
+				await emitSessionShutdownEvent(this.#extensionRunner);
+				this.#shutdownEventEmitted = true;
+			}
+			const recorded = this.#exitRecorded;
+			return this.#eval
+				.prepareRuntimeRelease(release, () => this.#recordSessionExit(options.reason ?? "dispose", "transaction"))
+				.catch(error => {
+					if (!this.#isDisposed) this.#exitRecorded = recorded;
+					throw error;
+				});
+		});
+	}
+
+	#shutdownEventEmitted = false;
+
 	#disposeCall?: Promise<void>;
 	dispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
-		if (!this.#disposeCall) this.#disposeCall = this.#doDispose(options);
+		if (!this.#disposeCall) {
+			const disposal = this.prepareDispose(options, () => this.#doDispose(options));
+			this.#disposeCall = disposal;
+			void disposal.catch(() => {
+				if (this.#disposeCall === disposal) this.#disposeCall = undefined;
+			});
+		}
 		return this.#disposeCall;
 	}
 
-	async #disposeOwnedAsyncJobs(): Promise<void> {
+	async #disposeOwnedAsyncJobs(disposition: "runtime-release" | "tree-close"): Promise<void> {
 		this.#unregisterAsyncDeliverySink?.();
 		this.#unregisterAsyncDeliverySink = undefined;
+		if (disposition === "runtime-release") return;
 		const manager = this.#ownedAsyncJobManager;
 
 		this.#cancelOwnAsyncJobs(manager ? ASYNC_JOB_MANAGER_SHUTDOWN_REASON : undefined);
@@ -3813,20 +3872,16 @@ export class AgentSession {
 	}
 
 	async #doDispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
-		this.beginDispose();
+		const disposition = options.disposition ?? "tree-close";
+		this.beginDispose(disposition);
 		this.#unsubscribeHistoryDegraded?.();
 		this.#unsubscribeHistoryDegraded = undefined;
 		this.#messageTokens.dispose();
-		this.#recordSessionExit(options.reason ?? "dispose");
+
 		this.#cancelExitRecorder?.();
 		this.#cancelExitRecorder = undefined;
 		this.#cancelFatalRecoveryHint?.();
 		this.#cancelFatalRecoveryHint = undefined;
-		try {
-			await emitSessionShutdownEvent(this.#extensionRunner);
-		} catch (error) {
-			logger.warn("Failed to emit session_shutdown event", { error: String(error) });
-		}
 
 		this.#fallbackExtensionTimers?.clearAll();
 		this.abortRetry();
@@ -3846,15 +3901,17 @@ export class AgentSession {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		const results = await Promise.allSettled([
 			this.#bash.dispose(),
-			this.#disposeOwnedAsyncJobs(),
+			this.#disposeOwnedAsyncJobs(disposition),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.#eval.getKernelOwnerId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
 		]);
+		const disposalErrors: unknown[] = [];
 		for (const result of results) {
 			if (result.status === "rejected") {
+				disposalErrors.push(result.reason);
 				logger.warn("Session dispose subsystem failed during parallel teardown", {
 					error: String(result.reason),
 				});
@@ -3900,8 +3957,13 @@ export class AgentSession {
 			logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
 		}
 
-		this.sessionManager.seal();
-		await this.sessionManager.close();
+		if (disposition === "tree-close") {
+			this.sessionManager.seal();
+			await this.sessionManager.close();
+		} else {
+			// The node's journal is shared with descendant completion writers and the next runtime lease.
+			await this.sessionManager.flush();
+		}
 		this.#liveHeartbeat?.dispose();
 		this.#liveHeartbeat = undefined;
 
@@ -3918,6 +3980,7 @@ export class AgentSession {
 				this.#eval.disposeObservations();
 			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
 		}
+		if (disposalErrors.length > 0) throw new AggregateError(disposalErrors, "Session resource cleanup failed");
 	}
 
 	#closeAllProviderSessions(reason: string): void {
@@ -4715,7 +4778,7 @@ export class AgentSession {
 		const typedText = text;
 
 		if (expandPromptTemplates && text.startsWith("/")) {
-			const handled = await this.#tryExecuteExtensionCommand(text);
+			const handled = await this.#tryExecuteExtensionCommand(text, options?.extensionCommandUI);
 			if (handled) {
 				return false;
 			}
@@ -5198,12 +5261,17 @@ export class AgentSession {
 				cutoffCount: this.messages.length + messages.length,
 			});
 			try {
-				await this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, () => {
-					if (this.#clientPromptInFlightCount > 0) {
-						this.#clientPromptLive = true;
-						this.#wakeDispatchLiveWaiters();
-					}
-				});
+				await this.#runAdmittedTurn(
+					() =>
+						this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, () => {
+							if (this.#clientPromptInFlightCount > 0) {
+								this.#clientPromptLive = true;
+								this.#wakeDispatchLiveWaiters();
+							}
+						}),
+					undefined,
+					Buffer.byteLength(JSON.stringify(messages)),
+				);
 			} finally {
 				this.#stats.setPendingSnapshot(undefined);
 			}
@@ -5219,7 +5287,7 @@ export class AgentSession {
 		}
 	}
 
-	async #tryExecuteExtensionCommand(text: string): Promise<boolean> {
+	async #tryExecuteExtensionCommand(text: string, invocationUI?: ExtensionUIContext): Promise<boolean> {
 		if (!this.#extensionRunner) return false;
 
 		// Split on the first whitespace run (matching parseSlashCommand), not
@@ -5233,7 +5301,7 @@ export class AgentSession {
 		const command = this.#extensionRunner.getCommand(commandName);
 		if (!command) return false;
 
-		const ctx = this.#extensionRunner.createCommandContext();
+		const ctx = this.#extensionRunner.createCommandContext(invocationUI);
 
 		try {
 			await command.handler(args, ctx);
@@ -5625,6 +5693,48 @@ export class AgentSession {
 		}
 	}
 
+	async #runAdmittedTurn<T>(
+		run: () => Promise<T>,
+		signal = this.#postPromptTasksAbortController.signal,
+		bytes = 0,
+	): Promise<T> {
+		const generation = this.#promptGeneration;
+		const scheduler = ExecutionAdmission.global();
+		const identity = executionIdentity(this);
+		const accepted = scheduler.ownsTurn(identity.nodeId)
+			? undefined
+			: this.#asyncJobManager?.reserve({ ownerId: this.getAsyncJobOwnerId(), bytes });
+		let settlement: Promise<void> | undefined;
+		try {
+			return await scheduler.runTurn(
+				{
+					...identity,
+					maxConcurrency: this.settings.get("orchestrator.maxConcurrency"),
+					onSettlement: completion => {
+						settlement = completion;
+					},
+					onFailure: () => {
+						void this.abort().catch(error =>
+							logger.error("Failed to abort a turn after execution admission failed", { error: String(error) }),
+						);
+					},
+					signal,
+				},
+				async () => {
+					signal.throwIfAborted();
+					if (this.#isDisposed || this.#promptGeneration !== generation)
+						throw new Error("Session turn was superseded before admission");
+					const result = await run();
+					await this.#drainInFlightEventHandlers();
+					await captureSessionState(this.sessionManager, this.getEvalKernelOwnerId());
+					return result;
+				},
+			);
+		} finally {
+			accepted?.release(settlement);
+		}
+	}
+
 	async #promptAgentInitiatedMessage(
 		message: CustomMessage,
 		options?: { acceptTerminalEmptyStop?: boolean },
@@ -5637,7 +5747,11 @@ export class AgentSession {
 				this.#resetPromptMaintenanceState();
 			}
 			this.#recovery.setAcceptTerminalEmptyStop(acceptTerminalEmptyStop);
-			await this.agent.prompt(message);
+			await this.#runAdmittedTurn(
+				() => this.agent.prompt(message),
+				undefined,
+				Buffer.byteLength(JSON.stringify(message)),
+			);
 			await this.#waitForPostPromptRecovery();
 			return true;
 		} finally {
@@ -6319,80 +6433,65 @@ export class AgentSession {
 		return setSessionName.call(this.sessionManager, name, source, trigger);
 	}
 
-	async fork(): Promise<boolean> {
-		const previousSessionFile = this.sessionFile;
-		const previousSessionId = this.sessionManager.getSessionId();
-
-		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_switch",
-				reason: "fork",
-			})) as SessionBeforeSwitchResult | undefined;
-
-			if (result?.cancel) {
-				return false;
+	async fork(): Promise<AgentSession | undefined> {
+		return withTemporalMutation(this, async descendants => {
+			if (!this.#createIndependentFork)
+				throw new Error("Session embedding does not provide an independent root factory");
+			const sourceFile = this.sessionFile;
+			if (!sourceFile) throw new Error("Cannot fork a session without durable history");
+			if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
+				const result = (await this.#extensionRunner.emit({ type: "session_before_switch", reason: "fork" })) as
+					| SessionBeforeSwitchResult
+					| undefined;
+				if (result?.cancel) return undefined;
 			}
-		}
-
-		await this.#beforeSessionSwitch();
-		await this.#bash.flushPending();
-
-		await this.sessionManager.flush();
-		let advisorRecordersDetached = false;
-		let sessionReconciled = false;
-		try {
-			advisorRecordersDetached = true;
-
-			await this.#advisors.drainAndDetachRecorders();
-			const bashTransition = this.#bash.beginSessionTransition();
-
-			let forkResult: { oldSessionFile: string; newSessionFile: string } | undefined;
+			await this.#bash.flushPending();
+			await this.sessionManager.ensureOnDisk();
+			await this.sessionManager.flush();
+			const manager = await SessionManager.forkFrom(
+				sourceFile,
+				this.sessionManager.getCwd(),
+				path.dirname(this.sessionManager.getNodeTopology()?.rootSessionFile ?? sourceFile),
+				undefined,
+				{
+					activeLineageOnly: true,
+					copyArtifacts: false,
+				},
+			);
+			let fork: AgentSession | undefined;
 			try {
-				// fork() is a no-op without a file; otherwise prompt setup admitted before now belongs to the old identity.
-				if (previousSessionFile) this.#promptGeneration++;
-				forkResult = await this.sessionManager.fork();
-			} catch (error) {
-				this.#bash.finishSessionTransition(bashTransition, false);
-				throw error;
-			} finally {
-				this.#syncLiveHeartbeat();
-			}
-			if (!forkResult) {
-				this.#bash.finishSessionTransition(bashTransition, false);
-				sessionReconciled = true;
-				await this.#afterSessionSwitch();
-				return false;
-			}
-			this.#bash.markSessionTransition(bashTransition);
-			this.#bash.finishSessionTransition(bashTransition, true);
-
-			this.#recovery.reanchorServedAttribution(previousSessionId);
-
-			await copySessionArtifacts(forkResult.oldSessionFile, forkResult.newSessionFile);
-
-			this.#freshProviderSessionId = undefined;
-			this.#adoptInheritedProviderPromptCacheKey();
-			this.#syncAgentSessionId();
-			this.#advisors.reattachRecorderFeeds();
-			advisorRecordersDetached = false;
-			await this.#afterSessionSwitch();
-			sessionReconciled = true;
-
-			if (this.#extensionRunner) {
-				await this.#extensionRunner.emit({
-					type: "session_switch",
-					reason: "fork",
-					previousSessionFile,
+				await captureSessionState(manager, this.#eval.getKernelOwnerId());
+				const prepared = await prepareSessionStateRestore(
+					manager,
+					this.#eval.getKernelOwnerId(),
+					manager.getLeafId(),
+				);
+				const id = manager.getSessionId();
+				await manager.setNodeTopology({
+					id,
+					rootId: id,
+					rootSessionFile: manager.getSessionFile(),
+					generation: 0,
+					state: "active",
 				});
+				await copySessionArtifacts(sourceFile, manager.getSessionFile()!, {
+					excludeSessionFiles: descendants.flatMap(ref => (ref.sessionFile ? [ref.sessionFile] : [])),
+					strict: true,
+				});
+				fork = await this.#createIndependentFork(manager);
+				const evalSessionId = fork.#eval.getSessionId();
+				if (!evalSessionId) throw new Error("Fork has no state restoration identity");
+				activateSessionStateRestore(prepared, fork.#eval.getKernelOwnerId(), evalSessionId);
+				await captureSessionState(fork.sessionManager, fork.#eval.getKernelOwnerId());
+				return fork;
+			} catch (error) {
+				if (fork) await fork.dispose({ disposition: "runtime-release" });
+				else await manager.close();
+				const failedFile = manager.getSessionFile();
+				if (failedFile) await manager.dropSession(failedFile);
+				throw error;
 			}
-
-			return true;
-		} finally {
-			if (!sessionReconciled) await this.#afterSessionSwitch();
-			if (advisorRecordersDetached) {
-				this.#advisors.reattachRecorderFeeds();
-			}
-		}
+		});
 	}
 
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
@@ -7455,102 +7554,22 @@ export class AgentSession {
 		selectedImages: ImageContent[];
 		cancelled: boolean;
 	}> {
-		const previousSessionFile = this.sessionFile;
-		const selectedEntry = this.sessionManager.getEntry(entryId);
-
-		if (selectedEntry?.type !== "message" || selectedEntry.message.role !== "user") {
-			throw new Error("Invalid entry ID for branching");
-		}
-
-		const selectedText = this.#extractUserMessageText(selectedEntry.message.content);
-		const selectedImages = this.#extractUserMessageImages(selectedEntry.message.content);
-
-		let skipConversationRestore = false;
-
+		const entry = this.sessionManager.getEntry(entryId);
+		if (entry?.type !== "message" || entry.message.role !== "user") throw new Error("Invalid entry ID for branching");
+		const selectedText = this.#extractUserMessageText(entry.message.content);
+		const selectedImages = this.#extractUserMessageImages(entry.message.content);
 		if (this.#extensionRunner?.hasHandlers("session_before_branch")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_branch",
-				entryId,
-			})) as SessionBeforeBranchResult | undefined;
-
-			if (result?.cancel) {
-				return { selectedText, selectedImages, cancelled: true };
-			}
-			skipConversationRestore = result?.skipConversationRestore ?? false;
+			const result = (await this.#extensionRunner.emit({ type: "session_before_branch", entryId })) as
+				| SessionBeforeBranchResult
+				| undefined;
+			if (result?.cancel) return { selectedText, selectedImages, cancelled: true };
 		}
-
-		this.#pendingNextTurnMessages = [];
-		this.#scheduledHiddenNextTurnGeneration = undefined;
-		this.#queuedMessageDrainBlocked = false;
-		this.#usagePreflightReadyForNextModelCall = false;
-
-		await this.#bash.flushPending();
-
-		await this.sessionManager.flush();
-		const bashTransition = this.#bash.beginSessionTransition();
-		this.#cancelOwnAsyncJobs();
-		this.#abortAutolearnCapture();
-		await this.#drainAutolearnCapture();
-
-		let sessionTransitioned = false;
-		let advisorRecordersDetached = false;
-		try {
-			advisorRecordersDetached = true;
-			await this.#advisors.drainAndDetachRecorders();
-			try {
-				// A prompt admitted during the awaits above belongs to the history being replaced.
-				this.#promptGeneration++;
-				if (!selectedEntry.parentId) {
-					const title = this.sessionManager.getSessionName();
-					const titleSource = this.sessionManager.titleSource;
-					await this.sessionManager.newSession({ parentSession: previousSessionFile });
-					if (title) await this.sessionManager.setSessionName(title, titleSource);
-				} else {
-					this.sessionManager.createBranchedSession(selectedEntry.parentId);
-				}
-				this.#bash.markSessionTransition(bashTransition);
-				this.#advisors.clearCost();
-				sessionTransitioned = true;
-			} finally {
-				this.#syncLiveHeartbeat();
-				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
-			}
-
-			await Promise.resolve();
-			this.#clearSessionScopedToolState();
-			this.#rehydrateCheckpointRewindState();
-			this.#checklist.syncFromBranch();
-			this.#freshProviderSessionId = undefined;
-			this.#clearInheritedProviderPromptCacheKey();
-			this.#syncAgentSessionId();
-
-			const sessionContext = this.buildDisplaySessionContext();
-
-			if (this.#extensionRunner) {
-				await this.#extensionRunner.emit({
-					type: "session_branch",
-					previousSessionFile,
-				});
-			}
-
-			if (!skipConversationRestore) {
-				this.agent.replaceMessages(sessionContext.messages);
-				this.#advisors.resetSessionState();
-				this.#closeCodexProviderSessionsForHistoryRewrite();
-			}
-
-			this.#advisors.reattachRecorderFeeds();
-			advisorRecordersDetached = false;
-			return { selectedText, selectedImages, cancelled: false };
-		} finally {
-			if (advisorRecordersDetached) {
-				if (sessionTransitioned) {
-					this.#advisors.resetSessionState();
-				} else {
-					this.#advisors.reattachRecorderFeeds();
-				}
-			}
+		const previousSessionFile = this.sessionFile;
+		const result = await this.navigateTree(entryId);
+		if (!result.cancelled && this.#extensionRunner) {
+			await this.#extensionRunner.emit({ type: "session_branch", previousSessionFile });
 		}
+		return { selectedText, selectedImages, cancelled: result.cancelled };
 	}
 
 	async branchFromSideQuestion(
@@ -7560,115 +7579,136 @@ export class AgentSession {
 		sessionId: string,
 		images?: ImageContent[],
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
-		const normalizedImages = await this.#normalizeImagesForModel(images);
-		const previousSessionFile = this.sessionFile;
-		if (!this.sessionManager.getSessionFile()) {
-			throw new Error("Cannot branch /side: session is not persisted");
-		}
-
-		if (!leafId || this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
-			throw new Error("Cannot branch /side: session changed since /side started");
-		}
-
-		if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
-			throw new Error("Cannot branch /side while session maintenance or user work is still running");
-		}
-
-		if (this.#extensionRunner?.hasHandlers("session_before_branch")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_branch",
-				entryId: leafId,
-			})) as SessionBeforeBranchResult | undefined;
-
-			if (result?.cancel) {
-				return { cancelled: true, sessionFile: previousSessionFile };
+		return withTemporalMutation(this, async descendants => {
+			const normalizedImages = await this.#normalizeImagesForModel(images);
+			const previousSessionFile = this.sessionFile;
+			if (!this.sessionManager.getSessionFile()) {
+				throw new Error("Cannot branch /side: session is not persisted");
 			}
-		}
 
-		if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
-			throw new Error("Cannot branch /side: session changed since /side started");
-		}
+			if (
+				!leafId ||
+				this.sessionManager.getSessionId() !== sessionId ||
+				this.sessionManager.getLeafId() !== leafId
+			) {
+				throw new Error("Cannot branch /side: session changed since /side started");
+			}
 
-		await withTimeout(
-			this.#cancelPostPromptTasks(),
-			POST_PROMPT_DRAIN_TIMEOUT_MS,
-			"Timed out draining post-prompt tasks before /side branch",
-		);
-		if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
-			throw new Error("Cannot branch /side while session maintenance or user work is still running");
-		}
+			if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
+				throw new Error("Cannot branch /side while session maintenance or user work is still running");
+			}
 
-		this.#pendingNextTurnMessages = [];
-		this.#scheduledHiddenNextTurnGeneration = undefined;
-		this.#releaseQueuedTtsrReservations();
-		this.agent.replaceQueues([], []);
-		this.#queuedMessageDrainBlocked = false;
-		this.#usagePreflightReadyForNextModelCall = false;
-		await this.#bash.flushPending();
-		await this.sessionManager.flush();
-		const bashTransition = this.#bash.beginSessionTransition();
-		this.#cancelOwnAsyncJobs();
-		this.#abortAutolearnCapture();
-		await this.#drainAutolearnCapture();
+			if (this.#extensionRunner?.hasHandlers("session_before_branch")) {
+				const result = (await this.#extensionRunner.emit({
+					type: "session_before_branch",
+					entryId: leafId,
+				})) as SessionBeforeBranchResult | undefined;
 
-		let sessionTransitioned = false;
-		let advisorRecordersDetached = false;
-		try {
-			advisorRecordersDetached = true;
-			await this.#advisors.drainAndDetachRecorders();
+				if (result?.cancel) {
+					return { cancelled: true, sessionFile: previousSessionFile };
+				}
+			}
+
+			if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
+				throw new Error("Cannot branch /side: session changed since /side started");
+			}
+
+			await withTimeout(
+				this.#cancelPostPromptTasks(),
+				POST_PROMPT_DRAIN_TIMEOUT_MS,
+				"Timed out draining post-prompt tasks before /side branch",
+			);
+			if (this.isStreaming || this.isBashRunning || this.isEvalRunning || this.isCompacting || this.isRetrying) {
+				throw new Error("Cannot branch /side while session maintenance or user work is still running");
+			}
+
+			const preparedState = await prepareSessionStateRestore(
+				this.sessionManager,
+				this.#eval.getKernelOwnerId(),
+				leafId,
+			);
+			const evalSessionId = this.#eval.getSessionId();
+			if (!evalSessionId) throw new Error("Session has no state restoration identity");
+			await abandonContinuationChildren(this.sessionManager, leafId, descendants);
+			await this.#eval.disposeKernels();
+			activateSessionStateRestore(preparedState, this.#eval.getKernelOwnerId(), evalSessionId);
+			this.#pendingNextTurnMessages = [];
+			this.#scheduledHiddenNextTurnGeneration = undefined;
+			this.#releaseQueuedTtsrReservations();
+			this.agent.replaceQueues([], []);
+			this.#queuedMessageDrainBlocked = false;
+			this.#usagePreflightReadyForNextModelCall = false;
+			await this.#bash.flushPending();
+			await this.sessionManager.flush();
+			const bashTransition = this.#bash.beginSessionTransition();
+			this.#cancelOwnAsyncJobs();
+			this.#abortAutolearnCapture();
+			await this.#drainAutolearnCapture();
+
+			let sessionTransitioned = false;
+			let advisorRecordersDetached = false;
 			try {
-				if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
-					throw new Error("Cannot branch /side: session changed since /side started");
+				advisorRecordersDetached = true;
+				await this.#advisors.drainAndDetachRecorders();
+				try {
+					if (this.sessionManager.getSessionId() !== sessionId || this.sessionManager.getLeafId() !== leafId) {
+						throw new Error("Cannot branch /side: session changed since /side started");
+					}
+					// A prompt admitted during the flush/drain awaits still belongs to the pre-branch context.
+					this.#promptGeneration++;
+					this.sessionManager.branch(leafId);
+					this.#bash.markSessionTransition(bashTransition);
+					this.#advisors.clearCost();
+					sessionTransitioned = true;
+				} finally {
+					this.#syncLiveHeartbeat();
+					this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
 				}
-				// A prompt admitted during the flush/drain awaits still belongs to the pre-branch context.
-				this.#promptGeneration++;
-				this.sessionManager.createBranchedSession(leafId);
-				this.#bash.markSessionTransition(bashTransition);
-				this.#advisors.clearCost();
-				sessionTransitioned = true;
-			} finally {
-				this.#syncLiveHeartbeat();
-				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
-			}
 
-			this.#clearSessionScopedToolState();
+				this.#clearSessionScopedToolState();
 
-			this.#rehydrateCheckpointRewindState();
-			this.sessionManager.appendMessage({
-				role: "user",
-				content: [{ type: "text", text: question }, ...(normalizedImages ?? [])],
-				attribution: "user",
-				timestamp: Date.now(),
-			});
-			this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
-			this.#checklist.syncFromBranch();
-			this.#freshProviderSessionId = undefined;
-			this.#syncAgentSessionId();
-
-			const sessionContext = this.buildDisplaySessionContext();
-
-			if (this.#extensionRunner) {
-				await this.#extensionRunner.emit({
-					type: "session_branch",
-					previousSessionFile,
+				this.#rehydrateCheckpointRewindState();
+				this.sessionManager.appendMessage({
+					role: "user",
+					content: [{ type: "text", text: question }, ...(normalizedImages ?? [])],
+					attribution: "user",
+					timestamp: Date.now(),
 				});
-			}
+				this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
+				await captureSessionState(this.sessionManager, this.#eval.getKernelOwnerId());
+				const topology = this.sessionManager.getNodeTopology();
+				if (topology)
+					await this.sessionManager.setNodeTopology({ ...topology, generation: topology.generation + 1 });
+				else await this.sessionManager.rewriteEntries();
+				this.#checklist.syncFromBranch();
+				this.#freshProviderSessionId = undefined;
+				this.#syncAgentSessionId();
 
-			this.agent.replaceMessages(sessionContext.messages);
-			this.#advisors.resetSessionState();
-			this.#closeCodexProviderSessionsForHistoryRewrite();
-			advisorRecordersDetached = false;
+				const sessionContext = this.buildDisplaySessionContext();
 
-			return { cancelled: false, sessionFile: this.sessionFile };
-		} finally {
-			if (advisorRecordersDetached) {
-				if (sessionTransitioned) {
-					this.#advisors.resetSessionState();
-				} else {
-					this.#advisors.reattachRecorderFeeds();
+				if (this.#extensionRunner) {
+					await this.#extensionRunner.emit({
+						type: "session_branch",
+						previousSessionFile,
+					});
+				}
+
+				this.agent.replaceMessages(sessionContext.messages);
+				this.#advisors.resetSessionState();
+				this.#closeCodexProviderSessionsForHistoryRewrite();
+				advisorRecordersDetached = false;
+
+				return { cancelled: false, sessionFile: this.sessionFile };
+			} finally {
+				if (advisorRecordersDetached) {
+					if (sessionTransitioned) {
+						this.#advisors.resetSessionState();
+					} else {
+						this.#advisors.reattachRecorderFeeds();
+					}
 				}
 			}
-		}
+		});
 	}
 
 	async navigateTree(
@@ -7692,248 +7732,278 @@ export class AgentSession {
 
 		sessionContext?: SessionContext;
 
-		reopenAsk?: { toolCallId: string; questions: AskToolInput["questions"] };
+		reopenAsk?: { toolCallId: string; params: AskToolInput };
 
 		askReanswerCommitted?: boolean;
 	}> {
-		if (options.requireIdle && (this.isStreaming || this.isCompacting || this.hasAdmittedSubmission))
-			throw new AgentBusyError();
-		await this.#bash.flushPending();
-		const oldLeafId = this.sessionManager.getLeafId();
+		return withTemporalMutation(this, async descendants => {
+			if (options.reanswerAskResult?.details?.timedOut) return { cancelled: true };
+			if (options.requireIdle && (this.isStreaming || this.isCompacting || this.hasAdmittedSubmission))
+				throw new AgentBusyError();
+			await this.#bash.flushPending();
+			const oldLeafId = this.sessionManager.getLeafId();
 
-		const targetEntry = this.sessionManager.getEntry(targetId);
-		if (!targetEntry) {
-			throw new Error(`Entry ${targetId} not found`);
-		}
-		const targetIsAskResult =
-			targetEntry.type === "message" &&
-			targetEntry.message.role === "toolResult" &&
-			targetEntry.message.toolName === "ask";
-
-		if (targetId === oldLeafId && !(options.allowAskReopen && targetIsAskResult)) {
-			return { cancelled: false };
-		}
-
-		if (options.summarize && !this.model) {
-			throw new Error("No model available for summarization");
-		}
-
-		if (
-			options.allowAskReopen &&
-			!options.reanswerAskResult &&
-			targetEntry.type === "message" &&
-			targetEntry.message.role === "toolResult" &&
-			targetEntry.message.toolName === "ask"
-		) {
-			const toolCallId = targetEntry.message.toolCallId;
-			const questions = this.#recoverAskReanswerQuestions(targetEntry.parentId, toolCallId);
-			if (questions) {
-				return { cancelled: false, reopenAsk: { toolCallId, questions } };
+			const targetEntry = this.sessionManager.getEntry(targetId);
+			if (!targetEntry) {
+				throw new Error(`Entry ${targetId} not found`);
 			}
-		}
+			const targetIsAskResult =
+				targetEntry.type === "message" &&
+				targetEntry.message.role === "toolResult" &&
+				targetEntry.message.toolName === "ask";
 
-		const summaryAnchorId =
-			options.reanswerAskResult !== undefined &&
-			targetEntry.type === "message" &&
-			targetEntry.message.role === "toolResult" &&
-			targetEntry.message.toolName === "ask" &&
-			targetEntry.parentId !== null
-				? targetEntry.parentId
-				: targetId;
-		const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
-			this.sessionManager,
-			oldLeafId,
-			summaryAnchorId,
-		);
-
-		const preparation: TreePreparation = {
-			targetId,
-			oldLeafId,
-			commonAncestorId,
-			entriesToSummarize,
-			userWantsSummary: options.summarize ?? false,
-		};
-
-		this.#branchSummaryAbortController = new AbortController();
-		let hookSummary: { summary: string; details?: unknown } | undefined;
-		let fromExtension = false;
-
-		if (this.#extensionRunner?.hasHandlers("session_before_tree")) {
-			const result = (await this.#extensionRunner.emit({
-				type: "session_before_tree",
-				preparation,
-				signal: this.#branchSummaryAbortController.signal,
-			})) as SessionBeforeTreeResult | undefined;
-
-			if (result?.cancel) {
-				return { cancelled: true };
+			if (
+				targetId === oldLeafId &&
+				!(options.allowAskReopen && targetIsAskResult) &&
+				!(targetEntry.type === "message" && targetEntry.message.role === "user") &&
+				!(targetEntry.type === "custom_message" && targetEntry.customType !== SKILL_PROMPT_MESSAGE_TYPE)
+			) {
+				return { cancelled: false };
 			}
 
-			if (result?.summary && options.summarize) {
-				hookSummary = result.summary;
-				fromExtension = true;
+			if (options.summarize && !this.model) {
+				throw new Error("No model available for summarization");
 			}
-		}
 
-		let summaryText: string | undefined;
-		let summaryDetails: unknown;
-		if (options.summarize && entriesToSummarize.length > 0 && !hookSummary) {
-			const model = this.model!;
-			const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
-			if (!apiKey) {
-				throw new Error(`No API key for ${model.provider}`);
-			}
-			const branchSummarySettings = this.settings.getGroup("branchSummary");
-			const result = await generateBranchSummary(entriesToSummarize, {
-				model,
-				apiKey: this.#modelRegistry.resolver(model, this.sessionId),
-				signal: this.#branchSummaryAbortController.signal,
-				customInstructions: this.#obfuscateTextForProvider(options.customInstructions),
-				reserveTokens: branchSummarySettings.reserveTokens,
-				metadata: this.agent.metadataForProvider(model.provider),
-				convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
-				telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
-
-				completeImpl: async (requestModel, requestContext, requestOptions) => {
-					const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
-					return stream.result();
-				},
-			});
-			this.#branchSummaryAbortController = undefined;
-			if (result.aborted) {
-				return { cancelled: true, aborted: true };
-			}
-			if (result.error) {
-				throw new Error(result.error);
-			}
-			summaryText = result.summary;
-			summaryDetails = {
-				readFiles: result.readFiles || [],
-				modifiedFiles: result.modifiedFiles || [],
-			};
-		} else if (hookSummary) {
-			summaryText = hookSummary.summary;
-			summaryDetails = hookSummary.details;
-		}
-
-		if (options.requireIdle && (this.isStreaming || this.isCompacting || this.hasAdmittedSubmission))
-			throw new AgentBusyError();
-
-		// Every cancel/no-op exit is behind us: prompt setup admitted on the abandoned branch must not dispatch.
-		this.#promptGeneration++;
-
-		let newLeafId: string | null;
-		let editorText: string | undefined;
-		let editorImages: ImageContent[] | undefined;
-
-		let isAskReanswerCompletion = false;
-
-		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-			newLeafId = targetEntry.parentId;
-			editorText = this.#extractUserMessageText(targetEntry.message.content);
-			const targetImages = this.#extractUserMessageImages(targetEntry.message.content);
-			if (targetImages.length > 0) editorImages = targetImages;
-		} else if (targetEntry.type === "custom_message" && targetEntry.customType !== SKILL_PROMPT_MESSAGE_TYPE) {
-			newLeafId = targetEntry.parentId;
-			editorText =
-				typeof targetEntry.content === "string"
-					? targetEntry.content
-					: targetEntry.content
-							.filter((c): c is { type: "text"; text: string } => c.type === "text")
-							.map(c => c.text)
-							.join("");
-		} else if (
-			targetEntry.type === "message" &&
-			targetEntry.message.role === "toolResult" &&
-			targetEntry.message.toolName === "ask" &&
-			options.reanswerAskResult
-		) {
-			const reanswer = options.reanswerAskResult;
-			const toolResultMessage: ToolResultMessage = {
-				role: "toolResult",
-				toolCallId: targetEntry.message.toolCallId,
-				toolName: "ask",
-				content: reanswer.content,
-				details: reanswer.details,
-				isError: reanswer.isError === true,
-				timestamp: Date.now(),
-			};
-			newLeafId = this.sessionManager.appendMessageToBranch(toolResultMessage, targetEntry.parentId);
-			isAskReanswerCompletion = true;
-		} else {
-			newLeafId = targetId;
-		}
-
-		let summaryEntry: BranchSummaryEntry | undefined;
-		let stateContext: SessionContext | undefined;
-		try {
-			const bashTransition = this.#bash.beginSessionTransition();
-			let branchTransitioned = false;
-			try {
-				if (summaryText) {
-					const summaryId = this.sessionManager.branchWithSummary(
-						newLeafId,
-						summaryText,
-						summaryDetails,
-						fromExtension,
-					);
-					summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
-				} else if (newLeafId === null) {
-					this.sessionManager.resetLeaf();
-				} else {
-					this.sessionManager.branch(newLeafId);
+			if (
+				options.allowAskReopen &&
+				!options.reanswerAskResult &&
+				targetEntry.type === "message" &&
+				targetEntry.message.role === "toolResult" &&
+				targetEntry.message.toolName === "ask"
+			) {
+				const toolCallId = targetEntry.message.toolCallId;
+				const params = this.#recoverAskReanswerInput(targetEntry.parentId, toolCallId);
+				if (params) {
+					return { cancelled: false, reopenAsk: { toolCallId, params } };
 				}
-				this.#bash.markSessionTransition(bashTransition);
-				branchTransitioned = true;
-			} finally {
-				this.#bash.finishSessionTransition(bashTransition, branchTransitioned);
 			}
 
-			stateContext = this.sessionManager.buildSessionContext();
-			const displayContext = deobfuscateSessionContext(stateContext, this.#obfuscator);
-			this.agent.replaceMessages(displayContext.messages);
-			this.#rehydrateCheckpointRewindState();
-			this.#advisors.resetSessionState({ preserveCost: true });
-			this.#checklist.syncFromBranch();
-			this.#closeCodexProviderSessionsForHistoryRewrite();
-		} finally {
-		}
-
-		this.#branchSummaryAbortController = undefined;
-
-		if (this.#extensionRunner?.hasHandlers("session_tree")) {
-			await this.#extensionRunner.emit({
-				type: "session_tree",
-				newLeafId: this.sessionManager.getLeafId(),
+			const summaryAnchorId =
+				options.reanswerAskResult !== undefined &&
+				targetEntry.type === "message" &&
+				targetEntry.message.role === "toolResult" &&
+				targetEntry.message.toolName === "ask" &&
+				targetEntry.parentId !== null
+					? targetEntry.parentId
+					: targetId;
+			const { entries: entriesToSummarize, commonAncestorId } = collectEntriesForBranchSummary(
+				this.sessionManager,
 				oldLeafId,
-				summaryEntry,
-				fromExtension: summaryText ? fromExtension : undefined,
-			});
-			const rawContext = this.sessionManager.buildSessionContext();
+				summaryAnchorId,
+			);
+
+			const preparation: TreePreparation = {
+				targetId,
+				oldLeafId,
+				commonAncestorId,
+				entriesToSummarize,
+				userWantsSummary: options.summarize ?? false,
+			};
+
+			this.#branchSummaryAbortController = new AbortController();
+			let hookSummary: { summary: string; details?: unknown } | undefined;
+			let fromExtension = false;
+
+			if (this.#extensionRunner?.hasHandlers("session_before_tree")) {
+				const result = (await this.#extensionRunner.emit({
+					type: "session_before_tree",
+					preparation,
+					signal: this.#branchSummaryAbortController.signal,
+				})) as SessionBeforeTreeResult | undefined;
+
+				if (result?.cancel) {
+					return { cancelled: true };
+				}
+
+				if (result?.summary && options.summarize) {
+					hookSummary = result.summary;
+					fromExtension = true;
+				}
+			}
+
+			let summaryText: string | undefined;
+			let summaryDetails: unknown;
+			if (options.summarize && entriesToSummarize.length > 0 && !hookSummary) {
+				const model = this.model!;
+				const apiKey = await this.#modelRegistry.getApiKey(model, this.sessionId);
+				if (!apiKey) {
+					throw new Error(`No API key for ${model.provider}`);
+				}
+				const branchSummarySettings = this.settings.getGroup("branchSummary");
+				const result = await generateBranchSummary(entriesToSummarize, {
+					model,
+					apiKey: this.#modelRegistry.resolver(model, this.sessionId),
+					signal: this.#branchSummaryAbortController.signal,
+					customInstructions: this.#obfuscateTextForProvider(options.customInstructions),
+					reserveTokens: branchSummarySettings.reserveTokens,
+					metadata: this.agent.metadataForProvider(model.provider),
+					convertToLlm: messages => this.#convertToLlmForSideRequest(messages),
+					telemetry: resolveTelemetry(this.agent.telemetry, this.sessionId),
+
+					completeImpl: async (requestModel, requestContext, requestOptions) => {
+						const stream = await this.#sideStreamFn(requestModel, requestContext, requestOptions);
+						return stream.result();
+					},
+				});
+				this.#branchSummaryAbortController = undefined;
+				if (result.aborted) {
+					return { cancelled: true, aborted: true };
+				}
+				if (result.error) {
+					throw new Error(result.error);
+				}
+				summaryText = result.summary;
+				summaryDetails = {
+					readFiles: result.readFiles || [],
+					modifiedFiles: result.modifiedFiles || [],
+				};
+			} else if (hookSummary) {
+				summaryText = hookSummary.summary;
+				summaryDetails = hookSummary.details;
+			}
+
+			if (options.requireIdle && (this.isStreaming || this.isCompacting || this.hasAdmittedSubmission))
+				throw new AgentBusyError();
+
+			const restoreBoundary =
+				(targetEntry.type === "message" && targetEntry.message.role === "user") ||
+				(targetEntry.type === "custom_message" && targetEntry.customType !== SKILL_PROMPT_MESSAGE_TYPE) ||
+				options.reanswerAskResult !== undefined
+					? targetEntry.parentId
+					: targetId;
+			const preparedState = await prepareSessionStateRestore(
+				this.sessionManager,
+				this.#eval.getKernelOwnerId(),
+				restoreBoundary,
+			);
+			const evalSessionId = this.#eval.getSessionId();
+			if (!evalSessionId) throw new Error("Session has no state restoration identity");
+			await abandonContinuationChildren(this.sessionManager, restoreBoundary, descendants);
+			await this.#eval.disposeKernels();
+			activateSessionStateRestore(preparedState, this.#eval.getKernelOwnerId(), evalSessionId);
+
+			// Every cancel/no-op exit is behind us: prompt setup admitted on the abandoned branch must not dispatch.
+			this.#promptGeneration++;
+
+			let newLeafId: string | null;
+			let editorText: string | undefined;
+			let editorImages: ImageContent[] | undefined;
+
+			let isAskReanswerCompletion = false;
+
+			if (targetEntry.type === "message" && targetEntry.message.role === "user") {
+				newLeafId = targetEntry.parentId;
+				editorText = this.#extractUserMessageText(targetEntry.message.content);
+				const targetImages = this.#extractUserMessageImages(targetEntry.message.content);
+				if (targetImages.length > 0) editorImages = targetImages;
+			} else if (targetEntry.type === "custom_message" && targetEntry.customType !== SKILL_PROMPT_MESSAGE_TYPE) {
+				newLeafId = targetEntry.parentId;
+				editorText =
+					typeof targetEntry.content === "string"
+						? targetEntry.content
+						: targetEntry.content
+								.filter((c): c is { type: "text"; text: string } => c.type === "text")
+								.map(c => c.text)
+								.join("");
+			} else if (
+				targetEntry.type === "message" &&
+				targetEntry.message.role === "toolResult" &&
+				targetEntry.message.toolName === "ask" &&
+				options.reanswerAskResult
+			) {
+				const reanswer = options.reanswerAskResult;
+				const toolResultMessage: ToolResultMessage = {
+					role: "toolResult",
+					toolCallId: targetEntry.message.toolCallId,
+					toolName: "ask",
+					content: reanswer.content,
+					details: reanswer.details,
+					isError: reanswer.isError === true,
+					timestamp: Date.now(),
+				};
+				newLeafId = this.sessionManager.appendMessageToBranch(toolResultMessage, targetEntry.parentId);
+				isAskReanswerCompletion = true;
+			} else {
+				newLeafId = targetId;
+			}
+
+			let summaryEntry: BranchSummaryEntry | undefined;
+			let stateContext: SessionContext | undefined;
+			try {
+				const bashTransition = this.#bash.beginSessionTransition();
+				let branchTransitioned = false;
+				try {
+					if (summaryText) {
+						const summaryId = this.sessionManager.branchWithSummary(
+							newLeafId,
+							summaryText,
+							summaryDetails,
+							fromExtension,
+						);
+						summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
+					} else if (newLeafId === null) {
+						this.sessionManager.resetLeaf();
+					} else {
+						this.sessionManager.branch(newLeafId);
+					}
+					this.#bash.markSessionTransition(bashTransition);
+					branchTransitioned = true;
+				} finally {
+					this.#bash.finishSessionTransition(bashTransition, branchTransitioned);
+				}
+
+				await captureSessionState(this.sessionManager, this.#eval.getKernelOwnerId());
+				const topology = this.sessionManager.getNodeTopology();
+				if (topology)
+					await this.sessionManager.setNodeTopology({ ...topology, generation: topology.generation + 1 });
+				else await this.sessionManager.rewriteEntries();
+				stateContext = this.sessionManager.buildSessionContext();
+				const displayContext = deobfuscateSessionContext(stateContext, this.#obfuscator);
+				this.agent.replaceMessages(displayContext.messages);
+				this.#rehydrateCheckpointRewindState();
+				this.#advisors.resetSessionState({ preserveCost: true });
+				this.#checklist.syncFromBranch();
+				this.#closeCodexProviderSessionsForHistoryRewrite();
+			} finally {
+			}
+
+			this.#branchSummaryAbortController = undefined;
+
+			if (this.#extensionRunner?.hasHandlers("session_tree")) {
+				await this.#extensionRunner.emit({
+					type: "session_tree",
+					newLeafId: this.sessionManager.getLeafId(),
+					oldLeafId,
+					summaryEntry,
+					fromExtension: summaryText ? fromExtension : undefined,
+				});
+				const rawContext = this.sessionManager.buildSessionContext();
+				return {
+					editorText,
+					editorImages,
+					cancelled: false,
+					summaryEntry,
+					sessionContext: rawContext,
+					askReanswerCommitted: isAskReanswerCompletion,
+				};
+			}
 			return {
 				editorText,
 				editorImages,
 				cancelled: false,
 				summaryEntry,
-				sessionContext: rawContext,
+				sessionContext: stateContext!,
 				askReanswerCommitted: isAskReanswerCompletion,
 			};
-		}
-		return {
-			editorText,
-			editorImages,
-			cancelled: false,
-			summaryEntry,
-			sessionContext: stateContext!,
-			askReanswerCommitted: isAskReanswerCompletion,
-		};
+		});
 	}
 
 	resumeAfterAskReanswer(): void {
 		this.#scheduleAgentContinue();
 	}
 
-	#recoverAskReanswerQuestions(parentId: string | null, toolCallId: string): AskToolInput["questions"] | undefined {
+	#recoverAskReanswerInput(parentId: string | null, toolCallId: string): AskToolInput | undefined {
 		let current = parentId;
 		while (current !== null) {
 			const entry = this.sessionManager.getEntry(current);
@@ -7948,7 +8018,7 @@ export class AgentSession {
 					const args = this.#obfuscator?.hasSecrets()
 						? deobfuscateToolArguments(this.#obfuscator, toolCall.arguments)
 						: toolCall.arguments;
-					return recoverAskQuestions(args);
+					return recoverAskInput(args);
 				}
 				if (entry.message.role === "user") return undefined;
 			}

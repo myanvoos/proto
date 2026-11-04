@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { captureSessionCommandTarget, isSessionCommandTargetCurrent } from "../../session/command-target";
 import {
 	applyOpsToPhases,
 	type ChecklistItem,
@@ -118,12 +119,15 @@ function buildSystemReminder(action: string, phases: ChecklistPhase[], removed =
 }
 
 export class ChecklistCommandController {
-	constructor(private readonly ctx: InteractiveModeContext) {}
+	constructor(
+		private readonly ctx: InteractiveModeContext,
+		private readonly target = captureSessionCommandTarget(ctx.viewSession),
+	) {}
 
 	#currentPhases(): ChecklistPhase[] {
-		const fromEntries = getLatestChecklistPhasesFromEntries(this.ctx.sessionManager.getBranch());
+		const fromEntries = getLatestChecklistPhasesFromEntries(this.target.sessionManager.getBranch());
 		if (fromEntries.length > 0) return fromEntries;
-		return this.ctx.session.getChecklistPhases();
+		return this.target.session.getChecklistPhases();
 	}
 
 	async handleChecklistCommand(args: string): Promise<void> {
@@ -198,7 +202,7 @@ export class ChecklistCommandController {
 	}
 
 	#resolveChecklistPath(rest: string): string {
-		return resolveChecklistMarkdownPath(rest, this.ctx.sessionManager.getCwd());
+		return resolveChecklistMarkdownPath(rest, this.target.sessionManager.getCwd());
 	}
 
 	async #exportToFile(rest: string): Promise<void> {
@@ -231,7 +235,7 @@ export class ChecklistCommandController {
 			this.ctx.showError(`Could not parse ${source}:\n  ${errors.join("\n  ")}`);
 			return;
 		}
-		this.#commit(phases, `/checklist import ${source}`);
+		if (!this.#commit(phases, `/checklist import ${source}`)) return;
 		const taskCount = phases.reduce((sum, p) => sum + p.tasks.length, 0);
 		this.ctx.showStatus(`Imported ${phases.length} phase(s), ${taskCount} task(s) from ${source}.`);
 	}
@@ -276,7 +280,7 @@ export class ChecklistCommandController {
 			status: "pending",
 		});
 
-		this.#commit(next, `/checklist append → ${targetPhase.name}`);
+		if (!this.#commit(next, `/checklist append → ${targetPhase.name}`)) return;
 		this.ctx.showStatus(`Appended to ${targetPhase.name}: ${finalContent}`);
 	}
 
@@ -296,7 +300,7 @@ export class ChecklistCommandController {
 			this.ctx.showError(errors.join("; "));
 			return;
 		}
-		this.#commit(phases, `/checklist start ${hit.task.content}`);
+		if (!this.#commit(phases, `/checklist start ${hit.task.content}`)) return;
 		this.ctx.showStatus(`Started: ${hit.task.content}`);
 	}
 
@@ -310,7 +314,7 @@ export class ChecklistCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/checklist ${op} (all)`);
+			if (!this.#commit(phases, `/checklist ${op} (all)`)) return;
 			this.ctx.showStatus(`Marked all tasks ${target}.`);
 			return;
 		}
@@ -322,7 +326,7 @@ export class ChecklistCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/checklist ${op} ${taskHit.task.content}`);
+			if (!this.#commit(phases, `/checklist ${op} ${taskHit.task.content}`)) return;
 			this.ctx.showStatus(`Marked ${target}: ${taskHit.task.content}`);
 			return;
 		}
@@ -334,7 +338,7 @@ export class ChecklistCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/checklist ${op} ${phaseHit.name}`);
+			if (!this.#commit(phases, `/checklist ${op} ${phaseHit.name}`)) return;
 			this.ctx.showStatus(`Marked phase ${phaseHit.name} ${target}.`);
 			return;
 		}
@@ -346,7 +350,7 @@ export class ChecklistCommandController {
 		const current = this.#currentPhases();
 		const trimmed = rest.trim();
 		if (!trimmed) {
-			this.#commit([], "/checklist rm (all)", { removed: true });
+			if (!this.#commit([], "/checklist rm (all)", { removed: true })) return;
 			this.ctx.showStatus("Cleared all checklist items.");
 			return;
 		}
@@ -357,7 +361,7 @@ export class ChecklistCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/checklist rm ${taskHit.task.content}`, { removed: true });
+			if (!this.#commit(phases, `/checklist rm ${taskHit.task.content}`, { removed: true })) return;
 			this.ctx.showStatus(`Removed: ${taskHit.task.content}`);
 			return;
 		}
@@ -368,7 +372,7 @@ export class ChecklistCommandController {
 				this.ctx.showError(errors.join("; "));
 				return;
 			}
-			this.#commit(phases, `/checklist rm ${phaseHit.name}`, { removed: true });
+			if (!this.#commit(phases, `/checklist rm ${phaseHit.name}`, { removed: true })) return;
 			this.ctx.showStatus(`Removed phase: ${phaseHit.name}`);
 			return;
 		}
@@ -398,7 +402,7 @@ export class ChecklistCommandController {
 				this.ctx.showError(`Could not parse Markdown:\n  ${errors.join("\n  ")}`);
 				return;
 			}
-			this.#commit(parsed, "/checklist edit");
+			if (!this.#commit(parsed, "/checklist edit")) return;
 			const taskCount = parsed.reduce((sum, p) => sum + p.tasks.length, 0);
 			this.ctx.showStatus(`Checklist updated from editor: ${parsed.length} phase(s), ${taskCount} task(s).`);
 		} catch (error) {
@@ -411,11 +415,15 @@ export class ChecklistCommandController {
 		}
 	}
 
-	#commit(nextPhases: ChecklistPhase[], action: string, opts?: { removed?: boolean }): void {
-		this.ctx.session.setChecklistPhases(nextPhases);
+	#commit(nextPhases: ChecklistPhase[], action: string, opts?: { removed?: boolean }): boolean {
+		if (!isSessionCommandTargetCurrent(this.target, this.ctx.viewSession, true)) {
+			this.ctx.showStatus("Selection expired: the session changed");
+			return false;
+		}
+		this.target.session.setChecklistPhases(nextPhases);
 		this.ctx.setChecklist(nextPhases);
 
-		this.ctx.sessionManager.appendCustomEntry(USER_CHECKLIST_EDIT_CUSTOM_TYPE, { phases: nextPhases });
+		this.target.sessionManager.appendCustomEntry(USER_CHECKLIST_EDIT_CUSTOM_TYPE, { phases: nextPhases });
 
 		const reminderText = buildSystemReminder(action, nextPhases, opts?.removed ?? false);
 		const message = {
@@ -424,8 +432,9 @@ export class ChecklistCommandController {
 			attribution: "user" as const,
 			timestamp: Date.now(),
 		};
-		this.ctx.agent.appendMessage(message);
-		this.ctx.sessionManager.appendMessage(message);
+		this.target.session.agent.appendMessage(message);
+		this.target.sessionManager.appendMessage(message);
+		return true;
 	}
 }
 

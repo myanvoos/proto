@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -96,4 +96,41 @@ test("a blob actively being rewritten during sweep is not removed", async () => 
 
 	expect(result.removed).toBe(0);
 	expect(await store.has(original.hash)).toBe(true);
+});
+
+test("a completed put overlapping a sweep is retained for that sweep, not pinned forever", async () => {
+	const { blobs, sessions } = await setup();
+	const store = new BlobStore(blobs);
+	const payload = Buffer.from("accepted snapshot payload");
+	const blob = await store.put(payload);
+	await age(blob.path);
+	const scanning = Promise.withResolvers<void>();
+	const resume = Promise.withResolvers<void>();
+	const readdir = fs.readdir;
+	let held = false;
+	const readSpy = vi.spyOn(fs, "readdir").mockImplementation((async (directory: unknown, ...args: unknown[]) => {
+		const entries = await readdir(directory as Parameters<typeof fs.readdir>[0], ...(args as []));
+		if (directory === sessions && !held) {
+			held = true;
+			scanning.resolve();
+			await resume.promise;
+		}
+		return entries;
+	}) as typeof fs.readdir);
+	const now = Date.now() + 24 * 60 * 60 * 1000;
+	const sweep = sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0, now });
+	try {
+		await scanning.promise;
+		// Complete the write before GC resumes, with a cutoff that makes mtime touching insufficient.
+		await store.put(payload);
+		resume.resolve();
+		expect((await sweep).removed).toBe(0);
+		expect(await store.get(blob.hash)).toEqual(payload);
+	} finally {
+		resume.resolve();
+		await sweep.finally(() => readSpy.mockRestore());
+	}
+	// No reference or active writer remains. A later sweep can reclaim the same payload normally.
+	expect((await sweepUnreferencedBlobs(blobs, sessions, { graceMs: 0, now })).removed).toBe(1);
+	expect(await store.has(blob.hash)).toBe(false);
 });

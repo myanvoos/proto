@@ -14,9 +14,12 @@ import {
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_RUNTIME_DIR_ENV,
 } from "../launch/protocol";
+import { RpcNodeBackend } from "../modes/rpc/node-client";
 import { workerEnvFromParent } from "../subprocess/worker-client";
 import { connectSessionRpc } from "./client";
 import { ensureSessionHost, negotiateSessionHost, stopSessionHost } from "./ensure";
+import { resolveSessionHostOwnership } from "./ownership";
+import { sessionHostDaemonName } from "./protocol";
 
 const PROBE_TIMEOUT_MS = 30_000;
 
@@ -29,6 +32,7 @@ let client: DaemonBrokerClient | undefined;
 let sessionFile: string;
 let sessionHostSocket: string;
 let sessionHostName: string;
+let hostEnv: Record<string, string>;
 
 beforeAll(async () => {
 	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-session-host-broker-"));
@@ -39,6 +43,13 @@ beforeAll(async () => {
 
 	// Sandbox all config/HOME-derived state so the test never touches the
 	// developer's real daemon runtime directories.
+	hostEnv = workerEnvFromParent({
+		HOME: tmpDir,
+		PI_CODING_AGENT_DIR: path.join(tmpDir, "agent"),
+		ANTHROPIC_API_KEY: "sk-ant-dummy-session-host-test",
+		PROTO_DEEP_FOCUSED_ROOT: tmpDir,
+		TERM: "xterm-256color",
+	});
 	const sandboxEnv = workerEnvFromParent({
 		HOME: tmpDir,
 		PI_CODING_AGENT_DIR: path.join(tmpDir, "agent"),
@@ -124,7 +135,7 @@ beforeAll(async () => {
 			"",
 		].join("\n"),
 	);
-	const ensured = await ensureSessionHost(projectDir, sessionFile, { client });
+	const ensured = await ensureSessionHost(projectDir, sessionFile, { client, env: hostEnv });
 	sessionHostSocket = ensured.socket;
 	sessionHostName = ensured.name;
 }, 240_000);
@@ -158,7 +169,7 @@ test("ensure starts a broker-supervised host, crash restart recovers the session
 	expect(snapshot.pid).toBeGreaterThan(0);
 	process.kill(snapshot.pid, "SIGKILL");
 
-	const ensured = await ensureSessionHost(projectDir, sessionFile, { client });
+	const ensured = await ensureSessionHost(projectDir, sessionFile, { client, env: hostEnv });
 	expect(ensured.socket).toBe(sessionHostSocket);
 
 	const second = await connectSessionRpc(sessionHostSocket);
@@ -172,4 +183,122 @@ test("ensure starts a broker-supervised host, crash restart recovers the session
 	await stopSessionHost(projectDir, sessionFile, { client });
 	const probe = await negotiateSessionHost(sessionHostSocket, 5_000);
 	expect(probe.socket).not.toBe("live");
+}, 120_000);
+
+test("a full-TUI fork is discoverable under its new filename and crash restart resumes that committed root", async () => {
+	if (!client) throw new Error("broker client not initialized");
+	const config = path.join(tmpDir, "host-config.json");
+	await Bun.write(
+		config,
+		JSON.stringify({
+			startup: { setupWizard: false, quiet: true },
+			branchSummary: { enabled: false },
+			compaction: { enabled: false },
+		}),
+	);
+	const initialMarker = path.join(tmpDir, "initial-turn-completed");
+	const completionExtension = path.join(tmpDir, "completion-extension.ts");
+	await Bun.write(
+		completionExtension,
+		`export default function(api) { api.on("agent_end", async () => { await Bun.write(${JSON.stringify(initialMarker)}, "completed"); }); }`,
+	);
+	const watchAbort = new AbortController();
+	// This event is written by a native CLI child; the real deadline bounds failure, never synchronizes by sleeping.
+	const watchTimeout = setTimeout(
+		() => watchAbort.abort(new Error("Initial CLI submission did not complete")),
+		30_000,
+	);
+	const events = fs.watch(tmpDir, { signal: watchAbort.signal });
+	const initialComplete = (async () => {
+		for await (const event of events) {
+			if (event.filename === path.basename(initialMarker) && (await Bun.file(initialMarker).exists())) return;
+		}
+	})();
+	const argv = [
+		"--resume",
+		sessionFile,
+		"--trusted-extension",
+		path.resolve(import.meta.dir, "../../test/fixtures/deep-focused-extension.ts"),
+		"--trusted-extension",
+		completionExtension,
+		"--provider",
+		"p1-deep",
+		"--model",
+		"root",
+		"--no-title",
+		"--no-skills",
+		"--no-rules",
+		"--no-context-files",
+		"--config",
+		config,
+		"CLI_INITIAL_ONCE",
+	];
+	void initialComplete.catch(() => {});
+	let backend: RpcNodeBackend | undefined;
+	try {
+		const host = await ensureSessionHost(projectDir, sessionFile, { client, env: hostEnv, interactive: { argv } });
+		backend = await RpcNodeBackend.connect(host.socket);
+		try {
+			await initialComplete;
+		} finally {
+			clearTimeout(watchTimeout);
+			watchAbort.abort();
+		}
+		await backend.execute((await backend.snapshot(backend.root.target.nodeId)).target, {
+			type: "prompt",
+			message: ".",
+		});
+		const sourceId = backend.root.target.nodeId;
+		await backend.execute((await backend.snapshot(sourceId)).target, {
+			type: "model",
+			provider: "p1-deep",
+			modelId: "child",
+		});
+		const forked = await backend.execute((await backend.snapshot(sourceId)).target, { type: "fork" });
+		if (forked.result.type !== "fork" || !forked.result.root) throw new Error("Expected independent root");
+		const forkId = forked.result.root.target.nodeId;
+		expect(forkId).not.toBe(sourceId);
+		const originalReceipt = await resolveSessionHostOwnership(sessionFile);
+		if (!originalReceipt) throw new Error("Expected original host ownership receipt");
+		const forkFile = originalReceipt.activeSessionFile;
+		const located = await resolveSessionHostOwnership(forkFile);
+		expect(located?.name).toBe(host.name);
+		expect(located?.name).not.toBe(await sessionHostDaemonName(forkFile));
+		expect(located?.requestedNodeId).toBe(forkId);
+		await backend.execute(backend.root.target, { type: "rename", name: "fork survives host crash" });
+		const before = await client.request({ op: "describe", name: host.name });
+		if (before.op !== "describe" || before.daemon.pid === undefined)
+			throw new Error("Expected running full-TUI host");
+		process.kill(before.daemon.pid, "SIGKILL");
+		const restarted = await ensureSessionHost(projectDir, sessionFile, {
+			client,
+			env: hostEnv,
+			interactive: { argv },
+		});
+		expect(restarted.name).toBe(host.name);
+		const recovered = await backend.reconnect(restarted.socket);
+		expect(recovered.target.nodeId).toBe(forkId);
+		expect(recovered.name).toBe("fork survives host crash");
+		expect(recovered.model?.id).toBe("child");
+		const history = await backend.execute(recovered.target, { type: "history", limit: 256 });
+		if (history.result.type !== "history") throw new Error("Expected recovered history");
+		expect(
+			history.result.page.messages.filter(
+				message =>
+					message.role === "user" &&
+					(typeof message.content === "string"
+						? message.content === "CLI_INITIAL_ONCE"
+						: message.content.some(part => part.type === "text" && part.text === "CLI_INITIAL_ONCE")),
+			),
+		).toHaveLength(1);
+		expect((await resolveSessionHostOwnership(forkFile))?.name).toBe(host.name);
+		const after = await client.request({ op: "describe", name: host.name });
+		if (after.op !== "describe") throw new Error("Expected restarted full-TUI host");
+		expect(after.daemon.pid).not.toBe(before.daemon.pid);
+	} finally {
+		clearTimeout(watchTimeout);
+		watchAbort.abort();
+		backend?.close();
+		await stopSessionHost(projectDir, sessionFile, { client });
+	}
 }, 120_000);

@@ -29,6 +29,7 @@ export interface RunErrorPayload {
 export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunErrorPayload };
 
 export type WorkerInbound =
+	| { type: "state"; id: string; action: "capture" | "restore"; snapshot?: unknown }
 	| { type: "init"; snapshot: SessionSnapshot }
 	| {
 			type: "run";
@@ -45,6 +46,7 @@ export type WorkerInbound =
 	| { type: "close" };
 
 export type WorkerOutbound =
+	| { type: "state"; id: string; value?: unknown; error?: string }
 	| { type: "ready"; interpreter?: string }
 	| { type: "init-failed"; error: RunErrorPayload }
 	| { type: "text"; runId: string; id?: string; chunk: string; stream?: "stdout" | "stderr" }

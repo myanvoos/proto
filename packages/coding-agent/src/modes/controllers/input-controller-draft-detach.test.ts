@@ -5,6 +5,7 @@ import { Settings } from "../../config/settings";
 import type { ExtensionRunner } from "../../extensibility/extensions/runner";
 import type { InputEventResult } from "../../extensibility/extensions/types";
 import type { Skill } from "../../extensibility/skills";
+import { SessionManager } from "../../session/session-manager";
 import * as commandUsage from "../../utils/command-usage";
 import { CustomEditor } from "../components/custom-editor";
 import { getEditorTheme, initThemeSync } from "../theme/theme";
@@ -22,7 +23,9 @@ const newer: ImageContent = { type: "image", mimeType: "image/png", data: "bmV3"
 function harness() {
 	vi.spyOn(commandUsage, "recordSlashCommandUsage").mockImplementation(() => {});
 	const editor = new CustomEditor(getEditorTheme());
+	const sessionManager = SessionManager.inMemory();
 	const session = {
+		sessionManager,
 		isStreaming: true,
 		isCompacting: false,
 		queuedMessageCount: 0,
@@ -36,12 +39,14 @@ function harness() {
 	const ctx = {
 		editor,
 		session,
+		sessionManager,
 		viewSession: session,
 		keybindings: new KeybindingsManager(),
 		skillCommands: new Map<string, Skill>(),
 		fileSlashCommands: new Set<string>(),
 		compactionQueuedMessages: [],
 		ui: { requestRender: vi.fn(), addInputListener: vi.fn(), addStartListener: vi.fn(), getFocused: () => editor },
+		getToolUIContext: () => undefined,
 		withLocalSubmission: async <T>(_text: string, submit: () => Promise<T>) => submit(),
 		ensureLatestTranscriptWindow: async () => {},
 		updatePendingMessagesDisplay: vi.fn(),

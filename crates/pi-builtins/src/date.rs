@@ -1490,7 +1490,7 @@ fn try_parse_with_abbreviation<S: AsRef<str>>(date_str: S, now: &Zoned) -> Optio
 			if let Some(tz) = tz {
 				let date_part = s.trim_end_matches(last_word).trim();
 
-				if let Ok(parsed) = parse_datetime::parse_datetime_at_date(now.clone(), date_part) {
+				if let Ok(parse_datetime::ParsedDateTime::InRange(parsed)) = parse_datetime::parse_datetime_at_date(now.clone(), date_part) {
 					let dt = parsed.datetime();
 					if let Ok(zoned) = dt.to_zoned(tz) {
 						return Some(zoned);
@@ -1549,7 +1549,7 @@ fn parse_date<S: AsRef<str> + Clone>(
 	}
 
 	match parse_datetime::parse_datetime_at_date(now.clone(), input_str) {
-		Ok(date) => {
+		Ok(parse_datetime::ParsedDateTime::InRange(date)) => {
 			let result = date.timestamp().to_zoned(now.time_zone().clone());
 			if dbg_opts.debug {
 				let err = &mut *error;
@@ -1575,6 +1575,7 @@ fn parse_date<S: AsRef<str> + Clone>(
 			}
 			Ok(result)
 		},
+		Ok(parse_datetime::ParsedDateTime::Extended(_)) => Err((input_str.into(), parse_datetime::ParseDateTimeError::InvalidInput)),
 		Err(e) => Err((input_str.into(), e)),
 	}
 }

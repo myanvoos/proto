@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { fsObservationLedger } from "../eval/fs-observations";
 import { EvalRunner, type EvalRunnerHost } from "./eval-runner";
+import { SessionManager } from "./session-manager";
 
 function runner(sessionId: string, ownerId: string): EvalRunner {
 	const host = {
-		sessionManager: {
-			getCwd: () => "/tmp",
-			getSessionFile: () => `/tmp/${sessionId}.jsonl`,
-		},
+		sessionManager: SessionManager.inMemory("/tmp"),
 	} as unknown as EvalRunnerHost;
 	return new EvalRunner(host, { kernelOwnerId: ownerId, parentSessionId: sessionId });
 }
@@ -34,25 +33,24 @@ test("eval runner releases observations only after the last shared session owner
 	expect(fsObservationLedger(sessionId).drain()).toEqual([]);
 });
 
-test("eval runner discards the previous ledger when its session changes", () => {
-	let sessionFile = `/tmp/eval-runner-before-${crypto.randomUUID()}.jsonl`;
+test("eval runner discards the previous ledger when its session changes", async () => {
+	using directory = TempDir.createSync("@eval-runner-session-");
+	const manager = SessionManager.create("/tmp", directory.path());
 	const host = {
-		sessionManager: {
-			getCwd: () => "/tmp",
-			getSessionFile: () => sessionFile,
-		},
+		sessionManager: manager,
 	} as unknown as EvalRunnerHost;
 	const evalRunner = new EvalRunner(host, { kernelOwnerId: "switching-owner", parentSessionId: undefined });
 	const previousSessionId = evalRunner.getSessionId();
 	if (previousSessionId === null) throw new Error("expected an eval session id");
 	fsObservationLedger(previousSessionId).record(readObservation("/previous-session"));
 
-	sessionFile = `/tmp/eval-runner-after-${crypto.randomUUID()}.jsonl`;
+	await manager.newSession();
 	evalRunner.syncObservationSession();
 
 	expect(fsObservationLedger(previousSessionId).drain()).toEqual([]);
 	evalRunner.beginDispose();
 	evalRunner.disposeObservations();
+	await manager.close();
 });
 
 test("aborting a user-python hook discards its late displays and persistence", async () => {
@@ -75,10 +73,7 @@ test("aborting a user-python hook discards its late displays and persistence", a
 	const persisted: unknown[] = [];
 	const displayed: unknown[] = [];
 	const host = {
-		sessionManager: {
-			getCwd: () => "/tmp",
-			getSessionFile: () => "/tmp/eval-hook-abort.jsonl",
-		},
+		sessionManager: SessionManager.inMemory("/tmp"),
 		extensionRunner: () =>
 			({
 				hasHandlers: (event: string) => event === "user_python",

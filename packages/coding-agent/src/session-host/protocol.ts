@@ -8,7 +8,11 @@ export const SESSION_HOST_WORKER_ARG = "__proto_worker_session";
 /** Broker spec env var carrying the unix socket path the host listens on. */
 export const SESSION_HOST_SOCKET_ENV = "SESSION_HOST_SOCKET";
 
-/** Line the host prints to (broker-captured) stdout once its socket is listening. */
+export const SESSION_HOST_BROKER_RUNTIME_ENV = "SESSION_HOST_BROKER_RUNTIME";
+
+export const SESSION_HOST_INTERACTIVE_ENV = "PROTO_SESSION_HOST_INTERACTIVE";
+
+/** Line printed only after the hosted command consumer can serve requests. */
 export const SESSION_HOST_READY_PATTERN = "session-host-ready";
 
 const READY_TIMEOUT_MS = 30_000;

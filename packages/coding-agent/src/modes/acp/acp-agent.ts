@@ -541,24 +541,15 @@ export function createAcpExtensionUiContext(
 			);
 			if (timedOut) {
 				return {
-					kind: "submit",
-					results: questions.map(question => {
-						const labels = question.options.map(option => option.label);
-						const fallbackIndex = Math.min(
-							Math.max(question.recommended ?? 0, 0),
-							Math.max(labels.length - 1, 0),
-						);
-						const fallback = labels[fallbackIndex];
-						return {
-							id: question.id,
-							question: question.question,
-							options: labels,
-							multi: question.multi ?? false,
-							selectedOptions: fallback === undefined ? [] : [fallback],
-							customInput: undefined,
-							timedOut: true,
-						};
-					}),
+					kind: "timeout",
+					results: questions.map(question => ({
+						id: question.id,
+						question: question.question,
+						options: question.options.map(option => option.label),
+						multi: question.multi ?? false,
+						selectedOptions: [],
+						timedOut: true,
+					})),
 				};
 			}
 			if (!content) return undefined;
@@ -1447,17 +1438,18 @@ export class AcpAgent implements Agent {
 
 	async #forkManagedSession(params: ForkSessionRequest): Promise<ManagedSessionRecord> {
 		const sourcePath = await this.#resolveForkSourceSessionPath(params.sessionId);
-		const { session, setToolUIContext } = normalizeCreatedAcpSession(
+		const { session } = normalizeCreatedAcpSession(
 			await this.#createSession(path.resolve(params.cwd), {
 				interactivePrompts: this.#clientCapabilities?.elicitation?.form != null,
 			}),
 		);
+		let forked: AgentSession | undefined;
 		try {
 			const success = await session.switchSession(sourcePath);
 			if (!success) {
 				throw new Error(`ACP session fork was cancelled: ${params.sessionId}`);
 			}
-			const forked = await session.fork();
+			forked = await session.fork();
 			if (!forked) {
 				throw new Error(`ACP session fork failed: ${params.sessionId}`);
 			}
@@ -1465,7 +1457,8 @@ export class AcpAgent implements Agent {
 			await this.#disposeStandaloneSession(session);
 			throw error;
 		}
-		return await this.#registerPreparedSession(session, params.mcpServers ?? [], setToolUIContext);
+		await session.dispose({ disposition: "runtime-release" });
+		return await this.#registerPreparedSession(forked, params.mcpServers ?? [], forked.setToolUIContext);
 	}
 
 	async #openStoredSession(

@@ -251,6 +251,23 @@ export class WorkerCore {
 					this.#transport.send({ type: "init-failed", error: errorPayload(error) });
 				}
 				return;
+			case "state":
+				try {
+					if (this.#runs.size || this.#runQueue.length) throw new Error("Declared state kernel is busy");
+					if (!this.#runtime) throw new Error("Declared state runtime is unavailable");
+					const value =
+						msg.action === "capture"
+							? this.#runtime.captureDeclaredState()
+							: this.#runtime.restoreDeclaredState(msg.snapshot);
+					this.#transport.send({ type: "state", id: msg.id, value });
+				} catch (error) {
+					this.#transport.send({
+						type: "state",
+						id: msg.id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+				return;
 			case "run":
 				this.#enqueueRun(msg);
 				return;

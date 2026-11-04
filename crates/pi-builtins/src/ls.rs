@@ -537,7 +537,7 @@ mod colors {
 			let has_capabilities = style_manager
 				.colors
 				.has_explicit_style_for(Indicator::Capabilities)
-				&& uucore::fsxattr::has_security_cap_acl(&path.p_buf);
+				&& uucore::fsxattr::has_security_cap_acl(&path.fs_path, path.must_dereference);
 
 			if has_capabilities {
 				let capabilities = style_manager
@@ -2679,7 +2679,7 @@ mod display {
 			#[cfg(any(not(unix), target_os = "android", target_os = "macos"))]
 			let is_acl_set = false;
 			#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
-			let is_acl_set = has_acl(item.path());
+			let is_acl_set = has_acl(&item.fs_path, item.must_dereference);
 			state
 				.display_buf
 				.extend(display_permissions(md, true).as_bytes());
@@ -3028,7 +3028,7 @@ mod display {
 					#[cfg(any(not(unix), target_os = "android", target_os = "macos"))]
 					let is_acl_set = false;
 					#[cfg(all(unix, not(any(target_os = "android", target_os = "macos"))))]
-					let is_acl_set = has_acl(item.display_name());
+					let is_acl_set = has_acl(&item.fs_path, item.must_dereference);
 					if context_len > 1 || is_acl_set {
 						padding_collections.link_count += 1;
 					}

@@ -1,8 +1,10 @@
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { createAgentSession } from "../../sdk";
 import type { AgentSession } from "../../session/agent-session";
+import { isSessionCommandTargetCurrent, type SessionCommandTarget } from "../../session/command-target";
 import { detachedSessionHolder } from "../../session/detached-session-holder";
 import type { SessionManager } from "../../session/session-manager";
+import { commitHostedForeground } from "../../session-host/ownership";
 import { shortenPath } from "../../tools/render-utils";
 import type { InteractiveModeContext } from "../types";
 
@@ -52,16 +54,47 @@ export async function createForegroundSession(
  * materialized here: session lists read from disk and must offer the parked session for resume.
  */
 export async function parkForegroundSession(ctx: InteractiveModeContext, sessionFile: string): Promise<void> {
-	await ctx.sessionManager.ensureOnDisk();
-	detachedSessionHolder.park(sessionFile, ctx.session, ctx.sessionManager);
+	const session = ctx.session;
+	const manager = session.sessionManager;
+	await manager.ensureOnDisk();
+	detachedSessionHolder.park(sessionFile, session, manager);
 }
 
 /** Makes `session` the foreground session and points the transcript, status line, and editor at it. */
 export async function swapForegroundSession(ctx: InteractiveModeContext, session: AgentSession): Promise<void> {
+	await commitHostedForeground(session);
 	ctx.clearTransientSessionUi();
 	ctx.session = session;
 	ctx.agent = session.agent;
 	await ctx.attachSessionView(session);
+}
+
+/** Adopts a constructed independent root without disposing the source tree or following a changed view. */
+export async function adoptIndependentRoot(
+	ctx: InteractiveModeContext,
+	forked: AgentSession,
+	source: SessionCommandTarget,
+): Promise<boolean> {
+	const previousRoot = ctx.session;
+	try {
+		if (!isSessionCommandTargetCurrent(source, ctx.viewSession, true)) return false;
+		const rootFile = previousRoot.sessionManager.getSessionFile();
+		if (rootFile) await parkForegroundSession(ctx, rootFile);
+		if (ctx.session !== previousRoot || !isSessionCommandTargetCurrent(source, ctx.viewSession, true)) return false;
+		if (ctx.focusedAgentId) {
+			await ctx.unfocusSession();
+			if (
+				ctx.session !== previousRoot ||
+				ctx.viewSession !== previousRoot ||
+				!isSessionCommandTargetCurrent(source, source.session, true)
+			)
+				return false;
+		}
+		await swapForegroundSession(ctx, forked);
+		return ctx.session === forked;
+	} finally {
+		if (ctx.session !== forked) await forked.dispose({ disposition: "runtime-release" });
+	}
 }
 
 /** Closes the oldest parked sessions beyond the background limit; returns the status suffix reporting it, if any. */

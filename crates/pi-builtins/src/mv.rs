@@ -21,11 +21,11 @@ use rustc_hash::FxHashMap;
 use rustc_hash::FxHashSet;
 use thiserror::Error;
 #[cfg(unix)]
-use uucore::fs::{display_permissions_unix, make_fifo};
+use uucore::fs::display_permissions_unix;
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
 use uucore::fsxattr;
 use uucore::{
-	backup_control::{self, BackupMode, source_is_target_backup},
+	backup_control::{self, BackupMode, backup_would_destroy_source},
 	display::Quotable,
 	fs::{
 		MissingHandling, ResolveMode, are_hardlinks_or_one_way_symlink_to_same_file,
@@ -527,7 +527,7 @@ fn parse_paths(files: &[OsString], opts: &Options) -> Vec<PathBuf> {
 }
 
 fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Options) -> MvResult<()> {
-	if opts.backup == BackupMode::Simple && source_is_target_backup(source, target, &opts.suffix) {
+	if backup_would_destroy_source(&host.resolve(source), &host.resolve(target), &opts.suffix, opts.backup, false) {
 		return Err(
 			io::Error::new(
 				io::ErrorKind::NotFound,
@@ -994,7 +994,8 @@ fn rename_fifo_fallback(host: &mut Host, from: &Path, to: &Path) -> io::Result<(
 	if to_fs.try_exists()? {
 		fs::remove_file(&to_fs)?;
 	}
-	make_fifo(&to_fs).and_then(|_| fs::remove_file(host.resolve(from)))
+	nix::unistd::mkfifo(&to_fs, nix::sys::stat::Mode::from_bits_truncate(0o666))?;
+	fs::remove_file(host.resolve(from))
 }
 
 #[cfg(not(unix))]
@@ -1205,7 +1206,7 @@ fn copy_file_with_hardlinks_helper(
 	if host.resolve(from).is_symlink() {
 		rename_symlink_fallback(host, from, to)?;
 	} else if is_fifo(host.resolve(from).symlink_metadata()?.file_type()) {
-		make_fifo(&host.resolve(to))?;
+		nix::unistd::mkfifo(&host.resolve(to), nix::sys::stat::Mode::from_bits_truncate(0o666))?;
 	} else {
 		let observation = host.prepare_write(to)?;
 		let result = fs::copy(host.resolve(from), host.resolve(to));

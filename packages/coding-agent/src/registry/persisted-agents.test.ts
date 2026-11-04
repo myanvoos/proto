@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { persistNodeTopologyReceipt, validateNodeTopology } from "../session/node-topology";
+import type { SessionNodeTopology } from "../session/session-entries";
 import { getSessionLivePath } from "../session/session-liveness";
 import { AgentRegistry, getAgentTombstonePath } from "./agent-registry";
 import { registerPersistedSubagents } from "./persisted-agents";
@@ -40,6 +42,90 @@ function writeLiveMarker(sessionFile: string, streaming: boolean, pid: number): 
 		mode: 0o600,
 	});
 }
+
+describe("durable ownership", () => {
+	test("explicit node identity survives a noncanonical history filename", async () => {
+		const { dir, parentFile, childFile } = makeSessionTree();
+		try {
+			await registerPersistedSubagents(new AgentRegistry(), parentFile);
+			const renamed = path.join(path.dirname(childFile), "relocated-history.jsonl");
+			await fs.promises.rename(childFile, renamed);
+			await fs.promises.rename(`${childFile}.node.json`, `${renamed}.node.json`);
+			const rebuilt = new AgentRegistry();
+			await registerPersistedSubagents(rebuilt, parentFile);
+			expect(rebuilt.getNode("worker", "abc")?.sessionFile).toBe(renamed);
+			expect(rebuilt.get("relocated-history")).toBeUndefined();
+		} finally {
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("depth-three legacy workers retain IDs, parent edges and history paths after rebuilding the registry", async () => {
+		const { dir, parentFile, childFile } = makeSessionTree();
+		try {
+			const grandchildFile = path.join(childFile.slice(0, -6), "grandchild.jsonl");
+			const greatGrandchildFile = path.join(grandchildFile.slice(0, -6), "great-grandchild.jsonl");
+			await Bun.write(grandchildFile, await Bun.file(childFile).text());
+			await Bun.write(greatGrandchildFile, await Bun.file(childFile).text());
+			const initial = new AgentRegistry();
+			await registerPersistedSubagents(initial, parentFile);
+			const restarted = new AgentRegistry();
+			await registerPersistedSubagents(restarted, parentFile);
+			expect(restarted.getNode("great-grandchild", "abc")).toMatchObject({
+				parentId: "grandchild",
+				status: "parked",
+				sessionFile: greatGrandchildFile,
+			});
+			expect(restarted.getNode("grandchild", "abc")).toMatchObject({
+				parentId: "worker",
+				sessionFile: grandchildFile,
+			});
+			expect(restarted.getNode("worker", "abc")?.sessionFile).toBe(childFile);
+		} finally {
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("copied historical child payloads are not adopted into an independent fork", async () => {
+		const { dir, parentFile, childFile } = makeSessionTree();
+		try {
+			await registerPersistedSubagents(new AgentRegistry(), parentFile);
+			const forkFile = path.join(dir, "fork.jsonl");
+			const copiedChild = path.join(forkFile.slice(0, -6), "worker.jsonl");
+			await Bun.write(forkFile, await Bun.file(parentFile).text());
+			await Bun.write(copiedChild, await Bun.file(childFile).text());
+			await Bun.write(`${copiedChild}.node.json`, await Bun.file(`${childFile}.node.json`).text());
+			await persistNodeTopologyReceipt(forkFile, {
+				id: "fork",
+				rootId: "fork",
+				rootSessionFile: forkFile,
+				generation: 0,
+				state: "active",
+			});
+			const registry = new AgentRegistry();
+			await registerPersistedSubagents(registry, forkFile);
+			expect(registry.get("worker")).toBeUndefined();
+			expect(await Bun.file(childFile).exists()).toBe(true);
+		} finally {
+			await fs.promises.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("invalid durable ownership fails closed for cycles, missing parents, duplicate IDs and stopped ancestors", () => {
+		const root: SessionNodeTopology = { id: "root", rootId: "root", generation: 0, state: "active" };
+		const child: SessionNodeTopology = {
+			id: "child",
+			parentId: "root",
+			rootId: "root",
+			generation: 0,
+			state: "active",
+		};
+		expect(() => validateNodeTopology([{ ...root, parentId: "child" }, child])).toThrow("Cycle");
+		expect(() => validateNodeTopology([child])).toThrow("Missing node parent");
+		expect(() => validateNodeTopology([root, child, { ...child }])).toThrow("Duplicate node identity");
+		expect(() => validateNodeTopology([{ ...root, state: "stopped" }, child])).toThrow("Live descendant of stopped");
+	});
+});
 
 describe("registerPersistedSubagents", () => {
 	test.each([".jsonl", "..jsonl", "...jsonl"])(

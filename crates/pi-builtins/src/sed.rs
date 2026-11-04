@@ -3125,7 +3125,7 @@ pub mod fast_regex {
 	pub enum CaptureMatches<'t> {
 		Literal(Box<dyn Iterator<Item = SedResult<Captures<'t>>> + 't>),
 		Byte(ByteCaptureMatches<'t, 't>),
-		Fancy(FancyCaptureMatches<'t, 't>),
+		Fancy(FancyCaptureMatches<'t, 't, str>),
 	}
 
 	impl<'t> Iterator for CaptureMatches<'t> {
@@ -3171,7 +3171,7 @@ pub mod fast_regex {
 	pub enum Captures<'t> {
 		Literal(Match<'t>),
 		Byte(ByteCaptures<'t>),
-		Fancy(FancyCaptures<'t>),
+		Fancy(FancyCaptures<'t, str>),
 	}
 
 	impl<'t> Captures<'t> {

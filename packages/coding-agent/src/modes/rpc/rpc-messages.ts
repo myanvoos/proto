@@ -1,9 +1,9 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
+import { TRANSCRIPT_PAGE_MAX_BYTES, TRANSCRIPT_WINDOW_MESSAGES } from "../utils/transcript-window";
+
 const DEFAULT_RPC_MESSAGE_PAGE_LIMIT = 100;
-const MAX_RPC_MESSAGE_PAGE_LIMIT = 256;
-const MAX_RPC_MESSAGE_PAGE_BYTES = 768 * 1024;
 const MAX_RPC_MESSAGE_CURSOR_CHARS = 2048;
 
 export const RPC_MESSAGES_PAGE_BUSY_ERROR = "Cannot page messages while the session is changing";
@@ -95,8 +95,8 @@ export function pageRpcMessages(
 	if (snapshot.messageCount !== messages.length)
 		throw new Error("RPC message snapshot does not match current messages");
 	const limit = options.limit ?? DEFAULT_RPC_MESSAGE_PAGE_LIMIT;
-	if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_RPC_MESSAGE_PAGE_LIMIT)
-		throw new Error(`RPC message page limit must be between 1 and ${MAX_RPC_MESSAGE_PAGE_LIMIT}`);
+	if (!Number.isSafeInteger(limit) || limit < 1 || limit > TRANSCRIPT_WINDOW_MESSAGES)
+		throw new Error(`RPC message page limit must be between 1 and ${TRANSCRIPT_WINDOW_MESSAGES}`);
 	let offset = 0;
 	if (options.cursor !== undefined) {
 		const cursor = decodeCursor(options.cursor);
@@ -110,7 +110,7 @@ export function pageRpcMessages(
 	while (offset + page.length < messages.length && page.length < limit) {
 		const message = messages[offset + page.length];
 		const messageBytes = Buffer.byteLength(JSON.stringify(message), "utf8") + (page.length === 0 ? 0 : 1);
-		if (page.length > 0 && pageBytes + messageBytes > MAX_RPC_MESSAGE_PAGE_BYTES) break;
+		if (page.length > 0 && pageBytes + messageBytes > TRANSCRIPT_PAGE_MAX_BYTES) break;
 		page.push(message);
 		pageBytes += messageBytes;
 	}

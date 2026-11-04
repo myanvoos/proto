@@ -25,10 +25,13 @@ import * as mcpConfig from "../mcp/config";
 import { MCPManager } from "../mcp/manager";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry } from "../registry/agent-registry";
+import * as sdk from "../sdk";
 import { createAgentSession, discoverAuthStorage } from "../sdk";
 import type { AuthStorage } from "../session/auth-storage";
 import { extractSessionInit, SessionManager } from "../session/session-manager";
 import { getBundledAgent } from "../task/agents";
+import * as executor from "../task/executor";
+import { runStructuredSubagent } from "../task/structured-subagent";
 import type { AgentDefinition } from "../task/types";
 import type { ToolSession } from "../tools";
 import { BashTool } from "../tools/bash";
@@ -268,6 +271,7 @@ async function controlledFixture(
 		maxJobs?: number;
 		maxTotalJobs?: number;
 		maxOwnerBytes?: number;
+		maxTotalBytes?: number;
 		tools?: string[];
 		unsavedParent?: boolean;
 	} = {},
@@ -295,6 +299,7 @@ async function controlledFixture(
 		...(options.maxJobs !== undefined ? { maxRunningJobs: options.maxJobs } : {}),
 		...(options.maxTotalJobs !== undefined ? { maxTotalJobs: options.maxTotalJobs } : {}),
 		...(options.maxOwnerBytes !== undefined ? { maxOwnerBytes: options.maxOwnerBytes } : {}),
+		...(options.maxTotalBytes !== undefined ? { maxTotalBytes: options.maxTotalBytes } : {}),
 	});
 	const previousManager = AsyncJobManager.instance();
 	AsyncJobManager.setInstance(manager);
@@ -672,15 +677,13 @@ test("queued turns are real jobs from acceptance, and cancelling a turn job keep
 }, 30_000);
 
 test("terminal unsaved-parent workers release and remove owned artifact directories", async () => {
-	const before = new Set((await fs.readdir(os.tmpdir())).filter(name => name.startsWith("proto-worker-")));
 	const { runtime, session, manager } = await controlledFixture({ unsavedParent: true });
 	const worker = await runtime.spawn(session, { message: "temporary artifacts" });
 	await manager.waitForAll();
 	await waitForWorkers(runtime, session, [worker.id]);
-	const afterRun = (await fs.readdir(os.tmpdir())).filter(name => name.startsWith("proto-worker-"));
-	const created = afterRun.filter(name => !before.has(name));
-	expect(created).toHaveLength(1);
-	const artifactsDir = path.join(os.tmpdir(), created[0]!);
+	const childFile = AgentRegistry.global().get(worker.id)?.sessionFile;
+	if (!childFile) throw new Error("Worker did not retain its temporary transcript");
+	const artifactsDir = path.dirname(childFile);
 	expect(artifactsDirsFromRegistry()).toContain(path.resolve(artifactsDir));
 	await runtime.kill(session, worker.id);
 	await expect(fs.stat(artifactsDir)).rejects.toMatchObject({ code: "ENOENT" });
@@ -721,7 +724,6 @@ test("the configured concurrency cap applies across parent scopes", async () => 
 		streamFn,
 		customTools: fixture.customTools,
 		sessionManager: secondSessionManager,
-		sessionId: "second-parent-session",
 	});
 	const firstCleanup = cleanupFixture!;
 	cleanupFixture = async () => {
@@ -960,7 +962,7 @@ test("rehydration honors a child tombstone even when the parent has no terminal 
 		session: null,
 		sessionFile: ref.sessionFile,
 	});
-	await expect(AgentLifecycleManager.global().ensureLive(worker.id)).rejects.toThrow("cannot be revived");
+	await expect(AgentLifecycleManager.global().ensureLive(worker.id)).rejects.toThrow("no longer active");
 }, 30_000);
 
 test("a turn started by an IRC wake is tracked, delivered once, and keeps turn numbering honest", async () => {
@@ -1311,6 +1313,283 @@ test("a nested worker wait returns runnable capacity at concurrency one", async 
 	expect(childStatusWhenWaitReturned).toBe("completed");
 	expect(await waitForWorkers(runtime, session, [parent.id])).toMatchObject([{ status: "completed" }]);
 }, 30_000);
+
+for (const explicit of [false, true]) {
+	test(`a depth-three ${explicit ? "explicit" : "automatic"} dependency chain finishes at concurrency one`, async () => {
+		const entered = new Set<number>();
+		const streamFn: StreamFn = (model, context) => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				const task = JSON.stringify(context.messages.find(entry => entry.role === "user"));
+				const level = Number(task.match(/chain-level-(\d)/)?.[1]);
+				entered.add(level);
+				const spawned = context.messages.findLast(
+					entry => entry.role === "toolResult" && entry.toolName === "fleet",
+				);
+				const waited = context.messages.some(entry => entry.role === "toolResult" && entry.toolName === "jobs");
+				if (level < 3 && !spawned) {
+					pushToolCall(
+						stream,
+						model,
+						call(`spawn-${level}`, "fleet", { op: "spawn", message: `chain-level-${level + 1}` }),
+					);
+				} else if (explicit && spawned?.role === "toolResult" && !waited) {
+					const id = (spawned.details as { receipt: { job: { id: string } } }).receipt.job.id;
+					pushToolCall(
+						stream,
+						model,
+						call(`wait-${level}`, "jobs", { op: "wait", targets: [{ kind: "job", id }], timeoutMs: 5_000 }),
+					);
+				} else {
+					pushToolCall(
+						stream,
+						model,
+						call(`yield-${level}`, "yield", { result: { data: `level ${level} completed` } }),
+					);
+				}
+			});
+			return stream;
+		};
+		const { runtime, session, manager } = await controlledFixture({
+			streamFn,
+			maxConcurrency: 1,
+			tools: ["yield", "fleet", "jobs"],
+		});
+		const parent = await runtime.spawn(session, { message: "chain-level-1" });
+		await withTimeout(manager.waitForAll(), 2_000, "automatic dependency barrier starved its child");
+		expect([...entered].sort()).toEqual([1, 2, 3]);
+		expect(await waitForWorkers(runtime, session, [parent.id])).toMatchObject([{ status: "completed" }]);
+	}, 30_000);
+}
+
+test("structured calls and real JS agent bridges lend capacity through a depth-three chain without losing typed returns", async () => {
+	const entered = new Set<number>();
+	const bridgeResults: Array<{ level: number; failed: boolean; text: string }> = [];
+	const schema = {
+		type: "object",
+		properties: { level: { type: "number" } },
+		required: ["level"],
+		additionalProperties: false,
+	};
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() => {
+			const task = JSON.stringify(context.messages.find(entry => entry.role === "user"));
+			const level = Number(task.match(/eval-chain-level-(\d)/)?.[1]);
+			entered.add(level);
+			const evaluated = context.messages.findLast(entry => entry.role === "toolResult" && entry.toolName === "bash");
+			if (evaluated?.role === "toolResult")
+				bridgeResults.push({ level, failed: evaluated.isError === true, text: JSON.stringify(evaluated.content) });
+			if (level < 3 && !evaluated) {
+				const code = `const child = await agent("eval-chain-level-${level + 1}", { model: "controlled-provider/controlled-model", schema: ${JSON.stringify(schema)}, schemaMode: "strict" }); console.log(JSON.stringify(child));`;
+				pushToolCall(stream, model, call(`agent-${level}`, "bash", { command: cellCommand("js", code) }));
+			} else {
+				pushToolCall(stream, model, call(`typed-yield-${level}`, "yield", { result: { data: { level } } }));
+			}
+		});
+		return stream;
+	};
+	const { session, modelRegistry } = await controlledFixture({ streamFn, maxConcurrency: 1 });
+	modelRegistry.registerProvider("controlled-provider", {
+		baseUrl: "http://127.0.0.1:9",
+		apiKey: "test-key",
+		api: "openai-completions",
+		models: [
+			{
+				id: "controlled-model",
+				name: "Controlled Model",
+				reasoning: false,
+				input: ["text"],
+				contextWindow: 128_000,
+				maxTokens: 4_096,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+		],
+	});
+	try {
+		const outcome = await withTimeout(
+			runStructuredSubagent({
+				session,
+				invocationKind: "worker",
+				assignment: "eval-chain-level-1",
+				model: "controlled-provider/controlled-model",
+				outputSchema: schema,
+				schemaMode: "strict",
+				keepAlive: false,
+			}),
+			10_000,
+			"nested structured/eval call starved behind its parent",
+		);
+		expect(outcome.result).toMatchObject({ exitCode: 0, structuredOutput: { status: "valid", data: { level: 1 } } });
+		expect([...entered].sort()).toEqual([1, 2, 3]);
+		expect(bridgeResults.map(result => [result.level, result.failed]).sort()).toEqual([
+			[1, false],
+			[2, false],
+		]);
+		for (const result of bridgeResults) expect(result.text).toContain(`\\"level\\":${result.level + 1}`);
+	} finally {
+		modelRegistry.unregisterProvider("controlled-provider");
+	}
+}, 30_000);
+
+test("structured workers with the same display label in different roots cannot collide or steal each other's node", async () => {
+	const entered = Promise.withResolvers<void>();
+	const release = Promise.withResolvers<void>();
+	const streamFn: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		void (async () => {
+			if (JSON.stringify(context.messages).includes("hold-first-root")) {
+				entered.resolve();
+				await release.promise;
+			}
+			pushToolCall(
+				stream,
+				model,
+				call("same-label-yield", "yield", { result: { data: "completed independently" } }),
+			);
+		})();
+		return stream;
+	};
+	const fixture = await controlledFixture({ streamFn, maxConcurrency: 2 });
+	fixture.modelRegistry.registerProvider("controlled-provider", {
+		baseUrl: "http://127.0.0.1:9",
+		apiKey: "test-key",
+		api: "openai-completions",
+		models: [
+			{
+				id: "controlled-model",
+				name: "Controlled Model",
+				reasoning: false,
+				input: ["text"],
+				contextWindow: 128_000,
+				maxTokens: 4_096,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			},
+		],
+	});
+	const file = path.join(fixture.root, "independent-root.jsonl");
+	const manager = await SessionManager.open(file, undefined, undefined, {
+		initialCwd: fixture.root,
+		suppressBreadcrumb: true,
+	});
+	const other = parentSession({
+		cwd: fixture.root,
+		file,
+		manager: fixture.manager,
+		settings: fixture.settings,
+		modelRegistry: fixture.modelRegistry,
+		authStorage: fixture.authStorage,
+		streamFn,
+		customTools: fixture.customTools,
+		sessionManager: manager,
+	});
+	const first = runStructuredSubagent({
+		session: fixture.session,
+		invocationKind: "eval",
+		assignment: "hold-first-root",
+		identity: { label: "same-label" },
+		model: "controlled-provider/controlled-model",
+		keepAlive: false,
+	});
+	const firstOutcome = first.catch(error => {
+		throw error;
+	});
+	try {
+		await entered.promise;
+		const second = await runStructuredSubagent({
+			session: other,
+			invocationKind: "eval",
+			assignment: "independent second root",
+			identity: { label: "same-label" },
+			model: "controlled-provider/controlled-model",
+			keepAlive: false,
+		});
+		release.resolve();
+		const completed = await firstOutcome;
+		expect(second.result.exitCode).toBe(0);
+		expect(completed.result.exitCode).toBe(0);
+		expect(second.result.id).not.toBe(completed.result.id);
+	} finally {
+		release.resolve();
+		await firstOutcome;
+		fixture.modelRegistry.unregisterProvider("controlled-provider");
+		await manager.close();
+	}
+}, 30_000);
+
+test("a subtree stopped before cleanup finishes cannot accept new descendants from its stale runtime", async () => {
+	const { runtime, session, manager } = await controlledFixture({ streamFn: yieldingProvider() });
+	const parent = await runtime.spawn(session, { message: "stop-before-spawn" });
+	await manager.waitForAll();
+	const live = AgentRegistry.global().get(parent.id)?.session;
+	if (!live) throw new Error("Parent runtime did not settle");
+	const owner = { ...session, ...live.orchestratorParent, getAgentId: () => parent.id } as ToolSession;
+	const release = Promise.withResolvers<void>();
+	const dispose = live.dispose.bind(live);
+	const intercepted = spyOn(live, "dispose").mockImplementation(async options => {
+		await release.promise;
+		return dispose(options);
+	});
+	const terminating = AgentLifecycleManager.global().terminateSubtree(parent.id);
+	try {
+		await expect(runtime.spawn(owner, { message: "must not be admitted" })).rejects.toThrow("stopped");
+		expect(runtime.listIds(owner)).toEqual([]);
+	} finally {
+		release.resolve();
+		await terminating;
+		intercepted.mockRestore();
+	}
+}, 30_000);
+
+for (const budget of ["count", "bytes"] as const) {
+	test(`a fleet result publishes before late disposal but retains its accepted ${budget} budget until cleanup`, async () => {
+		const cleanup = Promise.withResolvers<void>();
+		const { runtime, session, manager } = await controlledFixture({
+			streamFn: yieldingProvider(),
+			maxConcurrency: 1,
+			...(budget === "count" ? { maxTotalJobs: 1 } : { maxTotalBytes: 512 }),
+		});
+		const create = sdk.createAgentSession;
+		const execute = executor.runSubprocess;
+		const created = spyOn(sdk, "createAgentSession").mockImplementation(async options => {
+			const result = await create(options);
+			const dispose = result.session.dispose.bind(result.session);
+			spyOn(result.session, "dispose").mockImplementation(async disposeOptions => {
+				await cleanup.promise;
+				await dispose(disposeOptions);
+			});
+			return result;
+		});
+		const driven = spyOn(executor, "runSubprocess").mockImplementation(options =>
+			execute({ ...options, keepAlive: false, cleanupGraceMs: 0 }),
+		);
+		try {
+			const worker = await runtime.spawn(session, { message: "publish-before-cleanup" });
+			const job = manager.getJob(worker.jobId);
+			if (!job) throw new Error("Fleet did not register its accepted turn");
+			await withTimeout(job.promise, 1_000, "published answer was held hostage by disposal");
+			const result = await new JobsTool(session).execute("published-answer", {
+				op: "wait",
+				targets: [{ kind: "job", id: worker.jobId }],
+				timeoutMs: 1_000,
+			});
+			expect(cellText(result)).toContain("controlled turn complete");
+			expect(job.status).toBe("completed");
+			expect(() => manager.reserve({ ownerId: "independent-owner", bytes: budget === "bytes" ? 512 : 1 })).toThrow(
+				budget === "bytes" ? "byte limit" : "admission limit",
+			);
+			cleanup.resolve();
+			await manager.waitForJobSettlement(worker.jobId);
+			const next = manager.reserve({ ownerId: "independent-owner", bytes: budget === "bytes" ? 512 : 1 });
+			next.release();
+		} finally {
+			cleanup.resolve();
+			await manager.waitForAll();
+			driven.mockRestore();
+			created.mockRestore();
+		}
+	}, 30_000);
+}
 
 test("spawn admission rejects queued count and schema bytes before persisting identities, then cancellation frees it", async () => {
 	const blocked = Promise.withResolvers<void>();
@@ -1698,4 +1977,81 @@ test("a restart after accepting the runnable turn but before child initializatio
 		await restored.suspendScope(restored.ownerScope(coldSession), manager);
 		await reopened.close();
 	}
+}, 30_000);
+
+test("releasing an idle parent runtime preserves a running grandchild and its owned completion", async () => {
+	const entered = Promise.withResolvers<void>();
+	const complete = Promise.withResolvers<void>();
+	const provider: StreamFn = (model, context) => {
+		const stream = createAssistantMessageEventStream();
+		const grandchild = JSON.stringify(context.messages.findLast(entry => entry.role === "user")).includes(
+			"gated-grandchild",
+		);
+		void (async () => {
+			if (!grandchild && !context.messages.some(entry => entry.role === "toolResult" && entry.toolName === "bash")) {
+				pushToolCall(
+					stream,
+					model,
+					call("declare-state", "bash", { command: cellCommand("py", 'useful = 42; declare_state(["useful"])') }),
+				);
+				return;
+			}
+			if (grandchild) {
+				entered.resolve();
+				await complete.promise;
+			}
+			pushToolCall(
+				stream,
+				model,
+				call("finish", "yield", { result: { data: grandchild ? "grandchild completed" : "parent completed" } }),
+			);
+		})();
+		return stream;
+	};
+	const { runtime, session, manager } = await controlledFixture({
+		streamFn: provider,
+		maxConcurrency: 1,
+		tools: ["yield", "bash"],
+	});
+	const parent = await runtime.spawn(session, { message: "idle-parent" });
+	await withTimeout(manager.waitForAll(), 5_000, "parent did not finish");
+	const parentRef = AgentRegistry.global().get(parent.id)!;
+	const parentJournal = parentRef.session!.sessionManager;
+	const parentOwner = {
+		...session,
+		...parentRef.session!.orchestratorParent!,
+		getAgentId: () => parent.id,
+		getAsyncJobOwnerId: () => parentJournal.getSessionId(),
+	} as ToolSession;
+	const grandchild = await runtime.spawn(parentOwner, { message: "gated-grandchild" });
+	await withTimeout(entered.promise, 5_000, "grandchild did not start");
+	await AgentLifecycleManager.global().releaseRuntime(parent.id);
+	expect(parentRef).toMatchObject({ session: null, status: "parked" });
+	expect(AgentRegistry.global().get(grandchild.id)?.status).toBe("running");
+	complete.resolve();
+	await withTimeout(manager.waitForAll(), 5_000, "grandchild was cancelled with its parent runtime");
+	expect(AgentRegistry.global().get(grandchild.id)?.status, manager.getJob(grandchild.jobId)?.errorText).toBe("idle");
+	expect(runtime.listIds(parentOwner)).toContain(grandchild.id);
+	await parentJournal.flush();
+	const persisted = await SessionManager.openReadOnly(parentRef.sessionFile!);
+	try {
+		expect(
+			persisted.getCustomEntries("orchestrator-worker-lifecycle").some(entry => {
+				const data = entry.data as { action: string; id: string };
+				return data.action === "turn-settled" && data.id === grandchild.id;
+			}),
+		).toBe(true);
+	} finally {
+		await persisted.close();
+	}
+	expect(await waitForWorkers(runtime, parentOwner, [grandchild.id])).toMatchObject([{ status: "completed" }]);
+	const revivedParent = await AgentLifecycleManager.global().ensureLive(parent.id);
+	const bash = revivedParent.getToolByName("bash");
+	if (!bash) throw new Error("Revived parent lost its interpreter tool");
+	const restored = await bash.execute("read-declared-state", { command: cellCommand("py", "print(useful)") });
+	expect(restored.isError).toBeUndefined();
+	expect(cellText(restored)).toContain("42");
+	await runtime.send(parentOwner, { session: grandchild.id, message: "gated-grandchild-followup" });
+	await withTimeout(manager.waitForAll(), 5_000, "revived parent lost its descendant journal writer");
+	expect(await waitForWorkers(runtime, parentOwner, [grandchild.id])).toMatchObject([{ status: "completed" }]);
 }, 30_000);

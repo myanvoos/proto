@@ -1,4 +1,5 @@
 import { MAX_RPC_FRAME_BYTES, RpcFrameDecoder } from "../modes/rpc/rpc-frame";
+import { SocketWriter } from "../utils/socket-writer";
 
 /** Push/find queue for RPC frames with race-free waiter registration. */
 export class RpcFrameQueue {
@@ -71,7 +72,12 @@ export async function connectSessionRpc(socket: string): Promise<SessionRpcConne
 	const textDecoder = new TextDecoder("utf-8", { fatal: true });
 	let pending = "";
 	const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
+	let writer: SocketWriter | undefined;
+	let finished = false;
 	const finish = (error?: Error): void => {
+		if (finished) return;
+		finished = true;
+		writer?.close(error);
 		pending = "";
 		decoder = new RpcFrameDecoder();
 		frames.close(error);
@@ -80,7 +86,20 @@ export async function connectSessionRpc(socket: string): Promise<SessionRpcConne
 	const conn = await Bun.connect({
 		unix: socket,
 		socket: {
+			open(socket) {
+				writer = new SocketWriter(
+					bytes => socket.write(bytes),
+					error => {
+						finish(error);
+						socket.terminate();
+					},
+				);
+			},
+			drain() {
+				writer?.drain();
+			},
 			data(socket, chunk) {
+				if (finished) return;
 				try {
 					const text = pending + textDecoder.decode(chunk, { stream: true });
 					let start = 0;
@@ -102,7 +121,7 @@ export async function connectSessionRpc(socket: string): Promise<SessionRpcConne
 					}
 				} catch (error) {
 					finish(error instanceof Error ? error : new Error(String(error)));
-					socket.end();
+					socket.terminate();
 				}
 			},
 			close() {
@@ -111,19 +130,21 @@ export async function connectSessionRpc(socket: string): Promise<SessionRpcConne
 			end() {
 				finish();
 			},
-			error(_socket, error) {
+			error(socket, error) {
 				finish(error);
+				socket.terminate();
 			},
 		},
 	});
 	return {
 		sendCommand(command: object) {
-			conn.write(`${JSON.stringify(command)}\n`);
+			if (finished || !writer) throw new Error("Session RPC connection closed");
+			writer.send(`${JSON.stringify(command)}\n`);
 		},
 		frames,
 		close() {
 			finish();
-			conn.end();
+			conn.terminate();
 		},
 		closed,
 	};

@@ -17,7 +17,7 @@ import { loadSlashCommands } from "../../extensibility/slash-commands";
 import { type Theme, theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
-import { getSessionHostRpcSink } from "../../session-host/transport";
+import { getSessionHostRpcSink, markSessionHostServing } from "../../session-host/transport";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
@@ -1530,6 +1530,7 @@ export async function runRpcMode(
 	const startupFrames = heldFrames;
 	heldFrames = undefined;
 	for (const frame of startupFrames) inputDispatcher.dispatch(frame);
+	markSessionHostServing();
 	await inputRead;
 
 	pendingExtensionRequests.rejectAll("RPC client disconnected before extension UI response completed");

@@ -382,6 +382,8 @@ export class PythonKernel extends BaseKernel {
 			await kernel.executeWithBudget(PYTHON_PRELUDE, startup.signal, phaseBudget(), "Python kernel prelude", {
 				prelude: true,
 			});
+			kernel.#interpreter =
+				(await kernel.requestStatus(Math.min(phaseBudget(), 2_000)))?.interpreter ?? runtime.pythonPath;
 			return kernel;
 		} catch (err) {
 			const shutdown = await kernel.shutdown({ timeoutMs: SHUTDOWN_GRACE_MS }).catch(() => undefined);

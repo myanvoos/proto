@@ -14,7 +14,6 @@ use brush_core::{ShellExtensions, builtins::Registration, openfiles::OpenFile};
 use clap::{ArgMatches, Command, CommandFactory, FromArgMatches, Parser, error::ErrorKind};
 use cli::Cli;
 use filter::{FileReports, Filter};
-use jaq_core::{Ctx, RcIter, load};
 use jaq_json::Val;
 
 use crate::host::{Host, Utility, util};
@@ -232,122 +231,75 @@ mod cli {
 
 mod filter {
 
-	use core::{
-		cell::Cell,
-		fmt::{self, Display, Formatter},
-	};
+	use core::fmt::{self, Display, Formatter};
 	use std::{
 		io::{self, Write},
 		path::PathBuf,
 	};
 
 	use jaq_core::{
-		Ctx, Error as CoreError, Exn, Native, RcIter, RunPtr, UpdatePtr, ValT, compile, load,
+		Ctx, DataT, Lut, RunPtr, ValT, Vars, compile, data::HasLut, load, native,
 	};
+	use jaq_std::input::{HasInputs, Inputs, RcIter};
 
 	use super::{Cli, Error, Val, read};
 
-	pub type Filter = jaq_core::Filter<Native<Val>>;
+	pub struct Data;
 
-	thread_local! {
-
-
-
-		static HALT: Cell<Option<i32>> = const { Cell::new(None) };
+	#[derive(Clone)]
+	pub struct Context<'a> {
+		lut: &'a Lut<Data>,
+		inputs: Inputs<'a, Val>,
 	}
 
-	pub fn take_halt() -> Option<i32> {
-		HALT.with(Cell::take)
+	impl DataT for Data {
+		type V<'a> = Val;
+		type Data<'a> = Context<'a>;
 	}
 
-	fn overrides() -> impl Iterator<Item = jaq_std::Filter<Native<Val>>> {
+	impl<'a> HasLut<'a, Data> for Context<'a> {
+		fn lut(&self) -> &'a Lut<Data> {
+			self.lut
+		}
+	}
+
+	impl<'a> HasInputs<'a, Val> for Context<'a> {
+		fn inputs(&self) -> Inputs<'a, Val> {
+			self.inputs
+		}
+	}
+
+	pub type Filter = jaq_core::Filter<Data>;
+
+	fn overrides() -> impl Iterator<Item = native::Fun<Data>> {
 		use jaq_core::box_iter::box_once;
 		use jaq_std::ValT as _;
 
-		fn halt_with<'a>(code: i32, sentinel: &'static str) -> jaq_core::ValXs<'a, Val> {
-			HALT.with(|h| h.set(Some(code)));
-			box_once(Err(Exn::from(CoreError::str(sentinel))))
-		}
-
-		fn debug_msg(v: &Val) {
-			super::with_runtime(|runtime| {
-				let _ = writeln!(runtime.stderr, "[\"DEBUG:\", {v}]");
-			});
-		}
-
-		fn stderr_msg(v: &Val) {
-			if let Some(s) = v.as_str() {
-				super::with_runtime(|runtime| {
-					let _ = write!(runtime.stderr, "{s}");
-				});
-			} else {
-				super::with_runtime(|runtime| {
-					let _ = write!(runtime.stderr, "{v}");
-				});
-			}
-		}
-
-		let run_funs: [jaq_std::Filter<RunPtr<Val>>; 3] = [
-			("env", jaq_std::v(0), |_, _| {
+		let funs: [native::Filter<RunPtr<Data>>; 3] = [
+			("env", native::v(0), |_| {
 				let env = super::runtime_env()
 					.into_iter()
-					.map(|(k, v)| (k.into(), Val::from(v)));
+					.map(|(key, value)| (key.into(), Val::from(value)));
 				box_once(Ok(Val::obj(env.collect())))
 			}),
-			("halt", jaq_std::v(0), |_, _| halt_with(0, "halt")),
-			("halt_error", jaq_std::v(1), |_, mut cv| match cv.0.pop_var().as_isize() {
-				Some(code) => {
-					if let Some(s) = cv.1.as_str() {
-						super::with_runtime(|runtime| {
-							let _ = write!(runtime.stdout, "{s}");
-						});
+			("debug_empty", native::v(0), |cv| {
+				super::with_runtime(|runtime| {
+					let _ = writeln!(runtime.stderr, "[\"DEBUG:\", {}]", cv.1);
+				});
+				Box::new(core::iter::empty())
+			}),
+			("stderr_empty", native::v(0), |cv| {
+				super::with_runtime(|runtime| {
+					if let Some(bytes) = cv.1.as_bytes() {
+						let _ = runtime.stderr.write_all(bytes);
 					} else {
-						super::with_runtime(|runtime| {
-							let _ = writeln!(runtime.stdout, "{}", cv.1);
-						});
+						let _ = write!(runtime.stderr, "{}", cv.1);
 					}
-					halt_with(code as i32, "halt_error")
-				},
-				None => box_once(Err(Exn::from(CoreError::typ(cv.1, "integer")))),
+				});
+				Box::new(core::iter::empty())
 			}),
 		];
-
-		let upd_funs: [jaq_std::Filter<(RunPtr<Val>, UpdatePtr<Val>)>; 2] = [
-			(
-				"debug",
-				jaq_std::v(0),
-				(
-					|_, cv| {
-						debug_msg(&cv.1);
-						box_once(Ok(cv.1))
-					},
-					|_, cv, f| {
-						debug_msg(&cv.1);
-						f(cv.1)
-					},
-				),
-			),
-			(
-				"stderr",
-				jaq_std::v(0),
-				(
-					|_, cv| {
-						stderr_msg(&cv.1);
-						box_once(Ok(cv.1))
-					},
-					|_, cv, f| {
-						stderr_msg(&cv.1);
-						f(cv.1)
-					},
-				),
-			),
-		];
-
-		let upd = |(name, arity, (run, update)): jaq_std::Filter<(RunPtr<Val>, UpdatePtr<Val>)>| {
-			(name, arity, Native::new(run).with_update(update))
-		};
-		let run_funs = run_funs.into_iter().map(jaq_std::run);
-		run_funs.chain(upd_funs.into_iter().map(upd))
+		funs.into_iter().map(native::run::<Data>)
 	}
 
 	pub fn parse_compile(
@@ -364,7 +316,7 @@ mod filter {
 
 		let vars: Vec<_> = vars.iter().map(|v| format!("${v}")).collect();
 		let arena = Arena::default();
-		let defs = jaq_std::defs().chain(jaq_json::defs());
+		let defs = jaq_core::defs().chain(jaq_std::defs()).chain(jaq_json::defs());
 		let loader = Loader::new(defs).with_std_read(paths);
 		let path = path.into();
 		let modules = loader
@@ -379,7 +331,11 @@ mod filter {
 		})
 		.map_err(load_errors)?;
 
-		let funs = overrides().chain(jaq_std::funs()).chain(jaq_json::funs());
+		let funs = overrides()
+			.chain(jaq_core::funs())
+			.chain(jaq_std::funs())
+			.chain(jaq_json::funs())
+			.chain(jaq_std::input::funs().into_vec().into_iter().map(native::run));
 		let compiler = Compiler::default()
 			.with_funs(funs)
 			.with_global_vars(vars.iter().map(|v| &**v));
@@ -403,18 +359,21 @@ mod filter {
 		let iter = RcIter::new(iter);
 		let null = RcIter::new(null);
 
-		let ctx = Ctx::new(vars, &iter);
+		let ctx = Ctx::<Data>::new(Context { lut: &filter.lut, inputs: &iter }, Vars::new(vars));
 
 		for item in if cli.null_input { &null } else { &iter } {
 			if super::runtime_cancelled() {
 				break;
 			}
 			let input = item.map_err(Error::Parse)?;
-			for output in filter.run((ctx.clone(), input)) {
+			for output in filter.id.run((ctx.clone(), input)) {
 				if super::runtime_cancelled() {
 					return Ok(last);
 				}
-				let output = output.map_err(Error::Jaq)?;
+				let output = output.map_err(|exception| match exception.get_halt() {
+					Ok(code) => Error::Halt(code),
+					Err(exception) => Error::Jaq(exception.get_err().expect("jq exposes only errors or halt exceptions")),
+				})?;
 				last = Some(output.as_bool());
 				f(output)?;
 			}
@@ -549,7 +508,7 @@ mod filter {
 		Report { message, labels: Vec::from([(found_range, found, Color::Red)]) }
 	}
 
-	type CodeBlock = codesnake::Block<codesnake::CodeWidth<String>, String>;
+	type CodeBlock = codesnake::Block<codesnake::CodeWidth<String>, String, Option<Color>>;
 
 	impl Report {
 		fn to_block(&self, idx: &codesnake::LineIndex) -> CodeBlock {
@@ -562,20 +521,26 @@ mod filter {
 				let text = text.into_iter().map(color_maybe).collect::<Vec<_>>();
 				Label::new(range)
 					.with_text(text.join(""))
-					.with_style(move |s| color.apply(s).to_string())
+					.with_style(Some(color))
 			});
-			Block::new(idx, labels).unwrap().map_code(|c| {
-				let c = c.replace('\t', "    ");
-				let w = xutf::width_str(&c);
-				CodeWidth::new(c, core::cmp::max(w, 1))
-			})
+			Block::new(idx, labels)
+				.unwrap()
+				.with_paint(|f, color, text| match color {
+					Some(color) => write!(f, "{}", color.apply(text)),
+					None => write!(f, "{text}"),
+				})
+				.map_code(|c| {
+					let c = c.replace('\t', "    ");
+					let w = xutf::width_str(&c);
+					CodeWidth::new(c, core::cmp::max(w, 1))
+				})
 		}
 	}
 }
 
 mod read {
 	use std::{
-		io::{self, BufRead, Read},
+		io::{self, BufRead},
 		path::Path,
 	};
 
@@ -593,11 +558,7 @@ mod read {
 	}
 
 	fn json_slice(slice: &[u8]) -> impl Iterator<Item = io::Result<Val>> + '_ {
-		let mut lexer = hifijson::SliceLexer::new(json_bytes(slice));
-		core::iter::from_fn(move || {
-			use hifijson::token::Lex;
-			Some(Val::parse(lexer.ws_token()?, &mut lexer).map_err(invalid_data))
-		})
+		jaq_json::read::parse_many(json_bytes(slice)).map(|value| value.map_err(invalid_data))
 	}
 
 	fn json_bytes(bytes: &[u8]) -> &[u8] {
@@ -630,12 +591,7 @@ mod read {
 			Ok(read) => read,
 			Err(error) => return Box::new(std::iter::once(Err(error))),
 		};
-		let mut lexer = hifijson::IterLexer::new(read.bytes());
-		Box::new(core::iter::from_fn(move || {
-			use hifijson::token::Lex;
-			let v = Val::parse(lexer.ws_token()?, &mut lexer);
-			Some(v.map_err(|e| core::mem::take(&mut lexer.error).unwrap_or_else(|| invalid_data(e))))
-		}))
+		Box::new(jaq_json::read::read_many(read))
 	}
 
 	pub fn json_array(path: impl AsRef<Path>) -> io::Result<Val> {
@@ -744,8 +700,9 @@ mod output {
 	fn fmt_val(f: &mut Formatter, opts: &PpOpts, level: usize, v: &Val) -> fmt::Result {
 		use yansi::Paint;
 		match v {
-			Val::Null | Val::Bool(_) | Val::Int(_) | Val::Float(_) | Val::Num(_) => v.fmt(f),
-			Val::Str(_) => write!(f, "{}", v.green()),
+			Val::Num(jaq_json::Num::Float(number)) if !number.is_finite() => write!(f, "null"),
+			Val::Null | Val::Bool(_) | Val::Num(_) => v.fmt(f),
+			Val::TStr(_) | Val::BStr(_) => write!(f, "{}", v.green()),
 			Val::Arr(a) => {
 				'['.bold().fmt(f)?;
 				if !a.is_empty() {
@@ -755,8 +712,8 @@ mod output {
 			},
 			Val::Obj(o) => {
 				'{'.bold().fmt(f)?;
-				let kv = |f: &mut Formatter, (k, val): (&std::rc::Rc<String>, &Val)| {
-					write!(f, "{}:", Val::Str(k.clone()).bold())?;
+				let kv = |f: &mut Formatter, (k, val): (&Val, &Val)| {
+					write!(f, "{}:", k.bold())?;
 					if !opts.compact {
 						write!(f, " ")?;
 					}
@@ -792,8 +749,8 @@ mod output {
 
 		let mut rendered = Vec::new();
 		match val {
-			Val::Str(s) if cli.raw_output || cli.join_output => {
-				rendered.extend_from_slice(s.as_bytes())
+			Val::TStr(s) | Val::BStr(s) if cli.raw_output || cli.join_output => {
+				rendered.extend_from_slice(s)
 			},
 			_ => write!(&mut rendered, "{}", FormatterFn(f))?,
 		};
@@ -876,7 +833,6 @@ impl Utility for Jq {
 	fn run(self, host: &mut Host) -> i32 {
 		color::init();
 		color::set(false);
-		filter::take_halt();
 
 		let mut cli = self.cli;
 		resolve_cli_paths(&mut cli, host);
@@ -886,11 +842,8 @@ impl Utility for Jq {
 
 		let mut stdout = host.stdout_writer();
 		let result = real_main(&cli, host, &mut stdout);
-		if let Some(code) = filter::take_halt() {
-			return code;
-		}
 		match result {
-			Ok(exit) => exit,
+			Ok(exit) | Err(Error::Halt(exit)) => exit,
 			Err(error) => {
 				if let Some(flag) = host.reported_error_flag() {
 					flag.store(true, Ordering::Relaxed);
@@ -929,7 +882,6 @@ fn resolve_cli_paths(cli: &mut Cli, host: &Host) {
 }
 
 struct Runtime {
-	stdout: OpenFile,
 	stderr: OpenFile,
 	env:    Vec<(String, String)>,
 	cancel: Arc<AtomicBool>,
@@ -944,7 +896,6 @@ struct RuntimeGuard;
 impl RuntimeGuard {
 	fn install(host: &Host) -> Self {
 		let runtime = Runtime {
-			stdout: host.stdout_clone(),
 			stderr: host.stderr_clone(),
 			env:    host
 				.env()
@@ -1089,18 +1040,16 @@ fn real_main(cli: &Cli, host: &mut Host, stdout: &mut dyn Write) -> Result<i32, 
 fn binds(cli: &Cli, host: &Host) -> Result<Vec<(String, Val)>, Error> {
 	let arg = cli.arg.iter().map(|(k, s)| {
 		let s = s.to_owned();
-		Ok((k.to_owned(), Val::Str(s.into())))
+		Ok((k.to_owned(), Val::from(s)))
 	});
 	let argjson = cli.argjson.iter().map(|(k, s)| {
-		use hifijson::token::Lex;
-		let mut lexer = hifijson::SliceLexer::new(s.as_bytes());
 		let err = |e| Error::Parse(format!("{e} (for value passed to `--argjson {k}`)"));
-		Ok((k.to_owned(), lexer.exactly_one(Val::parse).map_err(err)?))
+		Ok((k.to_owned(), jaq_json::read::parse_single(s.as_bytes()).map_err(err)?))
 	});
 	let rawfile = cli.rawfile.iter().map(|(k, path)| {
 		let s = brush_core::heldfiles::read_to_string(path)
 			.map_err(|e| Error::Io(Some(format!("{path:?}")), e));
-		Ok((k.to_owned(), Val::Str(s?.into())))
+		Ok((k.to_owned(), Val::from(s?)))
 	});
 	let slurpfile = cli.slurpfile.iter().map(|(k, path)| {
 		let a = read::json_array(path).map_err(|e| Error::Io(Some(format!("{path:?}")), e));
@@ -1137,6 +1086,7 @@ enum Error {
 	Report(Vec<FileReports>),
 	Parse(String),
 	Jaq(jaq_core::Error<Val>),
+	Halt(i32),
 	Persist(tempfile::PersistError),
 	FalseOrNull,
 	NoOutput,
@@ -1145,7 +1095,7 @@ enum Error {
 impl Display for Error {
 	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
 		match self {
-			Self::FalseOrNull | Self::NoOutput => Ok(()),
+			Self::FalseOrNull | Self::NoOutput | Self::Halt(_) => Ok(()),
 			Self::Io(prefix, e) => {
 				write!(f, "Error: ")?;
 				if let Some(p) = prefix {
@@ -1166,6 +1116,7 @@ impl Display for Error {
 impl Error {
 	fn report(&self) -> i32 {
 		match self {
+			Self::Halt(code) => *code,
 			Self::FalseOrNull => 1,
 			Self::Io(..) | Self::Persist(_) => 2,
 			Self::Report(_) => 3,
@@ -1181,28 +1132,36 @@ impl From<io::Error> for Error {
 	}
 }
 
-fn run_test(test: load::test::Test<String>) -> Result<(Val, Val), Error> {
-	let (ctx, filter) =
+struct FilterTest {
+	filter: String,
+	input: String,
+	output: Vec<String>,
+}
+
+fn run_test(test: FilterTest) -> Result<(Val, Val), Error> {
+	let (vars, filter) =
 		filter::parse_compile(&PathBuf::new(), &test.filter, &[], &[]).map_err(Error::Report)?;
 
-	let inputs = RcIter::new(Box::new(core::iter::empty()));
-	let ctx = Ctx::new(ctx, &inputs);
-
-	let json = |s: String| {
-		use hifijson::token::Lex;
-		hifijson::SliceLexer::new(s.as_bytes())
-			.exactly_one(Val::parse)
-			.map_err(read::invalid_data)
-	};
+	let json = |s: String| jaq_json::read::parse_single(s.as_bytes()).map_err(read::invalid_data);
 	let input = json(test.input)?;
 	let expect: Result<Val, _> = test.output.into_iter().map(json).collect();
-	let obtain: Result<Val, _> = filter.run((ctx, input)).collect();
-	Ok((expect?, obtain.map_err(Error::Jaq)?))
+	let mut obtain = Vec::new();
+	filter::run(&Cli::default(), &filter, vars, core::iter::once(Ok(input)), |value| {
+		obtain.push(value);
+		Ok(())
+	})?;
+	Ok((expect?, obtain.into_iter().collect()))
 }
 
 fn run_tests(read: impl BufRead, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
-	let lines = read.lines().map(Result::unwrap);
-	let tests = load::test::Parser::new(lines);
+	let mut lines = read.lines().map(Result::unwrap);
+	let tests = core::iter::from_fn(move || {
+		Some(FilterTest {
+			filter: lines.find(|line| !(line.is_empty() || line.starts_with('#')))?,
+			input: lines.next()?,
+			output: lines.by_ref().take_while(|line| !line.is_empty()).collect(),
+		})
+	});
 
 	let (mut passed, mut total) = (0, 0);
 	for test in tests {

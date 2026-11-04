@@ -11,7 +11,7 @@ test("render prints every message beyond the interactive transcript window witho
 	await using fixture = await TempDir.create("@proto-render-full-history-");
 	const sessionFile = path.join(fixture.path(), "session.jsonl");
 	const timestamp = new Date(0).toISOString();
-	const markers = Array.from({ length: 300 }, (_, index) => `render-message-${String(index).padStart(4, "0")}`);
+	const markers = Array.from({ length: 600 }, (_, index) => `render-message-${String(index).padStart(4, "0")}`);
 	const entries = markers.map((marker, index) => ({
 		type: "message",
 		id: `m${index}`,
@@ -46,11 +46,11 @@ test("render prints every message beyond the interactive transcript window witho
 test("render streams archived and recent pages exactly once without rewriting durable history", async () => {
 	await using fixture = await TempDir.create("@proto-render-archive-");
 	const manager = SessionManager.create(fixture.path(), fixture.path());
-	const markers = Array.from({ length: 300 }, (_, index) => `archive-render-${String(index).padStart(4, "0")}`);
+	const markers = Array.from({ length: 600 }, (_, index) => `archive-render-${String(index).padStart(4, "0")}`);
 	let kept = "";
 	for (const [index, content] of markers.entries()) {
 		const id = manager.appendMessage({ role: "user", content, timestamp: index });
-		if (index === 280) kept = id;
+		if (index === 560) kept = id;
 	}
 	manager.appendCompaction("archived-summary", undefined, kept, 5000);
 	await manager.ensureOnDisk();

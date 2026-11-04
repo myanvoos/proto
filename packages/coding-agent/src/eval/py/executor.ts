@@ -3,6 +3,13 @@ import type { ExecutionMetadata } from "../../session/execution-metadata";
 import type { ToolSession } from "../../tools";
 import type { EvalCompletionInvocationContext } from "../completion-bridge";
 import {
+	declaredStateLane,
+	discardDeclaredStateKernel,
+	enterDeclaredStateKernel,
+	isDeclaredStateKernelSafeToRelease,
+	withDeclaredStateExecution,
+} from "../declared-state";
+import {
 	buildManagedKernelEnv,
 	buildManagedKernelEnvPatch,
 	createCancelledKernelResult,
@@ -293,6 +300,26 @@ async function executeWithKernel(
 	code: string,
 	options: PythonExecutorOptions | undefined,
 ): Promise<PythonResult> {
+	if (kernel instanceof PythonKernel && options?.kernelMode !== "per-call") {
+		const ownerId = options?.kernelOwnerId ?? options?.sessionId ?? `session:${options?.cwd}`;
+		await enterDeclaredStateKernel(
+			ownerId,
+			{
+				namespace: options?.sessionId ?? `session:${options?.cwd}`,
+				generation: kernel.id,
+				metadata: {
+					language: "python",
+					lane: declaredStateLane(options?.sessionId ?? ""),
+					cwd: options?.cwd ?? getProjectDir(),
+					interpreter: kernel.interpreter,
+					target: kernel.target,
+				},
+				alive: () => kernel.isAlive(),
+				request: (action, snapshot) => kernel.declaredState(action, snapshot),
+			},
+			options?.reset,
+		);
+	}
 	return executeWithKernelBase<PythonExecutorOptions>({
 		kernel,
 		code,
@@ -390,6 +417,7 @@ const sessionRegistry = createKernelSessionRegistry<PythonKernel, PythonExecutor
 	shutdownSession: session => shutdownInvalidatedSession(session),
 	validateKernel: (session, kernel) => session.kernel === kernel,
 	kernelBusy: kernel => kernel.isBusy(),
+	kernelSafeToReap: kernel => isDeclaredStateKernelSafeToRelease(kernel.id),
 	notifySessionReaped: (options, note) =>
 		options.onStatus?.({
 			op: "kernel-idle-reap",
@@ -408,7 +436,20 @@ export async function startPythonKernelSession(options: PythonExecutorOptions): 
 	startOptions.signal?.throwIfAborted();
 	await ensureKernelAvailable(cwd, startOptions);
 	await ensureToolBridge(startOptions);
-	return await sessionRegistry.startSession(cwd, startOptions);
+	const info = await sessionRegistry.startSession(cwd, startOptions);
+	if (options.reset)
+		discardDeclaredStateKernel(
+			options.kernelOwnerId ?? options.sessionId ?? `session:${cwd}`,
+			{
+				language: "python",
+				lane: declaredStateLane(info.sessionId),
+				cwd: info.cwd,
+				interpreter: info.interpreter,
+				target: info.target,
+			},
+			info.sessionId,
+		);
+	return info;
 }
 
 export async function closePythonKernelSession(
@@ -417,7 +458,20 @@ export async function closePythonKernelSession(
 	ownerId?: string,
 	cause: KernelCloseCause = "close",
 ): Promise<void> {
+	const info = sessionRegistry.listSessions(ownerId).find(item => item.sessionKey === sessionKey);
 	await sessionRegistry.closeSession(sessionKey, { force, ownerId, cause });
+	if (info)
+		discardDeclaredStateKernel(
+			ownerId ?? info.sessionId,
+			{
+				language: "python",
+				lane: declaredStateLane(info.sessionId),
+				cwd: info.cwd,
+				interpreter: info.interpreter,
+				target: info.target,
+			},
+			info.sessionId,
+		);
 }
 
 export function keepalivePythonKernelSession(sessionKey: string, ttlMs: number): KernelSessionInfo {
@@ -451,40 +505,45 @@ export async function executePythonWithKernel(
 }
 
 export async function executePython(code: string, options?: PythonExecutorOptions): Promise<PythonResult> {
-	const cwd = resolvePythonSessionCwd(options);
-	const deadlineMs = getExecutionDeadlineMs(options);
-	const executionOptions: PythonExecutorOptions = {
-		...(options ?? {}),
-		cwd,
-		deadlineMs,
-	};
+	return withDeclaredStateExecution(
+		options?.kernelOwnerId ?? options?.sessionId ?? `session:${options?.cwd}`,
+		async () => {
+			const cwd = resolvePythonSessionCwd(options);
+			const deadlineMs = getExecutionDeadlineMs(options);
+			const executionOptions: PythonExecutorOptions = {
+				...(options ?? {}),
+				cwd,
+				deadlineMs,
+			};
 
-	try {
-		requireRemainingTimeoutMs(deadlineMs);
-		if (executionOptions.signal?.aborted) {
-			throw new PythonExecutionCancelledError(
-				isTimedOutCancellation(
-					executionOptions.signal.reason,
-					PythonExecutionCancelledError,
-					executionOptions.signal,
-				),
-			);
-		}
-		await ensureKernelAvailable(cwd, executionOptions);
-		await ensureToolBridge(executionOptions);
+			try {
+				requireRemainingTimeoutMs(deadlineMs);
+				if (executionOptions.signal?.aborted) {
+					throw new PythonExecutionCancelledError(
+						isTimedOutCancellation(
+							executionOptions.signal.reason,
+							PythonExecutionCancelledError,
+							executionOptions.signal,
+						),
+					);
+				}
+				await ensureKernelAvailable(cwd, executionOptions);
+				await ensureToolBridge(executionOptions);
 
-		const kernelMode = executionOptions.kernelMode ?? "session";
-		if (kernelMode === "per-call") {
-			return await executePerCall(code, cwd, executionOptions);
-		}
-		return await sessionRegistry.executeOnSession(code, cwd, executionOptions);
-	} catch (err) {
-		if (isCancellationError(err, PythonExecutionCancelledError) || executionOptions.signal?.aborted) {
-			return createCancelledPythonResult(
-				isTimedOutCancellation(err, PythonExecutionCancelledError, executionOptions.signal),
-				executionOptions.idleTimeoutMs,
-			);
-		}
-		throw err;
-	}
+				const kernelMode = executionOptions.kernelMode ?? "session";
+				if (kernelMode === "per-call") {
+					return await executePerCall(code, cwd, executionOptions);
+				}
+				return await sessionRegistry.executeOnSession(code, cwd, executionOptions);
+			} catch (err) {
+				if (isCancellationError(err, PythonExecutionCancelledError) || executionOptions.signal?.aborted) {
+					return createCancelledPythonResult(
+						isTimedOutCancellation(err, PythonExecutionCancelledError, executionOptions.signal),
+						executionOptions.idleTimeoutMs,
+					);
+				}
+				throw err;
+			}
+		},
+	);
 }

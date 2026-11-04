@@ -69,7 +69,7 @@ describe("AgentSession concurrent prompt dispatch", () => {
 	}
 
 	it.each(["navigateTree", "branch", "fork"] as const)(
-		"drops a prompt admitted before %s replaces its branch",
+		"refuses %s while a prompt is admitted before dispatch",
 		async transition => {
 			sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-prompt-transition-"));
 			const manager = SessionManager.create(sessionDir, sessionDir);
@@ -92,20 +92,19 @@ describe("AgentSession concurrent prompt dispatch", () => {
 			});
 			try {
 				await reached.promise;
-				if (transition === "fork") {
-					expect(await session.fork()).toBe(true);
-				} else {
-					const target = transition === "navigateTree" ? retained : abandoned;
-					expect((await session[transition](target)).cancelled).toBe(false);
-					expect(manager.getLeafId()).not.toBe(abandoned);
-				}
+				const mutation =
+					transition === "fork"
+						? session.fork()
+						: session[transition](transition === "navigateTree" ? retained : abandoned);
+				await expect(mutation).rejects.toThrow("running or admitted work");
+				expect(manager.getLeafId()).toBe(abandoned);
 			} finally {
 				release.resolve();
 			}
 			await pending;
 			expect(
 				manager.getEntries().some(entry => entry.type === "custom_message" && entry.customType === "late-prompt"),
-			).toBe(false);
+			).toBe(true);
 		},
 	);
 

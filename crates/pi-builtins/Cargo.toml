@@ -17,7 +17,7 @@ edition.workspace = true
 license = "MIT"
 authors.workspace = true
 repository.workspace = true
-rust-version = "1.88.0"
+rust-version = "1.95.0"
 description = "Builtins and in-process command-line utilities for the embedded brush shell"
 build = false
 autolib = false
@@ -35,75 +35,73 @@ bench = false
 base64.workspace = true
 brush-core = "^0.5.0"
 brush-parser = "^0.4.0"
-cfg-if = "1.0.4"
-chrono = "0.4.44"
-clap = { version = "4.6.0", features = ["cargo", "color", "derive", "env", "wrap_help"] }
-fancy-regex = "0.17"
-itertools = "0.14.0"
-parking_lot = "0.12.5"
+cfg-if = "1.0.5"
+chrono = "0.4.45"
+clap = { version = "4.6.7", features = ["cargo", "color", "derive", "env", "wrap_help"] }
+fancy-regex = "0.20.0"
+itertools = "0.15.0"
+parking_lot = "0.13.0"
 strum = "0.28.0"
-thiserror = "2.0.18"
+thiserror = "2.0.21"
 tracing = "0.1.44"
 
 
-ansi-width = "0.1.0"
-argmax = "0.3.1"
-bigdecimal = "0.4"
+ansi-width = "0.1.1"
+argmax = "0.4.0"
+bigdecimal = "0.4.11"
 binary-heap-plus = "0.5.0"
-bstr = "1.12.0"
-bytecount = { version = "0.6.8", features = ["runtime-dispatch-simd"] }
-codesnake = "0.2"
+bstr = "1.13.1"
+bytecount = { version = "0.6.9", features = ["runtime-dispatch-simd"] }
+codesnake = "0.3.0"
 compare = "0.1.0"
 faccess = "0.2.4"
-filetime = "0.2.23"
-flume = "0.11"
+filetime = "0.2.29"
+flume = "0.12.0"
 foldhash = "0.2.0"
 fs_extra = "1.3.0"
-glob = "0.3.1"
-globset = "0.4"
-grep-cli = "0.1"
-grep-matcher = "0.1"
-grep-pcre2 = "0.1"
-grep-printer = "0.3"
-grep-regex = "0.1"
-grep-searcher = "0.1"
+glob = "0.3.4"
+globset = "0.4.21"
+grep-cli = "0.1.12"
+grep-matcher = "0.1.9"
+grep-pcre2 = "0.1.10"
+grep-printer = "0.3.1"
+grep-regex = "0.1.14"
+grep-searcher = "0.1.17"
 hex = "0.4.3"
-hifijson = "0.2.0"
-hostname = "0.4"
-ignore = "0.4"
-indicatif = "0.18.0"
-jaq-core = "2.1.1"
-jaq-json = "1.1.1"
-jaq-std = "2.1.0"
-jiff = { version = "0.2.18", features = ["tzdb-bundle-platform"] }
+hostname = "0.4.2"
+ignore = "0.4.34"
+indicatif = "0.18.6"
+jaq-core = "3.1.2"
+jaq-json = "2.0.3"
+jaq-std = "3.0.4"
+jiff = { version = "0.2.39", features = ["tzdb-bundle-platform"] }
 lscolors = { version = "0.21.0", default-features = false, features = ["gnu_legacy"] }
-memchr = "2.7.4"
+memchr = "2.8.3"
 nom = "8.0.0"
-num-bigint = "0.4"
-num-traits = "0.2"
-onig = { version = "6.4", default-features = false }
+num-traits = "0.2.19"
+onig = { version = "6.5.3", default-features = false }
 os_display = "0.1.4"
-parse_datetime = "0.14"
+parse_datetime = "0.17.0"
 pi-walker = { path = "../pi-walker" }
-platform-info = "2.0.3"
-rand = { version = "0.10.0", features = ["std_rng"] }
-rayon = "1.10"
-regex = "1.11"
-rustc-hash = "2.1.1"
-self_cell = "1.0.4"
-serde_json = "1"
+platform-info = "2.2.1"
+rand = { version = "0.10.3", features = ["std_rng"] }
+rayon = "1.12.0"
+regex = "1.13.1"
+rustc-hash = "2.1.3"
+self_cell = "1.3.0"
+serde_json = "1.0.154"
 smallvec.workspace = true
-similar = "3.1.0"
-tempfile = "3.15.0"
-tokio-util = "0.7"
+similar = "3.2.1"
+tempfile = "3.27.0"
+tokio-util = "0.7.20"
 xutf.workspace = true
-libc = "0.2.172"
-memmap2 = "0.9"
-uutils_term_grid = "0.8"
+libc = "0.2.191"
+memmap2 = "0.9.12"
+uutils_term_grid = "0.8.1"
 yansi = "1.0.1"
 
 [dependencies.uucore]
-version = "0.8.0"
+version = "0.12.0"
 default-features = false
 features = [
   "backup-control",
@@ -140,21 +138,21 @@ features = [
 
 
 [target.'cfg(target_family = "wasm")'.dependencies.tokio]
-version = "1.52.1"
+version = "1.54.1"
 features = ["io-util", "macros", "rt"]
 
 [target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 procfs = "0.18.0"
 
 [target."cfg(unix)".dependencies]
-tokio = { version = "1.50.0", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "signal", "sync"] }
-dns-lookup = "3.0.0"
-nix = { version = "0.31.2", features = ["fs", "poll", "process", "resource", "signal", "term", "user"] }
-notify = { version = "=8.2.0", features = ["macos_kqueue"] }
+tokio = { version = "1.54.1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "signal", "sync"] }
+dns-lookup = "4.0.2"
+nix = { version = "0.31.3", features = ["fs", "poll", "process", "resource", "signal", "term", "user"] }
+notify = { version = "=8.2.1", features = ["macos_kqueue"] }
 rlimit = "0.11.0"
-rustix = { version = "1.1.4", features = ["fs", "process", "time"] }
-uucore = { version = "0.8.0", features = ["fsxattr", "safe-traversal"] }
-tempfile = "3"
+rustix = { version = "1.1.6", features = ["fs", "process", "time"] }
+uucore = { version = "0.12.0", features = ["fsxattr", "safe-traversal"] }
+tempfile = "3.27.0"
 
 [features]
 default = ["base", "utils"]

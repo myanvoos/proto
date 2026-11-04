@@ -11,7 +11,7 @@ test("includes a group exactly on the soft-byte tail boundary", () => {
 		const sessionFile = path.join(directory, "session.jsonl");
 		const recordBytes = 8192;
 		const records: string[] = [];
-		for (let index = 0; index < 300; index++) {
+		for (let index = 0; index < 600; index++) {
 			const base = JSON.stringify({ type: "message", message: { role: "user", content: `row-${index}` }, pad: "" });
 			const padLength = recordBytes - 1 - Buffer.byteLength(base);
 			const record = JSON.stringify({
@@ -26,10 +26,10 @@ test("includes a group exactly on the soft-byte tail boundary", () => {
 		const size = fs.statSync(sessionFile).size;
 		const window = readTranscriptTail(sessionFile, size, TRANSCRIPT_WINDOW_BYTES, TRANSCRIPT_WINDOW_MESSAGES);
 		const rows = window.records.flatMap(record => record.text?.match(/row-\d+/gu) ?? []);
-		expect(window.start).toBe(44 * recordBytes);
+		expect(window.start).toBe(88 * recordBytes);
 		expect(rows.length).toBe(TRANSCRIPT_WINDOW_MESSAGES);
-		expect(rows[0]).toBe("row-44");
-		expect(rows.at(-1)).toBe("row-299");
+		expect(rows[0]).toBe("row-88");
+		expect(rows.at(-1)).toBe("row-599");
 	} finally {
 		fs.rmSync(directory, { recursive: true, force: true });
 	}

@@ -9,10 +9,10 @@ use std::io::Write;
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use libc::{gid_t, uid_t};
+use rustix::process::{getegid, geteuid, getgid, getuid};
 use uucore::{
 	display::Quotable,
 	entries::{Locate, Passwd, get_groups_gnu, gid2grp, uid2usr},
-	process::{getegid, geteuid, getgid, getuid},
 };
 
 use crate::host::{Host, Utility, format_usage, matches_parser, util};
@@ -92,7 +92,7 @@ impl Utility for Id {
 		let mut printer =
 			Printer { out: Vec::new(), errors: Vec::new(), ok: true, use_name, use_real, zero };
 		if users.is_empty() {
-			let ids = Ids { ruid: getuid(), euid: geteuid(), rgid: getgid(), egid: getegid() };
+			let ids = Ids { ruid: getuid().as_raw(), euid: geteuid().as_raw(), rgid: getgid().as_raw(), egid: getegid().as_raw() };
 			printer.print_stuff(mode, None, &ids, false);
 		} else {
 			let multiple = users.len() > 1;

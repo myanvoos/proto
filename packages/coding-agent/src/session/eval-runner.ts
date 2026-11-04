@@ -1,6 +1,11 @@
 import type { Agent } from "@oh-my-pi/pi-agent-core";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import {
+	hasDeclaredStateContinuity,
+	releaseDeclaredStateOwner,
+	withDeclaredStateBoundary,
+} from "../eval/declared-state";
 import { releaseFsObservationLedger, retainFsObservationLedger } from "../eval/fs-observations";
 import { disposeVmContextsByOwner } from "../eval/js/context-manager";
 import { namespaceSessionId as namespacePythonSessionId } from "../eval/py";
@@ -15,6 +20,7 @@ import type { ExtensionRunner } from "../extensibility/extensions";
 import { outputMeta } from "../tools/output-meta";
 import type { PythonExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
+import { captureSessionState, stageSessionStateOnResume } from "./state-manifest";
 
 export interface EvalRunnerHost {
 	agent: Agent;
@@ -34,11 +40,13 @@ export class EvalRunner {
 	#activeExecutions = new Set<Promise<unknown>>();
 	#observationSessionId: string | undefined;
 	#disposing = false;
+	#stateSessionId: string | undefined;
 
 	constructor(host: EvalRunnerHost, options: { kernelOwnerId: string; parentSessionId: string | undefined }) {
 		this.#host = host;
 		this.#kernelOwnerId = options.kernelOwnerId;
 		this.#parentSessionId = options.parentSessionId;
+		this.#stageResumedState();
 	}
 
 	async executePython(
@@ -53,7 +61,7 @@ export class EvalRunner {
 		const cwd = this.#host.sessionManager.getCwd();
 		this.assertExecutionAllowed();
 		const abortController = new AbortController();
-		const execution = (async (): Promise<PythonResult> => {
+		const execution = withDeclaredStateBoundary(this.#kernelOwnerId, async (): Promise<PythonResult> => {
 			const extensionRunner = this.#host.extensionRunner();
 			if (extensionRunner?.hasHandlers("user_python")) {
 				const hookResult = await extensionRunner.emitUserPython(
@@ -75,6 +83,7 @@ export class EvalRunner {
 					}
 					abortController.signal.throwIfAborted();
 					this.recordPythonResult(code, hookResult.result, options);
+					if (!this.#host.isStreaming()) await captureSessionState(this.#host.sessionManager, this.#kernelOwnerId);
 					return hookResult.result;
 				}
 			}
@@ -95,8 +104,9 @@ export class EvalRunner {
 				signal: abortController.signal,
 			});
 			this.recordPythonResult(code, result, options);
+			if (!this.#host.isStreaming()) await captureSessionState(this.#host.sessionManager, this.#kernelOwnerId);
 			return result;
-		})();
+		});
 		return await this.trackExecution(execution, abortController);
 	}
 
@@ -166,6 +176,7 @@ export class EvalRunner {
 	}
 
 	getSessionId(): string | null {
+		if (this.#stateSessionId !== this.#host.sessionManager.getSessionId()) this.#stageResumedState();
 		const sessionId =
 			this.#parentSessionId ??
 			defaultEvalSessionId({
@@ -180,6 +191,15 @@ export class EvalRunner {
 			this.#observationSessionId = sessionId;
 		}
 		return sessionId;
+	}
+
+	#stageResumedState(): void {
+		const manager = this.#host.sessionManager;
+		const evalSessionId =
+			this.#parentSessionId ??
+			defaultEvalSessionId({ cwd: manager.getCwd(), getSessionFile: () => manager.getSessionFile() ?? null });
+		stageSessionStateOnResume(manager, this.#kernelOwnerId, evalSessionId);
+		this.#stateSessionId = manager.getSessionId();
 	}
 
 	syncObservationSession(): void {
@@ -202,18 +222,38 @@ export class EvalRunner {
 		this.#disposing = true;
 	}
 
+	/** Refusal precedes beginDispose/detachment; the lease spans exit capture and actual interpreter teardown. */
+	async prepareRuntimeRelease<T>(release: () => Promise<T>, prepareHistory?: () => void): Promise<T> {
+		if (this.#activeExecutions.size > 0) throw new Error("Cannot release a runtime with active eval execution");
+		return withDeclaredStateBoundary(this.#kernelOwnerId, async () => {
+			if (this.#activeExecutions.size > 0) throw new Error("Cannot release a runtime with admitted eval execution");
+			if (hasDeclaredStateContinuity(this.#kernelOwnerId))
+				await captureSessionState(
+					this.#host.sessionManager,
+					this.#kernelOwnerId,
+					this.#host.sessionManager.getLeafId(),
+					prepareHistory,
+				);
+			else prepareHistory?.();
+			return await release();
+		});
+	}
+
 	async disposeKernels(): Promise<void> {
 		const settled = await this.#prepareExecutionsForDispose();
 		if (!settled) {
 			logger.warn("Detaching retained eval-kernel ownership during dispose while eval execution is still active");
 		}
+		const errors: unknown[] = [];
 		const results = await Promise.allSettled([
 			disposeKernelSessionsByOwner(this.#kernelOwnerId),
 			disposeVmContextsByOwner(this.#kernelOwnerId),
 		]);
-		const errors: unknown[] = [];
 		for (const result of results) if (result.status === "rejected") errors.push(result.reason);
-		if (errors.length > 0) throw new AggregateError(errors, "Failed to dispose one or more eval kernels");
+		if (settled && results.every(result => result.status === "fulfilled"))
+			releaseDeclaredStateOwner(this.#kernelOwnerId);
+		if (errors.length > 0)
+			throw new AggregateError(errors, "Failed to preserve declared state or dispose eval kernels");
 	}
 
 	async #waitForExecutionsToSettle(timeoutMs: number): Promise<boolean> {

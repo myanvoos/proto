@@ -4,6 +4,7 @@ import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
 import { createCompactionSummaryMessage } from "../../session/messages";
+import { SessionManager } from "../../session/session-manager";
 import { CompactionSummaryMessageComponent } from "../components/compaction-summary-message";
 import { TranscriptContainer } from "../components/transcript-container";
 import { initTheme } from "../theme/theme";
@@ -48,7 +49,10 @@ for (const mode of ["auto context-full", "auto remote", "manual"] as const) {
 				settings: { get: () => false },
 				viewSession: {
 					isStreaming: false,
-					sessionManager: { getLatestCompactionEntry: () => ({ type: "compaction", summary: summary.summary }) },
+					sessionManager: Object.assign(SessionManager.inMemory(), {
+						getLatestCompactionEntry: () => ({ type: "compaction", summary: summary.summary }),
+					}),
+					compact: async () => ({ summary: summary.summary, firstKeptEntryId: "tail", tokensBefore: 1000 }),
 					buildDisplaySessionContext: () => ({ messages: messages.map(message => ({ ...message })) }),
 				},
 				session: {
@@ -156,7 +160,8 @@ test.each([false, true])("manual compaction failure/cancellation keeps history (
 		chatContainer,
 		ui: { requestRender: noop, requestComponentRender: noop },
 		statusContainer: new Container(),
-		session: {
+		viewSession: {
+			sessionManager: SessionManager.inMemory(),
 			compact: async () => {
 				throw cancelled ? new CompactionCancelledError() : Error("fixture failure");
 			},

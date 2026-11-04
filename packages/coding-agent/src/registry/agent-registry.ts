@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import { isEnoent, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import type { SessionManager } from "../session/session-manager";
 import { oneLineLabel } from "../task/types";
 
 export const MAIN_AGENT_ID = "Main";
@@ -95,6 +96,12 @@ export interface AgentRef {
 	label: string;
 	kind: AgentKind;
 	parentId?: string;
+	nodeId?: string;
+	parentNodeId?: string;
+	rootId?: string;
+	spawnAnchorId?: string;
+	generation?: number;
+	nodeState?: "active" | "abandoned" | "stopped";
 	status: AgentStatus;
 
 	session: AgentSession | null;
@@ -123,6 +130,12 @@ interface RegisterInput {
 	label: string;
 	kind: AgentKind;
 	parentId?: string;
+	nodeId?: string;
+	parentNodeId?: string;
+	rootId?: string;
+	spawnAnchorId?: string;
+	generation?: number;
+	nodeState?: "active" | "abandoned" | "stopped";
 	session: AgentSession | null;
 	sessionFile?: string | null;
 	fleetRoot?: string;
@@ -162,6 +175,7 @@ export class AgentRegistry {
 	}
 
 	readonly #refs = new Map<string, AgentRef>();
+	readonly #journals = new Map<string, SessionManager>();
 	readonly #mainRefs = new Set<AgentRef>();
 	readonly #refsByFleet = new Map<string, Set<AgentRef>>();
 	readonly #listeners = new Set<RegistryListener>();
@@ -275,6 +289,12 @@ export class AgentRegistry {
 			label: input.label,
 			kind: input.kind,
 			parentId: input.parentId,
+			nodeId: input.nodeId ?? (input.id === MAIN_AGENT_ID ? undefined : input.id),
+			parentNodeId: input.parentNodeId ?? (input.parentId ? this.#lookup(input.parentId)?.nodeId : undefined),
+			rootId: input.rootId ?? (input.parentId ? this.#lookup(input.parentId)?.rootId : (input.nodeId ?? input.id)),
+			spawnAnchorId: input.spawnAnchorId,
+			generation: input.generation ?? 0,
+			nodeState: input.nodeState ?? "active",
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
@@ -400,6 +420,7 @@ export class AgentRegistry {
 		const ref = this.#resolveRef(id, expected);
 		if (!ref) return false;
 		this.#unindexRef(ref);
+		if (ref.sessionFile && this.#journals.get(ref.sessionFile)?.isReleased) this.#journals.delete(ref.sessionFile);
 		if (id === MAIN_AGENT_ID) this.#mainRefs.delete(ref);
 		if (this.#lookup(id) === ref) {
 			this.#refs.delete(id);
@@ -408,6 +429,63 @@ export class AgentRegistry {
 		}
 		this.#emit({ type: "removed", ref });
 		return true;
+	}
+
+	getJournal(sessionFile: string): SessionManager | undefined {
+		const journal = this.#journals.get(sessionFile);
+		if (journal?.isReleased) {
+			this.#journals.delete(sessionFile);
+			return undefined;
+		}
+		return journal;
+	}
+
+	retainJournal(sessionFile: string, manager: SessionManager): void {
+		const existing = this.getJournal(sessionFile);
+		if (existing && existing !== manager) throw new Error(`Session journal already owned: ${sessionFile}`);
+		for (const [file, journal] of this.#journals) {
+			if (journal === manager && file !== sessionFile) this.#journals.delete(file);
+		}
+		this.#journals.set(sessionFile, manager);
+	}
+
+	async closeJournal(sessionFile: string): Promise<void> {
+		const journal = this.#journals.get(sessionFile);
+		if (!journal) return;
+		await journal.close();
+		if (this.#journals.get(sessionFile) === journal) this.#journals.delete(sessionFile);
+	}
+
+	getNode(nodeId: string, rootId?: string): AgentRef | undefined {
+		return [...this.list(), ...this.#mainRefs].find(
+			ref => ref.nodeId === nodeId && (rootId === undefined || ref.rootId === rootId),
+		);
+	}
+
+	/** Ownership traversal includes parked records; display aliases never define edges. */
+	descendants(id: string, rootId?: string): AgentRef[] {
+		const root = this.getNode(id, rootId) ?? this.get(id);
+		const treeId = root?.rootId ?? rootId;
+		if (!treeId) return [];
+		const refs = [...this.list(), ...this.#mainRefs];
+		const result: AgentRef[] = [];
+		const seen = new Set<AgentRef>(root ? [root] : []);
+		const parents = [{ id: root?.id ?? id, nodeId: root?.nodeId ?? id }];
+		for (const parent of parents) {
+			for (const child of refs) {
+				if (seen.has(child) || child.rootId !== treeId) continue;
+				if (
+					child.parentNodeId !== undefined
+						? child.parentNodeId !== parent.nodeId
+						: child.parentId !== parent.id && child.parentId !== parent.nodeId
+				)
+					continue;
+				seen.add(child);
+				result.push(child);
+				parents.push({ id: child.id, nodeId: child.nodeId ?? child.id });
+			}
+		}
+		return result;
 	}
 
 	get(id: string, expected?: AgentRefExpectation): AgentRef | undefined {

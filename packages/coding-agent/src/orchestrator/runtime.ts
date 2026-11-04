@@ -19,17 +19,20 @@ import workerTurnResultTemplate from "../prompts/tools/worker-turn-result.md" wi
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, hasAgentTombstone, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
+import { importLegacyNodeTopology, readNodeTopology } from "../session/node-topology";
 import {
 	parseSubagentUsageEntry,
+	type SessionNodeTopology,
 	SUBAGENT_USAGE_CUSTOM_TYPE,
 	type SubagentUsageTotals,
 } from "../session/session-entries";
 import { SessionManager, SessionPersistenceIndeterminateError } from "../session/session-manager";
+import { appendSessionMetadataWithState } from "../session/state-manifest";
 import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
+import { ExecutionAdmission, ensureExecutionTopology, executionIdentity } from "../task/execution-admission";
 import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
 import { generateWorkerName } from "../task/name-generator";
-import { Semaphore } from "../task/parallel";
 import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
 import type { StructuredSubagentSchemaMode, StructuredSubagentSchemaSource } from "../task/structured-subagent";
 import { type AgentDefinition, type AgentProgress, oneLineLabel, type SingleResult } from "../task/types";
@@ -81,6 +84,7 @@ export interface OrchestratorParent {
 		Partial<Pick<SessionManager, "recoverPersistenceFromCurrentState" | "getCustomEntryDataForMetadata">>;
 	asyncJobManager?: AsyncJobManager;
 	settings: ToolSession["settings"];
+	eventBus?: ToolSession["eventBus"];
 	modelRegistry?: ToolSession["modelRegistry"];
 	getActiveModelString?: () => string | undefined;
 	getModelString?: () => string | undefined;
@@ -505,6 +509,7 @@ export class OrchestratorRuntime {
 			current.#retiredRecords?.close();
 		}
 		OrchestratorRuntime.#global = undefined;
+		ExecutionAdmission.resetGlobalForTests();
 	}
 
 	registerRecordForTests(record: {
@@ -642,15 +647,11 @@ export class OrchestratorRuntime {
 	}
 
 	/** Last tool session seen per scope, so an IRC wake can register its turn without one in hand. */
-	readonly #toolSessionByScope = new Map<string, ToolSession>();
+	readonly #toolSessionByScope = new Map<string, { runtime?: WeakRef<ToolSession>; owner: OrchestratorParent }>();
 	/** Wake turns can outlive their worker record while the externally driven turn settles. */
 	readonly #pendingWakeScopes = new Set<string>();
 	readonly #terminationTails = new Map<string, Promise<void>>();
-	#turnSemaphoreState: { limit: number; semaphore: Semaphore } | undefined;
-	readonly #runnableTurns = new Map<
-		string,
-		{ semaphore: Semaphore; signal: AbortSignal; held: boolean; waits: number }
-	>();
+
 	#testResolvedWorker: ResolvedWorker | undefined;
 	#teardownGraceMs = TEARDOWN_GRACE_MS;
 
@@ -670,8 +671,42 @@ export class OrchestratorRuntime {
 	/** Scope of a tool call, remembering the session so wake turns started later can be tracked. */
 	#activeScope(session: ToolSession): OwnerScope {
 		const scope = this.ownerScope(session);
-		this.#toolSessionByScope.set(scopeKey(scope, ""), session);
+		this.#toolSessionByScope.set(scopeKey(scope, ""), {
+			runtime: new WeakRef(session),
+			owner: this.#ownerSnapshot(session),
+		});
 		return scope;
+	}
+
+	#ownerSnapshot(session: OrchestratorParent): OrchestratorParent {
+		const scope = this.ownerScope(session);
+		const manager = session.sessionManager;
+		const activeModel = session.getActiveModelString?.();
+		const configuredModel = session.getModelString?.();
+		return {
+			cwd: session.cwd,
+			sessionManager: manager,
+			settings: session.settings,
+			asyncJobManager: session.asyncJobManager,
+			modelRegistry: session.modelRegistry,
+			eventBus: session.eventBus,
+			outputSchema: session.outputSchema,
+			outputSchemaMode: session.outputSchemaMode,
+			getAgentId: () => scope.ownerId,
+			getSessionId: () => manager?.getSessionId() ?? scope.parentSessionId,
+			getSessionFile: () => (manager ? (manager.getSessionFile() ?? null) : scope.parentSessionFile),
+			getAsyncJobOwnerId: () => scope.jobOwnerId,
+			getActiveModelString: () => activeModel,
+			getModelString: () => configuredModel,
+		};
+	}
+
+	/** Parking drops the view/runtime attachment, never the durable owner journal or descendant work. */
+	releaseScopeRuntime(scope: OwnerScope): void {
+		const key = scopeKey(scope, "");
+		const attachment = this.#toolSessionByScope.get(key);
+		if (attachment) attachment.runtime = undefined;
+		this.#retireScopeIfUnused(key, true);
 	}
 
 	ownerScope(session: OrchestratorParent): OwnerScope {
@@ -686,21 +721,6 @@ export class OrchestratorRuntime {
 			parentSessionFile: parentSessionFile ? path.resolve(parentSessionFile) : null,
 			jobOwnerId: session.getAsyncJobOwnerId?.() ?? parentSessionId,
 		};
-	}
-
-	#turnSemaphore(session: ToolSession): Semaphore {
-		const limit = Math.max(0, Math.trunc(session.settings.get("orchestrator.maxConcurrency") ?? 0));
-		const existing = this.#turnSemaphoreState;
-		if (existing) {
-			if (existing.limit !== limit) {
-				existing.limit = limit;
-				existing.semaphore.resize(limit);
-			}
-			return existing.semaphore;
-		}
-		const semaphore = new Semaphore(limit);
-		this.#turnSemaphoreState = { limit, semaphore };
-		return semaphore;
 	}
 
 	#scopeRecords(scope: OwnerScope): Map<string, WorkerRecord> {
@@ -880,9 +900,21 @@ export class OrchestratorRuntime {
 		if (!matchesCurrentScope()) return false;
 		await session.sessionManager.ensureOnDisk();
 		if (!matchesCurrentScope()) return false;
-		session.sessionManager.appendCustomEntry(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE, event);
-		await session.sessionManager.flush();
+		const manager = session.sessionManager;
+		await this.#appendOwnerMetadata(session, () =>
+			manager.appendCustomEntry(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE, event),
+		);
+		await manager.flush();
 		return true;
+	}
+
+	async #appendOwnerMetadata(session: OrchestratorParent, append: () => void): Promise<void> {
+		const manager = session.sessionManager;
+		const topology = manager?.getNodeTopology();
+		const parent = topology ? AgentRegistry.global().getNode(topology.id, topology.rootId) : undefined;
+		if (manager && parent && (!parent.session || parent.session.isDisposed)) {
+			await appendSessionMetadataWithState(manager, append);
+		} else append();
 	}
 
 	#eventBase(record: WorkerRecord): WorkerLifecycleBase {
@@ -927,7 +959,7 @@ export class OrchestratorRuntime {
 		return terminalReason !== undefined;
 	}
 
-	#manager(session: ToolSession): AsyncJobManager {
+	#manager(session: OrchestratorParent): AsyncJobManager {
 		const manager = session.asyncJobManager;
 		if (!manager) {
 			throw new ToolError("Orchestrator workers require async execution (no background job manager is available).");
@@ -1281,8 +1313,8 @@ export class OrchestratorRuntime {
 		this.#finishAgentRelease(id, ref, task, action);
 	}
 
-	#trackJobSettlement(record: WorkerRecord, job: AsyncJob): TrackedTeardown {
-		return trackTeardown(job.promise, error => {
+	#trackJobSettlement(record: WorkerRecord, job: AsyncJob, manager: AsyncJobManager): TrackedTeardown {
+		return trackTeardown(manager.waitForJobSettlement(job.id), error => {
 			logger.warn("orchestrator: cancelled worker turn cleanup failed", {
 				id: record.id,
 				jobId: job.id,
@@ -1335,10 +1367,42 @@ export class OrchestratorRuntime {
 		});
 	}
 
+	async #ownedChildTopology(
+		session: OrchestratorParent,
+		childFile: string,
+		id: string,
+		anchor: string,
+		allowUnstarted = false,
+	): Promise<SessionNodeTopology | undefined> {
+		const parent = session.sessionManager?.getNodeTopology();
+		if (parent?.state !== "active") return;
+		try {
+			const exists = await Bun.file(childFile).exists();
+			const node = exists
+				? ((await readNodeTopology(childFile)) ?? (await importLegacyNodeTopology(childFile)))
+				: allowUnstarted
+					? {
+							id,
+							parentId: parent.id,
+							rootId: parent.rootId,
+							spawnAnchorId: anchor,
+							generation: 0,
+							state: "active" as const,
+						}
+					: undefined;
+			if (!node || node.id !== id || node.parentId !== parent.id || node.rootId !== parent.rootId) return;
+			return node;
+		} catch (error) {
+			logger.warn("orchestrator: rejected inconsistent persisted worker ownership", { id, error: String(error) });
+			return;
+		}
+	}
+
 	async rehydrate(session: OrchestratorParent, toolSession?: ToolSession): Promise<number> {
 		const sessionFile = session.getSessionFile();
 		const sessionManager = session.sessionManager;
 		if (!sessionFile || !sessionManager) return 0;
+		await ensureExecutionTopology(session);
 		const scope = this.ownerScope(session);
 		const allSpawns = new Map<string, string>();
 		const terminalIntents = new Map<string, WorkerTombstoneReason>();
@@ -1400,6 +1464,7 @@ export class OrchestratorRuntime {
 			if (spawn?.action !== "spawn") continue;
 			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn);
 			if (!childSessionFile) continue;
+			if (!(await this.#ownedChildTopology(session, childSessionFile, id, entryId!))) continue;
 			await this.#markTerminalRef(id, scope.ownerId, childSessionFile, undefined, undefined, spawn.label);
 			this.#deleteRecord(scope, id);
 		}
@@ -1414,6 +1479,14 @@ export class OrchestratorRuntime {
 			const initialPending = candidate.turnCount === 0 || (candidate.inFlight && !candidate.initialized);
 			const childSessionFile = await this.#resolvePersistedChild(sessionFile, spawn, initialPending);
 			if (!childSessionFile) continue;
+			const node = await this.#ownedChildTopology(
+				session,
+				childSessionFile,
+				spawn.id,
+				candidate.spawnEntryId,
+				initialPending,
+			);
+			if (!node || node.state === "abandoned") continue;
 			if (this.#lookupRecord(scope, spawn.id)) continue;
 			const existing = AgentRegistry.global().get(spawn.id);
 			let tombstoned: boolean;
@@ -1426,7 +1499,7 @@ export class OrchestratorRuntime {
 				});
 				continue;
 			}
-			if (tombstoned) {
+			if (tombstoned || node.state === "stopped") {
 				await this.#markTerminalRef(
 					spawn.id,
 					scope.ownerId,
@@ -1463,6 +1536,12 @@ export class OrchestratorRuntime {
 			if (!existing) {
 				AgentRegistry.global().register({
 					id: spawn.id,
+					nodeId: node.id,
+					rootId: node.rootId,
+					parentNodeId: node.parentId,
+					spawnAnchorId: node.spawnAnchorId,
+					generation: node.generation,
+					nodeState: node.state,
 					label: spawn.label,
 					kind: "sub",
 					parentId: scope.ownerId,
@@ -1471,6 +1550,7 @@ export class OrchestratorRuntime {
 					status: "parked",
 				});
 			}
+			ExecutionAdmission.global().restoreNode(node.id, node.parentId!, node.rootId);
 			this.#setRecord(scope, {
 				id: spawn.id,
 				agentName: spawn.agent,
@@ -1550,6 +1630,7 @@ export class OrchestratorRuntime {
 			schemaMode?: StructuredSubagentSchemaMode;
 		},
 	): Promise<SpawnOutcome> {
+		await ensureExecutionTopology(session);
 		const scope = this.#activeScope(session);
 		// Reserve before the lock, discovery, worker graph, or persisted spawn can retain the request.
 		const admission = this.#manager(session).reserve({
@@ -1603,7 +1684,7 @@ export class OrchestratorRuntime {
 			: (agent.output ?? session.outputSchema);
 		admission.resize(Buffer.byteLength(JSON.stringify({ ...args, outputSchema })));
 		const schema = this.#resolveOutputSchema(session, agent, args);
-		if (this.#toolSessionByScope.get(scopeKey(scope, "")) !== session) {
+		if (this.#toolSessionByScope.get(scopeKey(scope, ""))?.runtime?.deref() !== session) {
 			throw new ToolError("Orchestrator parent scope was suspended while the spawn request was being prepared.");
 		}
 		const reservedIds = this.#persistedIds(session, scope);
@@ -1616,6 +1697,14 @@ export class OrchestratorRuntime {
 		const label = requestedLabel ?? generateWorkerName();
 		let id = `worker-${Snowflake.next()}`;
 		while (reservedIds.has(id) || AgentRegistry.global().get(id)) id = `worker-${Snowflake.next()}`;
+		const identity = executionIdentity(session);
+		const nodeReservation = ExecutionAdmission.global().reserveSpawn({
+			nodeId: id,
+			parentId: identity.nodeId,
+			treeId: identity.treeId,
+			maxChildren: session.settings.get("orchestrator.maxChildrenPerNode"),
+			maxNodes: session.settings.get("orchestrator.maxNodesPerTree"),
+		});
 		const parentSessionFile = scope.parentSessionFile;
 		const childSessionName = `${id}.jsonl`;
 		const childSessionFile = parentSessionFile
@@ -1674,8 +1763,10 @@ export class OrchestratorRuntime {
 				throw new ToolError("Orchestrator parent scope was suspended before the worker could start.");
 			const jobId = this.#registerTurnJob(session, manager, record, args.message, { first: true, admission });
 			if (childSessionFile) await registerSessionFile(id, childSessionFile);
+			nodeReservation.commit();
 			return { id, label, jobId };
 		} catch (error) {
+			nodeReservation.release();
 			record.killed = true;
 			record.state = "dead";
 			record.lastActivityAt = Date.now();
@@ -1899,22 +1990,7 @@ export class OrchestratorRuntime {
 	 * starve them at `orchestrator.maxConcurrency`. Overlapping waits share one release.
 	 */
 	async withWaitPermit<T>(session: OrchestratorParent, run: () => Promise<T>): Promise<T> {
-		const runnable = this.#runnableTurns.get(session.getAgentId?.() ?? MAIN_AGENT_ID);
-		if (!runnable) return run();
-		runnable.waits++;
-		if (runnable.held) {
-			runnable.held = false;
-			runnable.semaphore.release();
-		}
-		try {
-			return await run();
-		} finally {
-			if (--runnable.waits === 0 && !runnable.signal.aborted) {
-				await runnable.semaphore.acquire(runnable.signal);
-				if (runnable.waits === 0) runnable.held = true;
-				else runnable.semaphore.release();
-			}
-		}
+		return ExecutionAdmission.global().withWaitPermit(executionIdentity(session).nodeId, run);
 	}
 
 	async suspendScope(scope: OwnerScope, manager?: AsyncJobManager): Promise<number> {
@@ -1941,7 +2017,7 @@ export class OrchestratorRuntime {
 		const cleanup = teardown.map(entry => ({
 			...entry,
 			releaseTask: entry.ref ? this.#trackAgentRelease(entry.record.id, entry.ref, "detach") : undefined,
-			jobTask: entry.job ? this.#trackJobSettlement(entry.record, entry.job) : undefined,
+			jobTask: entry.job && manager ? this.#trackJobSettlement(entry.record, entry.job, manager) : undefined,
 		}));
 		await waitForTeardown(
 			cleanup.flatMap(entry => [entry.releaseTask, entry.jobTask].filter(task => task !== undefined)),
@@ -2073,7 +2149,9 @@ export class OrchestratorRuntime {
 		record.lastActivity = "killed";
 		const deadline = teardownDeadline ?? Date.now() + this.#teardownGraceMs;
 		const releaseTask = registered ? this.#trackAgentRelease(record.id, registered, "release") : undefined;
-		const jobCleanup = [...settlingJobs].map(job => ({ job, task: this.#trackJobSettlement(record, job) }));
+		const jobCleanup = manager
+			? [...settlingJobs].map(job => ({ job, task: this.#trackJobSettlement(record, job, manager) }))
+			: [];
 		await waitForTeardown(
 			[releaseTask, ...jobCleanup.map(entry => entry.task)].filter(task => task !== undefined),
 			deadline,
@@ -2093,12 +2171,14 @@ export class OrchestratorRuntime {
 		if (pendingJobs.length > 0) {
 			this.#continueKilledCleanup(
 				record,
-				pendingJobs.map(entry => entry.task),
+				[...pendingJobs.map(entry => entry.task), ...(releaseTask ? [releaseTask] : [])],
 				registered,
 				manager,
 			);
 		} else {
 			this.#evictWorkerJobs(manager, record);
+			if (!releaseTask || releaseTask.status() === "settled")
+				await ExecutionAdmission.global().settleNode(record.id);
 		}
 		if (persistenceError) {
 			let finalPersistenceError = persistenceError;
@@ -2165,7 +2245,9 @@ export class OrchestratorRuntime {
 		manager?: AsyncJobManager,
 	): void {
 		void Promise.allSettled(jobTasks.map(task => task.promise))
-			.then(() => {
+			.then(async () => {
+				if (jobTasks.every(task => task.status() === "settled"))
+					await ExecutionAdmission.global().settleNode(record.id);
 				this.#evictWorkerJobs(manager, record);
 				return this.#markTerminalRecord(record, expected, Date.now() + this.#teardownGraceMs);
 			})
@@ -2199,7 +2281,15 @@ export class OrchestratorRuntime {
 			getArtifactsDir: session.getArtifactsDir ?? (() => null),
 			getSessionId: session.getSessionId ?? (() => null),
 		};
+		let spawnAnchorId: string | undefined;
+		for (const entry of session.sessionManager?.iterateCustomEntries(ORCHESTRATOR_LIFECYCLE_CUSTOM_TYPE) ?? []) {
+			const event = parseLifecycleEvent(entry.data);
+			if (event?.action === "spawn" && event.id === record.id) spawnAnchorId = entry.id;
+		}
 		return {
+			rootExtensionEnvironment: session.rootExtensionEnvironment,
+			parentNode: session.sessionManager?.getNodeTopology(),
+			spawnAnchorId,
 			cwd: session.cwd,
 			agent,
 			task: message,
@@ -2272,7 +2362,7 @@ export class OrchestratorRuntime {
 		return (progress: AgentProgress): void => {
 			if (record.state === "dead" || record.terminal) return;
 			mergeTrace(turn, progress);
-			const manager = this.#toolSessionByScope.get(scopeKey(record, ""))?.asyncJobManager;
+			const manager = this.#toolSessionByScope.get(scopeKey(record, ""))?.owner.asyncJobManager;
 			const job = manager?.getJob(turn.jobId);
 			if (job?.status === "running" && job.ownerId === record.jobOwnerId && record.turn === turn) {
 				job.latestDetails = { ...job.latestDetails, progress: [progress] };
@@ -2295,15 +2385,15 @@ export class OrchestratorRuntime {
 
 	/** Drives a turn the orchestrator owns: the first turn spawns the worker, later ones continue it. */
 	async #runOwnTurn(
-		session: ToolSession,
+		session: OrchestratorParent,
 		record: WorkerRecord,
 		message: string,
 		signal: AbortSignal,
 		onProgress: (progress: AgentProgress) => void,
-		first: boolean,
+		initialSession?: ToolSession,
 	): Promise<SingleResult> {
-		if (first) {
-			return runSubprocess(await this.#buildSpawnOptions(session, record, message, signal, onProgress));
+		if (initialSession) {
+			return runSubprocess(await this.#buildSpawnOptions(initialSession, record, message, signal, onProgress));
 		}
 		// Consumed even if the turn fails: a failed application surfaces as that turn's error,
 		// and a succeeded one must not be re-applied (it would reset provider conversation state).
@@ -2351,7 +2441,7 @@ export class OrchestratorRuntime {
 	#claimWakeTurn(scope: OwnerScope, record: WorkerRecord, task: string): WakeTurnClaim | undefined {
 		if (record.terminal || record.state === "dead" || record.killed || record.suspended) return undefined;
 		if (this.#lookupRecord(scope, record.id) !== record) return undefined;
-		const session = this.#toolSessionByScope.get(scopeKey(scope, ""));
+		const session = this.#toolSessionByScope.get(scopeKey(scope, ""))?.owner;
 		if (!session) return undefined;
 		if (record.turn) {
 			logger.warn("orchestrator: woken worker turn overlaps a tracked turn; its result is not delivered", {
@@ -2402,7 +2492,7 @@ export class OrchestratorRuntime {
 	}
 
 	#registerTurnJob(
-		session: ToolSession,
+		session: OrchestratorParent,
 		manager: AsyncJobManager,
 		record: WorkerRecord,
 		message: string,
@@ -2415,6 +2505,12 @@ export class OrchestratorRuntime {
 			queuedTurn?: number;
 		},
 	): string {
+		const owner = this.#ownerSnapshot(session);
+		const initialSession = options.first
+			? this.#toolSessionByScope.get(scopeKey(record, ""))?.runtime?.deref()
+			: undefined;
+		if (options.first && !initialSession) throw new ToolError("Initial worker admission lost its runtime inputs");
+		let settlement: Promise<void> | undefined;
 		const turnIndex = options.queuedTurn ?? record.turnCount + 1;
 		const gate = options.queuedTurn !== undefined ? Promise.withResolvers<void>() : undefined;
 		let queuedEntry: QueuedTurn | undefined;
@@ -2427,7 +2523,6 @@ export class OrchestratorRuntime {
 		};
 		const onProgress = this.#turnProgressHandler(record, turn);
 
-		const semaphore = this.#turnSemaphore(session);
 		const jobId = manager.register(
 			"worker",
 			`${record.label} (${record.id}): ${firstLine(message, 60)}`,
@@ -2439,64 +2534,83 @@ export class OrchestratorRuntime {
 						`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] queued turn cancelled before it started`,
 					);
 				}
-				const runnable = { semaphore, signal, held: false, waits: 0 };
 				let started = false;
-				try {
-					// An external turn is already running outside the orchestrator, so it must not wait
-					// behind a semaphore permit it cannot hold; every other turn takes its permit first.
-					if (!options.external) {
-						await semaphore.acquire(signal);
-						runnable.held = true;
-						this.#runnableTurns.set(record.id, runnable);
-					}
-					started = true;
-					markRunning();
-					record.state = "running";
-					record.lastActivityAt = Date.now();
+				const execute = async () => {
 					try {
-						const turnStartedPersisted = await this.#appendLifecycleEvent(
-							session,
-							{
-								...this.#eventBase(record),
-								action: "turn-started",
-								turn: turnIndex,
-							},
-							record.parentSessionFile,
-						);
-						if (record.childSessionFile && !turnStartedPersisted) {
-							throw new ToolError(`Worker "${record.id}" changed parent scope before its turn started.`);
-						}
-						const forwardAbort = (): void => options.externalAbort?.abort(signal.reason);
-						if (signal.aborted) forwardAbort();
-						signal.addEventListener("abort", forwardAbort, { once: true });
-						let result: SingleResult;
+						started = true;
+						markRunning();
+						record.state = "running";
+						record.lastActivityAt = Date.now();
 						try {
-							result = options.external
-								? await this.#awaitExternalTurn(options.external, signal)
-								: await this.#runOwnTurn(session, record, message, signal, onProgress, options.first);
-						} finally {
-							signal.removeEventListener("abort", forwardAbort);
+							const turnStartedPersisted = await this.#appendLifecycleEvent(
+								owner,
+								{
+									...this.#eventBase(record),
+									action: "turn-started",
+									turn: turnIndex,
+								},
+								record.parentSessionFile,
+							);
+							if (record.childSessionFile && !turnStartedPersisted) {
+								throw new ToolError(`Worker "${record.id}" changed parent scope before its turn started.`);
+							}
+							const forwardAbort = (): void => options.externalAbort?.abort(signal.reason);
+							if (signal.aborted) forwardAbort();
+							signal.addEventListener("abort", forwardAbort, { once: true });
+							let result: SingleResult;
+							try {
+								result = options.external
+									? await this.#awaitExternalTurn(options.external, signal)
+									: await this.#runOwnTurn(owner, record, message, signal, onProgress, initialSession);
+							} finally {
+								signal.removeEventListener("abort", forwardAbort);
+							}
+							return await this.#settleTurn(owner, record, turn, ownJobId, turnIndex, result);
+						} catch (error) {
+							if (error instanceof WorkerTurnError) throw error;
+							await this.#finishTurn(owner, record, ownJobId);
+							const reason = error instanceof Error ? error.message : String(error);
+							record.lastActivity = firstLine(`turn failed: ${reason}`);
+							throw new WorkerTurnError(
+								`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn failed: ${reason}`,
+							);
 						}
-						return await this.#settleTurn(session, record, turn, ownJobId, turnIndex, result);
 					} catch (error) {
-						if (error instanceof WorkerTurnError) throw error;
-						await this.#finishTurn(session, record, ownJobId);
+						if (started) throw error;
+						await this.#finishTurn(owner, record, ownJobId);
 						const reason = error instanceof Error ? error.message : String(error);
-						record.lastActivity = firstLine(`turn failed: ${reason}`);
 						throw new WorkerTurnError(
-							`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn failed: ${reason}`,
+							`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn cancelled while queued: ${reason}`,
 						);
 					}
+				};
+				// Wake/focused turns acquire through AgentSession; their owner job only observes settlement.
+				try {
+					return await (options.external
+						? execute()
+						: ExecutionAdmission.global().runTurn(
+								{
+									nodeId: record.id,
+									treeId: executionIdentity(owner).treeId,
+									maxConcurrency: owner.settings.get("orchestrator.maxConcurrency"),
+									onSettlement: completion => {
+										settlement = completion;
+									},
+									onFailure: () => {
+										manager.cancel(ownJobId, { ownerId: record.jobOwnerId });
+									},
+									signal,
+								},
+								execute,
+							));
 				} catch (error) {
-					if (started) throw error;
-					await this.#finishTurn(session, record, ownJobId);
-					const reason = error instanceof Error ? error.message : String(error);
-					throw new WorkerTurnError(
-						`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn cancelled while queued: ${reason}`,
-					);
-				} finally {
-					if (this.#runnableTurns.get(record.id) === runnable) this.#runnableTurns.delete(record.id);
-					if (runnable.held) semaphore.release();
+					if (!started) {
+						await this.#finishTurn(owner, record, ownJobId);
+						throw new WorkerTurnError(
+							`[worker:${record.id} agent=${record.agentName} turn=${turnIndex}] turn cancelled while queued: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+					throw error;
 				}
 			},
 			{
@@ -2505,6 +2619,7 @@ export class OrchestratorRuntime {
 				ownerId: record.jobOwnerId,
 				queued: true,
 				admission: options.admission,
+				settlement: () => settlement,
 				bytes: Buffer.byteLength(message),
 			},
 		);
@@ -2548,7 +2663,7 @@ export class OrchestratorRuntime {
 		}
 	}
 
-	async #finishTurn(session: ToolSession, record: WorkerRecord, settledJobId: string): Promise<void> {
+	async #finishTurn(session: OrchestratorParent, record: WorkerRecord, settledJobId: string): Promise<void> {
 		if (record.lastJobId === settledJobId && record.turn?.jobId !== settledJobId) return;
 		record.lastJobId = settledJobId;
 		for (const cleanup of record.steeringCleanups ?? []) cleanup();
@@ -2626,7 +2741,7 @@ export class OrchestratorRuntime {
 	}
 
 	async #settleTurn(
-		session: ToolSession,
+		session: OrchestratorParent,
 		record: WorkerRecord,
 		turn: WorkerTurn,
 		settledJobId: string,
@@ -2643,12 +2758,14 @@ export class OrchestratorRuntime {
 		);
 
 		const turnUsage = subagentRunUsage(result, record.nestedUsage);
-		record.nestedUsage = recordSubagentRun(session, result, {
-			agentId: record.id,
-			agent: record.agentName,
-			label: record.label,
-			turn: turnIndex,
-			...(record.nestedUsage ? { nestedBaseline: record.nestedUsage } : {}),
+		await this.#appendOwnerMetadata(session, () => {
+			record.nestedUsage = recordSubagentRun(session, result, {
+				agentId: record.id,
+				agent: record.agentName,
+				label: record.label,
+				turn: turnIndex,
+				...(record.nestedUsage ? { nestedBaseline: record.nestedUsage } : {}),
+			});
 		});
 		if (turnUsage) {
 			record.usage.tokens += turnUsage.totalTokens;

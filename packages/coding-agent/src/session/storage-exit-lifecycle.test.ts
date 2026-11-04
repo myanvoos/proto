@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const REPO_ROOT = path.resolve(import.meta.dir, "../../../..");
@@ -52,7 +53,9 @@ async function runScript(source: string): Promise<ScriptResult> {
 async function copyMainDatabase(dbPath: string): Promise<string> {
 	const copyPath = `${dbPath}.main-copy`;
 	await Bun.write(copyPath, Bun.file(dbPath));
-	return copyPath;
+	// Read only the copied main file: immutable mode neither needs nor recovers from WAL sidecars.
+	// A normal read-only WAL connection requires its -wal/-shm files on this SQLite runtime.
+	return `${pathToFileURL(copyPath).href}?immutable=1`;
 }
 
 function readHistoryRow(dbPath: string): HistoryRow | null {

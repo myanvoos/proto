@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../config/settings";
+import { SessionManager } from "../../session/session-manager";
 import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { CommandController } from "./command-controller";
@@ -18,6 +19,7 @@ test("focused jobs display comes from the viewed agent rather than the main sess
 			},
 		},
 		viewSession: {
+			sessionManager: SessionManager.inMemory(),
 			getAsyncJobSnapshot: () => ({
 				running: [],
 				recent: [
@@ -34,25 +36,45 @@ test("focused jobs display comes from the viewed agent rather than the main sess
 	expect(text).toContain("worker-owned command");
 });
 
-test("focused jobs is available without returning to main but mutation verbs remain gated", async () => {
+test("focused jobs cancellation only reaches jobs owned by the selected node", async () => {
 	let draft = "/jobs";
 	let views = 0;
+	const cancelled: string[] = [];
 	const statuses: string[] = [];
+	const manager = SessionManager.inMemory();
 	const ctx = {
 		focusedAgentId: "worker",
 		editor: {
 			getExpandedText: () => draft,
+			setText: (text: string) => {
+				draft = text;
+			},
 			pendingImages: [],
 			pendingImageLinks: [],
 			clearDraft: () => {
 				draft = "";
 			},
 		},
-		viewSession: {},
+		viewSession: {
+			sessionManager: manager,
+			getAsyncJobSnapshot: () => ({ running: [{ id: "child-job" }], recent: [] }),
+			cancelAsyncJob: (id: string) => {
+				cancelled.push(id);
+				return true;
+			},
+		},
+		session: {
+			cancelAsyncJob: () => {
+				throw new Error("root cancellation leaked");
+			},
+		},
 		handleJobsCommand: async () => {
 			views++;
 		},
 		showStatus: (status: string) => statuses.push(status),
+		showError: (message: string) => {
+			throw new Error(message);
+		},
 	} as unknown as InteractiveModeContext;
 	const controller = new InputController(ctx);
 	await controller.handleFollowUp();
@@ -60,7 +82,9 @@ test("focused jobs is available without returning to main but mutation verbs rem
 	expect(draft).toBe("");
 	draft = "/jobs kill owned-by-main";
 	await controller.handleFollowUp();
-	expect(views).toBe(1);
-	expect(draft).toBe("/jobs kill owned-by-main");
-	expect(statuses[0]).toContain("main session");
+	expect(cancelled).toEqual([]);
+	draft = "/jobs kill child-job";
+	await controller.handleFollowUp();
+	expect(cancelled).toEqual(["child-job"]);
+	expect(statuses[0]).toContain("No running background job");
 });

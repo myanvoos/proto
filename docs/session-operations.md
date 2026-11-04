@@ -16,8 +16,9 @@ This document describes operator-visible behavior for conversation reset, lifecy
 | `/new`                                  | Interactive slash command    | Yes (starts an empty conversation)            | Switches identity; assigns a new transcript path in persistent mode                        | None                                                                                |
 | `/clear`                                | Interactive slash command    | Yes (clears live/model conversation context)  | No; retains session identity, metadata, transcript file, and full on-disk history          | Appends a durable `reset_boundary`                                                  |
 | `/session delete`                       | Interactive slash command    | Yes (after confirmation, returns to selector) | Deletes the current persisted session JSONL and artifact directory, then opens the session selector | None                                                                                |
-| `/fork`                                 | Interactive slash command    | Yes (active session identity changes)         | Creates new session file and switches current session to it (persistent mode only)         | Copies artifact directory to new session namespace when present                     |
-| `--fork <id\|path>`                     | CLI startup                  | Yes after session creation                    | Creates a new session fork from the selected source into current cwd/session dir           | None                                                                                |
+| `/tree`, `/branch`                       | Selected-node slash/key action | Yes (same node's active continuation changes) | Retains node identity and transcript; commits the temporal cut and generation             | Captures/restores exact declared state; preserves historical branches                |
+| `/fork`                                 | Selected-node slash command | Source unchanged; foreground adopts fresh root | Creates a new persisted independent root from the selected node's active lineage         | Copies readable output payloads, excluding descendant histories/artifact directories |
+| `--fork <id\|path>`                     | CLI startup                  | Yes after session creation                    | Creates a stored-history fork from the selected source into current cwd/session dir       | Copies stored artifacts; no interactive declared-state transfer                     |
 | `/resume [id\|@claude\|@codex]`         | Interactive slash command    | Yes (active in-memory state replaced)         | Switches to a selected/matched session, or imports a selected foreign session              | None                                                                                |
 | `--resume`                              | CLI startup picker           | Yes after session creation                    | Opens selected existing session file                                                       | None                                                                                |
 | `--resume <id\|path>`                   | CLI startup                  | Yes after session creation                    | Opens existing session; a missing recorded cwd may be re-rooted into the current directory | None                                                                                |
@@ -55,43 +56,50 @@ The TUI clears its rendered transcript after a successful clear. This differs
 from `/new`, which creates a new session identity and transcript file, and from
 `/session delete`, which deletes the persisted session entirely.
 
+## Temporal navigation and branch
+
+Interactive `/tree` and `/branch` act on the selected node, including a focused worker. They retain its identity and transcript: `/tree` changes the active continuation at the selected boundary; `/branch` selects a user message, moves before it, and returns its text/images as an editable draft. The discarded continuation remains historical data rather than being deleted.
+
+The backend freezes admissions into the affected subtree, atomically refuses running/admitted turns or pending spawns, and holds the source kernel boundary gate through state preparation and activation. A busy ancestor or sibling does not by itself block an idle node. State compatibility and exact-boundary availability are checked before destructive navigation.
+
+Child abandonment follows durable spawn anchors and entry ancestry, not creation timestamps. Children whose anchors remain on the retained lineage stay addressable. Children created only in the abandoned continuation, and their descendants, become **permanently browse-only in those generations**: sends, revival and mutations are refused. Reopening or revisiting the old historical branch does not reactivate them. Abandoned generations are distinct from explicitly stopped/killed nodes.
+
+A durable temporal journal records the cut, generation and abandoned children before header updates. An interrupted committed cut is recovered on reopen; a damaged runtime cannot continue stale context. A child's later continuation does not change a result already recorded in its parent's transcript. See the [tree reference](./tree.md#child-ownership-and-historical-branches) for selection and summary behavior.
+
+Model [`checkpoint`/`rewind(report)`](./tools/rewind.md) is different: it compresses model context while preserving current interpreter computation and external state. It does not apply user temporal-state restoration or abandon workers merely because exploratory prose was removed.
+
 ## Fork
 
-Interactive `/fork` creates a new session from the current one and switches the active session identity.
+Interactive `/fork` constructs a **fresh independent root** from the selected node's active lineage, even when that node is several worker levels deep. The foreground adopts the returned root; the source runtime, ownership tree, transcript and previously recorded parent results remain unchanged. Fork provenance is historical metadata, not a parent ownership edge.
 
-### Preconditions and immediate guards
+### Preconditions and backend result
 
-- If agent is streaming, `/fork` is rejected with warning.
-- UI status/loading indicators are cleared before operation.
+- The selected node and its subtree must have no running/admitted work or pending spawn reservation. The backend admission freeze closes races that an earlier UI streaming check cannot catch.
+- The source generation must be active and have durable history. Abandoned/stopped histories are browse-only, and an in-memory-only source is refused rather than silently exported.
+- Exact declared state must be capturable and compatible. Unsupported aliases/resources or corrupt state fail visibly, rather than producing an approximate fork.
+- `AgentSession.fork()` returns the newly constructed `AgentSession`, or `undefined` when the before-switch hook cancels. It does not turn the source worker object into a root. An embedding without an independent-root factory receives an explicit error.
 
 ### Session-level flow
 
-`AgentSession.fork()`:
+1. Freeze subtree admissions and source kernel execution; check the affected node's work.
+2. Emit the source's cancellable `session_before_switch` with `reason: "fork"`, then flush pending source output/history.
+3. Create a new persisted manager from the source's **active lineage** and capture the selected source state into the destination, without appending to the source.
+4. Assign fresh root identity, ownership generation and scheduling scope. Retain the inherited mission and lifecycle messages as history, not executable child ownership.
+5. Copy readable artifact payloads into the destination namespace, excluding source descendant transcript/artifact trees. A copy failure is an operation failure, not a best-effort success.
+6. Construct a new root runtime with rebuilt root instructions/capabilities, fresh kernel ownership and correctly bound tool UI context. Activate and durably capture its declared state before acknowledging success.
+7. The caller adopts the new root. The source is not switched, stopped or rewritten by `fork()`; source descendants are neither cloned nor adopted. A failed construction cleans up its newly created destination.
 
-1. Emits `session_before_switch` with `reason: "fork"` (cancellable).
-2. Flushes pending writes.
-3. Calls `SessionManager.fork()`.
-4. Copies artifacts directory from old session namespace to new namespace (best-effort; non-ENOENT copy failures are logged, not fatal).
-5. Updates `agent.sessionId` and inherits the previous provider prompt-cache key unless an explicit prompt-cache key is already pinned.
-6. Emits `session_switch` with `reason: "fork"`.
+The new header records fork provenance and an inherited provider prompt-cache key. That cache affinity does not reuse source ownership or interpreter state. **The workspace is shared**: a session fork is not a worktree/filesystem snapshot, process clone, or rollback of files and external side effects.
 
-`SessionManager.fork()` behavior:
+## Declared state at temporal boundaries
 
-- Requires persistent mode and existing session file.
-- Creates new session id and new JSONL file path.
-- Rewrites header with:
-  - new `id`
-  - new timestamp
-  - `cwd` unchanged
-  - `parentSession` set to previous session id
-  - `providerPromptCacheKey` set to the previous header's inherited key, or the previous session id when none was pinned
-- Keeps all non-header entries unchanged in the new file.
+Python `declare_state(["name", ...])` and JavaScript `declareState(["name", ...])` select top-level bindings for automatic temporal continuity. Completed turns and explicit continuity boundaries capture immutable, versioned manifests with lane, interpreter, target and environment metadata. A manifest must be durably committed before a boundary-dependent fork or transition succeeds; restart restores the destination's own declared state lazily into the matching environment.
 
-### Non-persistent behavior
+This uses the [selected-data codec](./bash-tool-runtime.md#selected-data-persistence): bounded acyclic plain data, bytes and artifact-reference metadata. It is **not arbitrary heap fidelity**. Undeclared bindings, custom objects, open resources and arbitrary object identity are not restored; aliases/shared references among declared values are rejected rather than reconstructed incorrectly. Compatibility, corrupt manifests and unsupported declared resources are checked before destructive navigation.
 
-- In-memory session manager returns `undefined` from `fork()`.
-- `AgentSession.fork()` returns `false`.
-- UI reports `Fork failed (session not persisted or cancelled)`.
+Restoration is exact-boundary only. A message between captures is not automatically a restorable interpreter boundary. Once declared state exists, a missing capture is an explicit refusal: there is no nearest-earlier snapshot, recent-turn window, or silent fresh-kernel fallback. Sessions without declared state can still navigate conversation history without claiming to restore an interpreter heap. Retained historical manifests remain available with their branches.
+
+Navigation replaces the source node's interpreter state with the selected manifest; fork activates an independent copy in the new root and leaves the source state intact. Neither operation restores workspace files or external process state. Model context-only rewind leaves current declared values untouched. See [interpreter resource policy](./interactive-memory.md#interpreters-subprocesses-and-provider-state) for interpreter admission and cleanup limits.
 
 ### CLI `--fork <id|path>`
 
@@ -100,7 +108,7 @@ Startup `--fork` is resolved before normal session creation:
 1. `--fork` is rejected with `--no-session`.
 2. Path-like values (`/`, `\`, or `.jsonl`) call `SessionManager.forkFrom(path, cwd, sessionDir)`.
 3. Other values resolve via `resolveResumableSession(...)`: local sessions first, then global search when `sessionDir` is not forced. Matching accepts lowercased session id prefixes, full JSONL filename prefixes, and timestamp-stripped filename id suffixes.
-4. The forked file is created in the current cwd/session-dir scope and becomes the active session manager for startup.
+4. The forked file is created in the current cwd/session-dir scope and becomes the active session manager for startup. This is the stored-history `forkFrom` path: it copies stored non-header history and artifacts, rather than invoking the interactive live-node active-lineage capture. It does not perform the interactive declared-state transfer or capture a running source kernel; copied lifecycle records do not grant ownership of source workers.
 5. Full-context forks automatically seed `providerPromptCacheKey` from the source header's inherited key, falling back to the source session id. Startup drops that automatic inheritance when `--model`, `--thinking`, `--system-prompt`, `--append-system-prompt`, `--tools`, or `--no-tools` changes the provider route or prompt/tool shape.
 
 Use `--prompt-cache-key <key>` to pin the provider prompt-cache identity explicitly and independently from both the PROTO session id and `--provider-session-id`. `--provider-session-id` continues to control provider session/routing headers and sticky credential selection; `--prompt-cache-key` controls the OpenAI Responses `prompt_cache_key` payload where supported.
@@ -151,7 +159,7 @@ Cross-project id match behavior:
 `SessionManager.continueRecent(cwd, sessionDir)`:
 
 1. Resolves the session directory for the current cwd.
-2. Reads the terminal-scoped breadcrumb. If it points into a nested artifact/subagent session, resolution walks up to the top-level interactive parent session (up to eight levels).
+2. Reads the terminal-scoped breadcrumb. For an existing nested session, explicit node metadata identifies its root session file; fork provenance is not an ownership edge. Legacy sessions without topology are imported once into adjacent `.node.json` receipts, preserving worker IDs and history locations. Normal routing reads durable ownership rather than climbing directory names.
 3. If the breadcrumb points at a session recorded under a different cwd whose directory no longer exists **and** the current directory has no sessions of its own, re-roots that session into the current directory via `moveTo` instead of starting fresh.
 4. Otherwise, if the breadcrumb's cwd matches the current cwd, uses the breadcrumb session; else falls back to the most recently modified session file.
 5. Opens the found session; if none exists, creates a new session.
@@ -185,14 +193,9 @@ No new session file is created by `switchSession()` itself.
 
 ### Switch/fork lifecycle hooks
 
-For `newSession`, `fork`, and `switchSession`:
+`newSession` and `switchSession` emit cancellable `session_before_switch` events with reasons `new` and `resume`, followed on success by `session_switch` with that reason and `previousSessionFile`.
 
-- Before event: `session_before_switch`
-  - reasons: `new`, `fork`, `resume`
-  - cancellable by returning `{ cancel: true }`
-- After event: `session_switch`
-  - same reason set
-  - includes `previousSessionFile`
+Independent `fork()` emits only the source's cancellable `session_before_switch` with `reason: "fork"`; it does not emit a source `session_switch`, because the source is not switched. The destination has the normal lifecycle of a newly constructed root session, and foreground adoption belongs to the caller.
 
 `ExtensionRunner.emit()` returns early on the first cancelling before-event result.
 
@@ -210,7 +213,7 @@ These callbacks are observational; they do not cancel switch/fork.
 
 ### Other cancellation surfaces relevant to this doc
 
-- `/fork` is blocked while streaming (user must wait/abort current response first).
+- `/fork` is refused for running/admitted work in the affected subtree, not just for a streaming selected node. Cancelling work and waiting for it to settle is distinct from stopping the node.
 - `/resume` selector can be cancelled by user closing selector.
 - Cross-project `--resume <id>` can be cancelled by declining the missing-directory move/re-root prompt.
 
@@ -221,7 +224,7 @@ When session manager is created with `SessionManager.inMemory()` (`--no-session`
 - Session file path remains absent, including after resuming saved history; the source does not become a persistence target or acquire a live-session marker.
 - `/resume`, `--resume <id|path>`, and the startup `--resume` picker load saved history into memory. `--continue` loads the most recent session in the selected session-directory scope.
 - Subsequent messages, title changes, and editor drafts remain ephemeral. Resuming does not rewrite the source transcript or its artifacts, and does not create a terminal resume breadcrumb.
-- `/fork` fails because `SessionManager.fork()` requires persistence. Explicit export/save operations are separate from resuming.
+- Interactive `/fork` is refused because its source has no durable history. Explicit export/save operations are separate from resuming.
 
 ## Known implementation caveats (as of current code)
 

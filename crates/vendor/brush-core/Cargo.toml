@@ -11,7 +11,7 @@
 
 [package]
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.92.0"
 name = "brush-core"
 version = "0.5.0"
 build = false
@@ -53,28 +53,28 @@ bench = false
 
 
 [dependencies.async-recursion]
-version = "1.1.1"
+version = "1.2.0"
 
 [dependencies.async-trait]
-version = "0.1.89"
+version = "0.1.92"
 
 [dependencies.bon]
-version = "3.9.1"
+version = "3.10.3"
 
 [dependencies.brush-parser]
 version = "^0.4.0"
 
 [dependencies.cached]
-version = "0.59.0"
+version = "4.1.1"
 
 [dependencies.cfg-if]
-version = "1.0.4"
+version = "1.0.5"
 
 [dependencies.chrono]
-version = "0.4.44"
+version = "0.4.45"
 
 [dependencies.clap]
-version = "4.6.0"
+version = "4.6.7"
 features = [
     "derive",
     "wrap_help",
@@ -84,28 +84,28 @@ features = [
 version = "0.3.7"
 
 [dependencies.fancy-regex]
-version = "0.17.0"
+version = "0.20.0"
 
 [dependencies.futures]
-version = "0.3.32"
+version = "0.3.34"
 
 [dependencies.inherent]
-version = "1.0.13"
+version = "1.0.14"
 
 [dependencies.itertools]
-version = "0.14.0"
+version = "0.15.0"
 
 [dependencies.normalize-path]
-version = "0.2.1"
+version = "0.2.2"
 
 [dependencies.rand]
-version = "0.10.0"
+version = "0.10.3"
 
 [dependencies.rpds]
-version = "1.2.0"
+version = "1.2.1"
 
 [dependencies.serde]
-version = "1.0.228"
+version = "1.0.229"
 features = ["derive"]
 optional = true
 
@@ -116,16 +116,16 @@ version = "0.28.0"
 version = "0.28.0"
 
 [dependencies.thiserror]
-version = "2.0.18"
+version = "2.0.21"
 
 [dependencies.tracing]
 version = "0.1.44"
 
 [dependencies.tokio-util]
-version = "0.7.16"
+version = "0.7.20"
 
 [dev-dependencies.anyhow]
-version = "1.0.102"
+version = "1.0.104"
 
 [dev-dependencies.pretty_assertions]
 version = "1.4.1"
@@ -138,7 +138,7 @@ version = "3.27.0"
 version = "0.4.2"
 
 [target."cfg(unix)".dependencies.tokio]
-version = "1.50.0"
+version = "1.54.1"
 features = [
     "io-util",
     "macros",
@@ -152,7 +152,7 @@ features = [
 ]
 
 [target.'cfg(target_family = "wasm")'.dependencies.tokio]
-version = "1.52.1"
+version = "1.54.1"
 features = [
     "io-util",
     "macros",
@@ -162,13 +162,13 @@ features = [
 ]
 
 [target."cfg(unix)".dependencies.command-fds]
-version = "0.3.2"
+version = "0.3.3"
 
 [target."cfg(unix)".dependencies.libc]
-version = "0.2.183"
+version = "0.2.191"
 
 [target."cfg(unix)".dependencies.nix]
-version = "0.31.2"
+version = "0.31.3"
 features = [
     "fs",
     "poll",
@@ -189,11 +189,11 @@ version = "0.9.0"
 version = "0.12.2"
 
 [target.wasm32-unknown-unknown.dependencies.getrandom]
-version = "0.4.2"
+version = "0.4.3"
 features = ["wasm_js"]
 
 [target.wasm32-unknown-unknown.dependencies.uuid]
-version = "1.23.1"
+version = "1.29.0"
 features = ["js"]
 
 [lints.clippy]

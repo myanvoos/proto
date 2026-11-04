@@ -88,6 +88,10 @@ def _encode(value, active, budget, depth=0):
         if not math.isfinite(value):
             raise ValueError("state numbers must be finite")
         return value
+    if kind is bytearray:
+        if id(value) in active:
+            raise ValueError("state cannot contain shared aliases")
+        active.add(id(value))
     if kind is bytes or kind is bytearray:
         budget.visit(depth, len(value) * 4 // 3 + 4)
         return {"type": "bytes", "kind": "bytes" if kind is bytes else "bytearray",
@@ -96,20 +100,17 @@ def _encode(value, active, budget, depth=0):
         raise ValueError("state supports only plain JSON values and bytes; objects and resources are unsupported")
     identity = id(value)
     if identity in active:
-        raise ValueError("state cannot contain cycles")
+        raise ValueError("state cannot contain cycles or shared aliases")
     active.add(identity)
-    try:
-        if kind is list:
-            return {"type": "array", "value": [_encode(item, active, budget, depth + 1) for item in value]}
-        entries = []
-        for key, item in value.items():
-            if type(key) is not str:
-                raise ValueError("state object keys must be plain strings")
-            budget.visit(depth + 1, len(key))
-            entries.append([key, _encode(item, active, budget, depth + 1)])
-        return {"type": "object", "value": entries}
-    finally:
-        active.remove(identity)
+    if kind is list:
+        return {"type": "array", "value": [_encode(item, active, budget, depth + 1) for item in value]}
+    entries = []
+    for key, item in value.items():
+        if type(key) is not str:
+            raise ValueError("state object keys must be plain strings")
+        budget.visit(depth + 1, len(key))
+        entries.append([key, _encode(item, active, budget, depth + 1)])
+    return {"type": "object", "value": entries}
 
 
 def _fields(value, expected):
@@ -221,14 +222,15 @@ def _summary(path, snapshot):
             "version": VERSION, "language": snapshot["language"], "interpreter": snapshot["interpreter"]}
 
 
-def save_state(path, names, namespace, reserved):
+def capture_state(names, namespace, reserved):
     selected = _names(names, reserved)
     budget = _Budget()
     bindings = []
+    seen = set()
     for name in selected:
         if name not in namespace:
             raise ValueError("selected state binding does not exist: " + name)
-        bindings.append({"name": name, "value": _encode(namespace[name], set(), budget)})
+        bindings.append({"name": name, "value": _encode(namespace[name], seen, budget)})
     snapshot = {"format": FORMAT, "version": VERSION, "language": "python",
                 "interpreter": _interpreter(), "bindings": bindings}
     try:
@@ -237,6 +239,12 @@ def save_state(path, names, namespace, reserved):
         raise ValueError("state cannot be represented within JSON limits") from None
     if len(encoded) > MAX_BYTES:
         raise ValueError("state snapshot exceeds the 16 MiB size limit")
+    return snapshot
+
+
+def save_state(path, names, namespace, reserved):
+    snapshot = capture_state(names, namespace, reserved)
+    encoded = (json.dumps(snapshot, ensure_ascii=True, allow_nan=False, separators=(",", ":")) + "\n").encode("utf-8")
     target = os.path.realpath(path)
     directory = os.path.dirname(target)
     fd, temporary = tempfile.mkstemp(prefix=".proto-state-", dir=directory)
@@ -269,11 +277,18 @@ def load_state(path, namespace, reserved, *, collision="reject"):
         snapshot = json.loads(encoded, object_pairs_hook=_unique_object, parse_constant=_invalid_constant)
     except (ValueError, UnicodeError, RecursionError):
         raise ValueError("invalid state snapshot JSON") from None
+    restore_state(snapshot, namespace, reserved, collision=collision)
+    return _summary(os.path.realpath(path), snapshot)
+
+
+def restore_state(snapshot, namespace, reserved, *, collision="reject", compatible=False):
     restored = _validate(snapshot, reserved)
+    if compatible and (snapshot["language"] != "python" or snapshot["interpreter"] != _interpreter()):
+        raise ValueError("declared state interpreter is incompatible")
     if collision == "reject":
         for name in restored:
             if name in namespace:
                 raise ValueError("state binding collision: " + name)
     # All validation and collision checks precede the sole namespace mutation.
     namespace.update(restored)
-    return _summary(os.path.realpath(path), snapshot)
+    return list(restored)

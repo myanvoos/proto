@@ -94,20 +94,21 @@ export async function mapWithConcurrencyLimitAllSettled<T, R>(
 
 export function normalizeConcurrencyLimit(max: number): number {
 	const normalizedMax = Number.isFinite(max) ? Math.trunc(max) : 0;
-	return normalizedMax > 0 ? normalizedMax : 0;
+	return Math.max(normalizedMax, 0);
 }
 
 export class Semaphore {
 	#max: number;
 	#current = 0;
-	#queue: Array<() => void> = [];
+	#queue = new Map<string, Array<() => void>>();
+	#readyKeys: string[] = [];
 
 	constructor(max: number) {
 		const normalizedMax = normalizeConcurrencyLimit(max);
 		this.#max = normalizedMax > 0 ? normalizedMax : Number.POSITIVE_INFINITY;
 	}
 
-	async acquire(signal?: AbortSignal): Promise<void> {
+	async acquire(signal?: AbortSignal, fairnessKey = ""): Promise<void> {
 		if (signal?.aborted) {
 			throw semaphoreAbortReason(signal);
 		}
@@ -116,12 +117,21 @@ export class Semaphore {
 			return;
 		}
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
-		const queue = this.#queue;
+		let queue = this.#queue.get(fairnessKey);
+		if (!queue) {
+			queue = [];
+			this.#queue.set(fairnessKey, queue);
+			this.#readyKeys.push(fairnessKey);
+		}
 		let waiter: () => void = resolve;
 		if (signal) {
 			const onAbort = () => {
 				const index = queue.indexOf(waiter);
 				if (index >= 0) queue.splice(index, 1);
+				if (queue.length === 0) {
+					this.#queue.delete(fairnessKey);
+					this.#readyKeys = this.#readyKeys.filter(key => key !== fairnessKey);
+				}
 				reject(semaphoreAbortReason(signal));
 			};
 			waiter = () => {
@@ -134,11 +144,21 @@ export class Semaphore {
 		return promise;
 	}
 
+	#next(): (() => void) | undefined {
+		const key = this.#readyKeys.shift();
+		if (key === undefined) return;
+		const queue = this.#queue.get(key)!;
+		const next = queue.shift();
+		if (queue.length > 0) this.#readyKeys.push(key);
+		else this.#queue.delete(key);
+		return next;
+	}
+
 	release(): void {
 		if (this.#current > 0) this.#current--;
 
 		if (this.#current < this.#max) {
-			const next = this.#queue.shift();
+			const next = this.#next();
 			if (next) {
 				this.#current++;
 				next();
@@ -150,7 +170,7 @@ export class Semaphore {
 		const normalizedMax = normalizeConcurrencyLimit(max);
 		this.#max = normalizedMax > 0 ? normalizedMax : Number.POSITIVE_INFINITY;
 		while (this.#current < this.#max) {
-			const next = this.#queue.shift();
+			const next = this.#next();
 			if (!next) break;
 			this.#current++;
 			next();

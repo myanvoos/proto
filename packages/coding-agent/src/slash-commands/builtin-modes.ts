@@ -172,6 +172,7 @@ export function formatTokenCount(value: number): string {
 export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "settings",
+		scope: "application",
 		description: "Open settings menu",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showSettingsSelector();
@@ -180,6 +181,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "setup",
+		scope: "application",
 		aliases: ["providers"],
 		description: "Re-run setup: sign-in, web search, model and theme",
 		allowArgs: true,
@@ -199,6 +201,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "goal",
+		scope: "root",
 		description: "Toggle goal mode (persistent autonomous objective for this session)",
 		subcommands: [
 			{ name: "set", description: "Set or replace the goal", usage: "<objective>" },
@@ -223,6 +226,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "queue",
+		scope: "root",
 		description: "Queue a message for after the agent yields, or after a delay",
 		inlineHint: "[duration] <message> | --cancel <n|all>",
 		allowArgs: true,
@@ -239,11 +243,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "model",
+		scope: "node",
+		allowArgs: true,
 		aliases: ["models"],
 		description: "Switch model for this session",
 		acpDescription: "Show current model selection",
 		getTuiAutocompleteDescription: runtime => {
-			const model = runtime.ctx.session.model;
+			const model = runtime.ctx.viewSession.model;
 			return model ? `Model: ${model.provider}/${model.id}` : "Model: none selected";
 		},
 		handle: async (command, runtime) => {
@@ -281,7 +287,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			// gets the model, not the parent. Bare /model opens the picker, which retargets too.
 			const modelId = command.args.trim();
 			if (modelId) {
-				const target = runtime.ctx.viewSession;
+				const target = runtime.target?.session ?? runtime.ctx.viewSession;
 				const match = target
 					.getAvailableModels()
 					.find(candidate => candidate.id === modelId || `${candidate.provider}/${candidate.id}` === modelId);
@@ -296,13 +302,14 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 					}
 				}
 			} else {
-				runtime.ctx.showModelSelector();
+				runtime.ctx.showModelSelector(undefined, runtime.target);
 			}
 			clearSubmittedText(runtime);
 		},
 	},
 	{
 		name: "fast",
+		scope: "node",
 		description:
 			"Toggle fast service (OpenAI service_tier=priority or ultrafast, Anthropic speed=fast, Google priority)",
 		acpDescription: "Toggle fast mode",
@@ -314,7 +321,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
-		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.session)}`,
+		getTuiAutocompleteDescription: runtime => `Fast: ${formatFastModeStatus(runtime.ctx.viewSession)}`,
 		handle: async (command, runtime) => {
 			const message = runFastCommand(command.args.trim().toLowerCase(), runtime.session);
 			if (message === undefined) return usage(FAST_USAGE, runtime);
@@ -322,7 +329,10 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: (command, runtime) => {
-			const message = runFastCommand(command.args.trim().toLowerCase(), runtime.ctx.session);
+			const message = runFastCommand(
+				command.args.trim().toLowerCase(),
+				runtime.target?.session ?? runtime.ctx.viewSession,
+			);
 			refreshStatusLine(runtime.ctx);
 			runtime.ctx.showStatus(message ?? FAST_USAGE);
 			clearSubmittedText(runtime);
@@ -330,6 +340,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "extended-context",
+		scope: "application",
 		description: "Toggle extended context windows",
 		acpDescription: "Toggle extended context",
 		acpInputHint: "[on|off|status]",
@@ -356,6 +367,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "computer",
+		scope: "node",
 		description: "Toggle the native computer-use tool for this session",
 		acpDescription: "Toggle computer use",
 		acpInputHint: "[on|off|status]",
@@ -366,7 +378,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			`Computer: ${runtime.ctx.session.settings.get("computer.enabled") ? "on" : "off"}`,
+			`Computer: ${(runtime.target?.session ?? runtime.ctx.viewSession).settings.get("computer.enabled") ? "on" : "off"}`,
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
@@ -383,14 +395,19 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				runtime.ctx.showStatus(await formatComputerUseStatus(runtime.ctx.session));
+				runtime.ctx.showStatus(await formatComputerUseStatus(runtime.target?.session ?? runtime.ctx.viewSession));
 				clearSubmittedText(runtime);
 				return;
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
 				const enable =
-					arg === "off" ? false : arg === "on" || !runtime.ctx.session.settings.get("computer.enabled");
-				runtime.ctx.showStatus(await applyComputerUseToggle(runtime.ctx.session, enable));
+					arg === "off"
+						? false
+						: arg === "on" ||
+							!(runtime.target?.session ?? runtime.ctx.viewSession).settings.get("computer.enabled");
+				runtime.ctx.showStatus(
+					await applyComputerUseToggle(runtime.target?.session ?? runtime.ctx.viewSession, enable),
+				);
 				clearSubmittedText(runtime);
 				return;
 			}
@@ -401,6 +418,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 
 	{
 		name: "prewalk",
+		scope: "node",
 		description: "Switch to a fast/cheap model at the next action (works even without --prewalk)",
 		acpDescription: "Prewalk at the next action",
 		handle: async (_command, runtime) => {

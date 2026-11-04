@@ -795,6 +795,46 @@ mod tests {
 	use super::*;
 
 	#[test]
+	fn upgraded_grammars_recognize_language_constructs() {
+		for (language, source, node_kind) in [
+			(SupportLang::Dart, "void main() {}", "function_declaration"),
+			(SupportLang::Erlang, "-module(example).\nanswer() -> 42.\n", "function_clause"),
+			(SupportLang::Graphql, "query { viewer { id } }", "operation_definition"),
+			(SupportLang::Haskell, "answer = 42\n", "bind"),
+			(SupportLang::Markdown, "# Heading\n", "atx_heading"),
+			(SupportLang::Ocaml, "let answer = 42\n", "value_definition"),
+			(SupportLang::Php, "echo 42;", "echo_statement"),
+			(
+				SupportLang::Proto,
+				"syntax = \"proto3\"; message Example { string value = 1; }",
+				"message",
+			),
+			(SupportLang::R, "answer <- 42\n", "binary_operator"),
+		] {
+			let mut parser = tree_sitter::Parser::new();
+			parser.set_language(&language.get_ts_language()).unwrap();
+			let tree = parser.parse(source, None).unwrap();
+			let root = tree.root_node();
+			assert!(!root.has_error(), "{language:?}: {}", root.to_sexp());
+			let query = tree_sitter::Query::new(
+				&language.get_ts_language(),
+				&format!("({node_kind}) @construct"),
+			)
+			.unwrap();
+			let mut cursor = tree_sitter::QueryCursor::new();
+			use tree_sitter::StreamingIterator;
+			assert!(
+				cursor
+					.captures(&query, root, source.as_bytes())
+					.next()
+					.is_some(),
+				"{language:?}: {}",
+				root.to_sexp()
+			);
+		}
+	}
+
+	#[test]
 	fn infers_cuda_sources_and_headers_as_cpp() {
 		assert_eq!(SupportLang::from_path(Path::new("kernel.cu")), Some(SupportLang::Cpp));
 		assert_eq!(SupportLang::from_path(Path::new("kernel.cuh")), Some(SupportLang::Cpp));

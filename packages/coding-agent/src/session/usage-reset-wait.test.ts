@@ -67,6 +67,9 @@ describe("retry.waitForUsageReset", () => {
 		vi.spyOn(utils, "sleepLong").mockImplementation(async delayMs => {
 			sleeps.push(delayMs);
 		});
+		vi.spyOn(utils, "sleepUntil").mockImplementation(async deadlineMs => {
+			sleeps.push(Math.max(0, deadlineMs - Date.now()));
+		});
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.setRuntimeApiKey(model.provider, "test-key");
 		let calls = 0;

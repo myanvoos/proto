@@ -46,6 +46,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
+import { importLegacyNodeTopology, readNodeTemporalTransition } from "./node-topology";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
 import { type BuildSessionContextOptions, buildSessionContext, type SessionContext } from "./session-context";
 import {
@@ -71,6 +72,7 @@ import {
 	type SessionHeader,
 	type SessionInitEntry,
 	type SessionMessageEntry,
+	type SessionNodeTopology,
 	type SessionTitleSource,
 	type SessionTreeNode,
 	SUBAGENT_USAGE_CUSTOM_TYPE,
@@ -173,19 +175,44 @@ export function artifactsDirectoryFor(sessionFile: string | undefined): string |
 	return sessionFile.slice(0, -JSONL_SUFFIX_LENGTH);
 }
 
-export async function copySessionArtifacts(sourceSessionFile: string, destinationSessionFile: string): Promise<void> {
+export async function copySessionArtifacts(
+	sourceSessionFile: string,
+	destinationSessionFile: string,
+	options: { excludeSessionFiles?: readonly string[]; strict?: boolean } = {},
+): Promise<void> {
 	const sourceArtifactsDir = artifactsDirectoryFor(sourceSessionFile);
 	const destinationArtifactsDir = artifactsDirectoryFor(destinationSessionFile);
 	if (!sourceArtifactsDir || !destinationArtifactsDir) return;
 	if (path.resolve(sourceArtifactsDir) === path.resolve(destinationArtifactsDir)) return;
 
+	let copyStarted = false;
 	try {
 		const sourceStat = await fs.promises.stat(sourceArtifactsDir);
+		if (!sourceStat.isDirectory() && options.strict) throw new Error("Session artifact storage is not a directory");
 		if (sourceStat.isDirectory()) {
-			await fs.promises.cp(sourceArtifactsDir, destinationArtifactsDir, { recursive: true });
+			const excluded = (options.excludeSessionFiles ?? []).map(file => ({
+				file: path.resolve(file),
+				artifacts: artifactsDirectoryFor(path.resolve(file)),
+			}));
+			copyStarted = true;
+			await fs.promises.cp(sourceArtifactsDir, destinationArtifactsDir, {
+				recursive: true,
+				filter: candidate =>
+					!excluded.some(exclusion => {
+						const resolved = path.resolve(candidate);
+						return (
+							resolved === exclusion.file ||
+							resolved.startsWith(`${exclusion.file}.`) ||
+							resolved === exclusion.artifacts ||
+							(exclusion.artifacts !== null && resolved.startsWith(`${exclusion.artifacts}${path.sep}`))
+						);
+					}),
+			});
 		}
 	} catch (error) {
+		if (options.strict && copyStarted) throw error;
 		if (!isEnoent(error)) {
+			if (options.strict) throw error;
 			logger.warn("Failed to copy artifacts during fork", {
 				sourceArtifactsDir,
 				destinationArtifactsDir,
@@ -337,17 +364,6 @@ async function relocateArtifactsDirectory(source: string, destination: string): 
 		logger.info("Merged session artifacts into an existing directory", { source, destination });
 	}
 	return "merged";
-}
-
-function resolveBreadcrumbToInteractiveRoot(sessionFile: string): string {
-	let current = path.resolve(sessionFile);
-
-	for (let depth = 0; depth < 8; depth++) {
-		const parentSessionFile = `${path.dirname(current)}.jsonl`;
-		if (!fs.existsSync(parentSessionFile)) return current;
-		current = parentSessionFile;
-	}
-	return current;
 }
 
 function entryUsage(entry: SessionEntry): Usage | undefined {
@@ -1643,6 +1659,13 @@ export class SessionManager {
 			this.#sessionFile = undefined;
 		}
 
+		this.#header.node = {
+			id: this.#sessionId,
+			rootId: this.#sessionId,
+			rootSessionFile: this.#sessionFile,
+			generation: 0,
+			state: "active",
+		};
 		return this.#sessionFile;
 	}
 
@@ -2035,6 +2058,26 @@ export class SessionManager {
 			this.#inMemoryArtifactCounter = 0;
 
 			if (this.sanitizeLoadedOpenAIResponsesReplayMetadata() && this.#persist) this.#rewriteRequired = true;
+			const transition = await readNodeTemporalTransition(resolvedSessionFile);
+			if (
+				transition &&
+				header.node?.id === transition.sourceNodeId &&
+				header.node.generation < transition.sourceGeneration
+			) {
+				if (transition.boundaryEntryId !== null && !this.getEntry(transition.boundaryEntryId)) {
+					throw new Error(`Committed temporal boundary is missing: ${transition.boundaryEntryId}`);
+				}
+				this.#setLeaf(transition.boundaryEntryId);
+				this.#recordEntry({
+					type: "custom",
+					...this.#freshEntryFields(),
+					customType: "session-node-temporal-recovery",
+					data: { generation: transition.sourceGeneration },
+					activeLeafId: transition.boundaryEntryId,
+				});
+				header.node.generation = transition.sourceGeneration;
+				if (this.#persist) await this.#rewriteAtomically();
+			}
 		} finally {
 			retention.releaseRetainedEntries();
 		}
@@ -2054,49 +2097,6 @@ export class SessionManager {
 		}
 		const archivePath = sessionArchivePath(sessionPath);
 		if (await this.#storage.exists(archivePath)) await this.#storage.unlink(archivePath);
-	}
-
-	async fork(): Promise<{ oldSessionFile: string; newSessionFile: string } | undefined> {
-		if (!this.#persist || !this.#sessionFile) return undefined;
-
-		const oldSessionFile = this.#sessionFile;
-		const parentSessionId = this.#sessionId;
-		await this.#drainAndCloseWriter();
-		this.#clearDiskError();
-		this.#reconcileSessionDirForFallback();
-
-		const timestamp = nowIso();
-		this.#sessionId = mintSessionId();
-		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
-		this.#archivedEntryIds.clear();
-		this.#archiveSize = null;
-		this.#expectedDiskSize = null;
-		this.#header = {
-			type: "session",
-			version: CURRENT_SESSION_VERSION,
-			id: this.#sessionId,
-			title: this.#header.title ?? this.#sessionName,
-			titleSource: this.#header.titleSource ?? this.#titleSource,
-			timestamp,
-			cwd: this.#cwd,
-			additionalDirectories: this.#additionalDirectories.length > 0 ? [...this.#additionalDirectories] : undefined,
-			parentSession: parentSessionId,
-			providerPromptCacheKey: this.#header.providerPromptCacheKey ?? parentSessionId,
-		};
-		this.#sessionName = this.#header.title;
-		this.#titleSource = this.#header.titleSource;
-		this.#titleUpdatedAt = timestamp;
-		this.#hasTitleSlot = true;
-		this.#fileIsCurrent = false;
-		this.#rewriteRequired = false;
-		this.#forceFileCreation = true;
-		this.#draftOnlySessionCleanupArmed = false;
-		this.#artifactManager = null;
-		this.#artifactManagerSessionFile = null;
-		this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
-
-		await this.#rewriteAtomically();
-		return { oldSessionFile, newSessionFile: this.#sessionFile };
 	}
 
 	async moveTo(newCwd: string, targetSessionDir?: string): Promise<void> {
@@ -2458,6 +2458,10 @@ export class SessionManager {
 		} finally {
 			this.releaseRetainedEntries();
 		}
+	}
+
+	get isReleased(): boolean {
+		return this.#released;
 	}
 
 	seal(): void {
@@ -3110,6 +3114,22 @@ export class SessionManager {
 		return undefined;
 	}
 
+	/** Branch/tree observation without materializing retained message payloads. */
+	getEntryMetadata(id: string): Pick<SessionEntry, "id" | "parentId" | "type" | "timestamp"> | undefined {
+		const entry = this.#index.get(id);
+		return entry
+			? { id: entry.id, parentId: entry.parentId, type: entry.type, timestamp: entry.timestamp }
+			: undefined;
+	}
+
+	getEntryMetadataPage(offset = 0, limit = 128): Array<Pick<SessionEntry, "id" | "parentId" | "type" | "timestamp">> {
+		if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 256)
+			throw new Error("Invalid history metadata page");
+		return this.#entries
+			.slice(offset, offset + limit)
+			.map(entry => ({ id: entry.id, parentId: entry.parentId, type: entry.type, timestamp: entry.timestamp }));
+	}
+
 	getEntry(id: string): SessionEntry | undefined {
 		const entry = this.#index.get(id);
 		return entry ? this.#materializeEntry(entry) : undefined;
@@ -3143,13 +3163,13 @@ export class SessionManager {
 		return this.#index.pathToView();
 	}
 
-	#buildTranscriptWindow(options: BuildSessionContextOptions): SessionContext {
+	#buildTranscriptWindow(options: BuildSessionContextOptions, headId = this.#index.leafId()): SessionContext {
 		const requested = options.window!;
 		const maxMessages = Math.max(1, Math.floor(requested.maxMessages));
 		const maxBytes = Math.max(1024, Math.floor(requested.maxBytes));
-		const branch = this.#index.pathTo();
+		const branch = this.#index.pathTo(headId);
 		const projectionOptions = { ...options, includeEntryIds: true };
-		const indexed = buildSessionContext(branch, this.#index.leafId(), this.#index.entriesById(), projectionOptions);
+		const indexed = buildSessionContext(branch, headId, this.#index.entriesById(), projectionOptions);
 		const ids = indexed.entryIds ?? [];
 		const sizes = ids.map(id => this.#rawEntryFiles.get(id)?.bytes ?? 1024);
 		const window = selectTranscriptWindow(indexed.messages, sizes, requested.pageFromLatest, maxMessages, maxBytes);
@@ -3172,12 +3192,8 @@ export class SessionManager {
 			};
 			return { ...indexed, messages: [message], entryIds: [], cacheMissExplainedAt: [false], window };
 		}
-		const hydrated = buildSessionContext(
-			branch,
-			this.#index.leafId(),
-			this.#index.entriesById(),
-			projectionOptions,
-			entry => (selectedIds.has(entry.id) ? this.#materializeEntry(entry) : entry),
+		const hydrated = buildSessionContext(branch, headId, this.#index.entriesById(), projectionOptions, entry =>
+			selectedIds.has(entry.id) ? this.#materializeEntry(entry) : entry,
 		);
 		return {
 			...hydrated,
@@ -3186,6 +3202,14 @@ export class SessionManager {
 			cacheMissExplainedAt: hydrated.cacheMissExplainedAt?.slice(window.start, window.end),
 			window,
 		};
+	}
+
+	/** An immutable branch head lets an older display page survive append-only progress. */
+	buildSessionContextAt(headId: string | null, options: BuildSessionContextOptions): SessionContext {
+		if (headId !== null && !this.#index.has(headId)) throw new Error(`History head ${headId} is no longer available`);
+		if (!options.transcript || !options.window)
+			throw new Error("Anchored history requires a bounded transcript window");
+		return this.#buildTranscriptWindow(options, headId);
 	}
 
 	buildSessionContext(options?: BuildSessionContextOptions): SessionContext {
@@ -3278,6 +3302,32 @@ export class SessionManager {
 			if (entry.type === "session_init") return extractSessionInit([this.#materializeEntry(entry)]);
 		}
 		return null;
+	}
+
+	getNodeTopology(): SessionNodeTopology | undefined {
+		return this.#header.node ? structuredClone(this.#header.node) : undefined;
+	}
+
+	async setNodeTopology(node: SessionNodeTopology): Promise<void> {
+		if (this.#released) throw new Error("Cannot mutate a released session journal");
+		if (!node.id || !node.rootId || node.id === node.parentId || node.parentId === "Main" || node.rootId === "Main") {
+			throw new Error("Invalid durable session ownership identity");
+		}
+		if (!Number.isSafeInteger(node.generation) || node.generation < 0) throw new Error("Invalid node generation");
+		await this.#withAtomicPersistenceLock(async () => {
+			if (this.#released) throw new Error("Cannot mutate a released session journal");
+			const previous = this.#header.node;
+			try {
+				this.#header.node = structuredClone(node);
+				await this.#rewriteAtomically();
+				if (this.#released || (this.#persist && (!this.#fileIsCurrent || this.#rewriteRequired))) {
+					throw new Error("Topology commit was superseded before publication");
+				}
+			} catch (error) {
+				this.#header.node = previous;
+				throw error;
+			}
+		});
 	}
 
 	getHeader(): SessionHeader | null {
@@ -3507,6 +3557,8 @@ export class SessionManager {
 			suppressBreadcrumb?: boolean;
 			sessionFile?: string;
 			copyTitle?: boolean;
+			/** User forks copy only the selected active lineage, not abandoned branches. */
+			activeLineageOnly?: boolean;
 			/** Zero inherited turns' cost so a derived agent's spend reflects only its own work. */
 			resetInheritedCost?: boolean;
 			/** Pair tool calls a live, mid-turn source left unresolved with synthetic aborted results. */
@@ -3571,6 +3623,7 @@ export class SessionManager {
 		manager.#titleUpdatedAt = nowIso();
 		manager.#hasTitleSlot = true;
 		manager.#replaceEntries(history);
+		if (options?.activeLineageOnly) manager.#replaceEntries(manager.getBranch());
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
 		if (options?.repairInterruptedTail) manager.#repairInterruptedTail();
 		manager.#forceFileCreation = true;
@@ -3731,7 +3784,10 @@ export class SessionManager {
 				return newSession();
 			}
 
-			breadcrumb.sessionFile = resolveBreadcrumbToInteractiveRoot(breadcrumb.sessionFile);
+			if (breadcrumb.exists) {
+				const breadcrumbNode = await importLegacyNodeTopology(breadcrumb.sessionFile);
+				breadcrumb.sessionFile = breadcrumbNode.rootSessionFile ?? breadcrumb.sessionFile;
+			}
 			const breadcrumbCwd = path.resolve(breadcrumb.cwd);
 			if (breadcrumbCwd === resolvedCwd) {
 				if (!sessionDir || pathIsWithin(dir, breadcrumb.sessionFile)) {

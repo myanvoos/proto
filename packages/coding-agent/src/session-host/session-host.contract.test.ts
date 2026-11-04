@@ -4,122 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
-import { RpcFrameDecoder } from "../modes/rpc/rpc-frame";
 import { workerEnvFromParent } from "../subprocess/worker-client";
+import { connectSessionRpc } from "./client";
 import { negotiateSessionHost } from "./ensure";
 import { SESSION_HOST_READY_PATTERN, SESSION_HOST_SOCKET_ENV, SESSION_HOST_WORKER_ARG } from "./protocol";
 
 const BOOTSTRAP_TIMEOUT_MS = 90_000;
-
-interface HostClient {
-	sendCommand(command: object): void;
-	frames: AsyncIterableQueue;
-	close(): void;
-	closed: Promise<void>;
-}
-
-class AsyncIterableQueue {
-	#frames: object[] = [];
-	#waiters = new Set<() => void>();
-
-	push(frame: object): void {
-		this.#frames.push(frame);
-		for (const waiter of this.#waiters) waiter();
-	}
-
-	async next(): Promise<object> {
-		for (;;) {
-			const frame = this.#frames.shift();
-			if (frame) return frame;
-			const { promise, resolve } = Promise.withResolvers<void>();
-			this.#waiters.add(resolve);
-			try {
-				// Re-check after registering: a push landing between the shift
-				// above and waiter registration must not be lost.
-				const queued = this.#frames.shift();
-				if (queued) return queued;
-				await promise;
-			} finally {
-				this.#waiters.delete(resolve);
-			}
-		}
-	}
-
-	async findResponse(id: string, timeoutMs: number): Promise<Record<string, unknown>> {
-		const deadline = Date.now() + timeoutMs;
-		for (;;) {
-			const index = this.#frames.findIndex(frame => {
-				const candidate = frame as { id?: unknown };
-				return candidate.id === id;
-			});
-			if (index >= 0) {
-				const [frame] = this.#frames.splice(index, 1);
-				return frame as Record<string, unknown>;
-			}
-			if (Date.now() > deadline) throw new Error(`timed out waiting for rpc response ${id}`);
-			const { promise, resolve } = Promise.withResolvers<void>();
-			this.#waiters.add(resolve);
-			try {
-				// Re-check after registering so a push that lands between the
-				// findIndex above and waiter registration cannot be lost.
-				const indexNow = this.#frames.findIndex(frame => {
-					const candidate = frame as { id?: unknown };
-					return candidate.id === id;
-				});
-				if (indexNow >= 0) {
-					const [frame] = this.#frames.splice(indexNow, 1);
-					return frame as Record<string, unknown>;
-				}
-				if (Date.now() > deadline) throw new Error(`timed out waiting for rpc response ${id}`);
-				await promise;
-			} finally {
-				this.#waiters.delete(resolve);
-			}
-		}
-	}
-}
-
-async function connectHostClient(socket: string, timeoutMs: number): Promise<HostClient> {
-	const frames = new AsyncIterableQueue();
-	const decoder = new RpcFrameDecoder();
-	const { promise: closed, resolve: resolveClosed } = Promise.withResolvers<void>();
-	const conn = await Bun.connect({
-		unix: socket,
-		socket: {
-			data(_socket, chunk) {
-				const text = new TextDecoder().decode(chunk);
-				for (const line of text.split("\n")) {
-					const trimmed = line.trim();
-					if (!trimmed) continue;
-					try {
-						const parsed: unknown = JSON.parse(trimmed);
-						const frame = decoder.push(parsed);
-						if (frame) frames.push(frame);
-					} catch {
-						// partial JSON line or chunk bookkeeping — decoder handles reassembly
-					}
-				}
-			},
-			close() {
-				resolveClosed();
-			},
-			error() {
-				resolveClosed();
-			},
-		},
-	});
-	void timeoutMs;
-	return {
-		frames,
-		closed,
-		sendCommand(command: object) {
-			conn.write(`${JSON.stringify(command)}\n`);
-		},
-		close() {
-			conn.end();
-		},
-	};
-}
 
 describe("session host worker", () => {
 	let tmpDir: string;
@@ -148,13 +38,40 @@ describe("session host worker", () => {
 				"",
 			].join("\n"),
 		);
+		const extensionPath = path.join(tmpDir, "large-catalog.ts");
+		await Bun.write(
+			extensionPath,
+			`export default function(api) {
+			for (let index = 0; index < 320; index++) {
+				api.registerCommand("transport-catalog-" + index, {
+					description: "雪🦊" + "x".repeat(4096) + " catalog-tail-" + index,
+					handler: async () => {},
+				});
+			}
+		}`,
+		);
 		socketPath = path.join(tmpDir, "host.sock");
 		// resolveWorkerSpawnCmd's bun-test fallback uses a package-root-relative
 		// entry; resolve it absolutely so the worker can run with cwd = project.
 		const hostEntry = workerHostEntry() ?? path.resolve(import.meta.dir, "..", "cli.ts");
 		child = Bun.spawn({
-			cmd: [process.execPath, hostEntry, SESSION_HOST_WORKER_ARG, "--resume", sessionFile, "--mode", "rpc"],
-			env: workerEnvFromParent({ [SESSION_HOST_SOCKET_ENV]: socketPath }),
+			cmd: [
+				process.execPath,
+				hostEntry,
+				SESSION_HOST_WORKER_ARG,
+				"--resume",
+				sessionFile,
+				"--mode",
+				"rpc",
+				"--trusted-extension",
+				extensionPath,
+			],
+			env: workerEnvFromParent({
+				HOME: tmpDir,
+				PI_CODING_AGENT_DIR: path.join(tmpDir, "agent"),
+				ANTHROPIC_API_KEY: "sk-ant-dummy-session-host-test",
+				[SESSION_HOST_SOCKET_ENV]: socketPath,
+			}),
 			cwd: tmpDir,
 			stdin: "ignore",
 			stdout: "pipe",
@@ -176,7 +93,7 @@ describe("session host worker", () => {
 				if (hostStderr.length > 64_000) hostStderr = hostStderr.slice(-32_000);
 			}
 		})();
-		// Await the broker readiness signal itself — the host prints it right after listen().
+		// Broker readiness means the RPC loop is serving, not just that listen() succeeded.
 		const waitForReadyLine = async (): Promise<void> => {
 			while (!hostStdout.includes(SESSION_HOST_READY_PATTERN)) {
 				await Bun.sleep(20);
@@ -192,21 +109,41 @@ describe("session host worker", () => {
 
 	afterAll(async () => {
 		child?.kill();
+		await child?.exited;
 		await fs.rm(tmpDir, { recursive: true, force: true });
 	});
 
 	test("serves RPC over the socket, survives client churn, and reports unknown commands", async () => {
 		const probe = await negotiateSessionHost(socketPath, BOOTSTRAP_TIMEOUT_MS);
+		if (probe.socket !== "live") {
+			throw new Error(
+				`Hosted handshake failed: ${JSON.stringify(probe)} (exit ${child?.exitCode})\nstdout: ${hostStdout}\nstderr: ${hostStderr}`,
+			);
+		}
 		expect(probe.socket).toBe("live");
 
-		const first = await connectHostClient(socketPath, BOOTSTRAP_TIMEOUT_MS);
+		const first = await connectSessionRpc(socketPath);
+		first.sendCommand({ id: "first-negotiate", type: "negotiate_protocol", protocolVersion: 2 });
+		expect((await first.frames.findResponse("first-negotiate", BOOTSTRAP_TIMEOUT_MS)).success).toBe(true);
+		first.sendCommand({ id: "large-catalog", type: "get_available_commands" });
+		first.sendCommand({ id: "unicode-雪🦊", type: "get_state" });
+		const catalog = await first.frames.findResponse("large-catalog", BOOTSTRAP_TIMEOUT_MS);
+		expect(catalog.success).toBe(true);
+		const commands = (catalog.data as { commands: { name: string; description: string }[] }).commands;
+		const added = commands.filter(command => command.name.startsWith("transport-catalog-"));
+		expect(added).toHaveLength(320);
+		expect(added.find(command => command.name === "transport-catalog-319")?.description).toBe(
+			`雪🦊${"x".repeat(4096)} catalog-tail-319`,
+		);
+		expect(Buffer.byteLength(JSON.stringify(catalog))).toBeGreaterThan(1024 * 1024);
+		expect((await first.frames.findResponse("unicode-雪🦊", BOOTSTRAP_TIMEOUT_MS)).success).toBe(true);
 		first.sendCommand({ id: "state-1", type: "get_state" });
 		const response = await first.frames.findResponse("state-1", BOOTSTRAP_TIMEOUT_MS);
 		expect(response.success).toBe(true);
 		expect((response.data as { sessionFile?: string }).sessionFile).toBe(path.resolve(sessionFile));
 
 		// Latest client wins: attaching a second client closes the first.
-		const second = await connectHostClient(socketPath, BOOTSTRAP_TIMEOUT_MS);
+		const second = await connectSessionRpc(socketPath);
 		await first.closed;
 		second.sendCommand({ id: "state-2", type: "get_state" });
 		const secondResponse = await second.frames.findResponse("state-2", BOOTSTRAP_TIMEOUT_MS);
@@ -218,7 +155,7 @@ describe("session host worker", () => {
 		expect(redetach.socket).toBe("live");
 
 		// Unknown commands surface an error response instead of crashing the host.
-		const third = await connectHostClient(socketPath, BOOTSTRAP_TIMEOUT_MS);
+		const third = await connectSessionRpc(socketPath);
 		third.sendCommand({ id: "bogus-1", type: "definitely_not_a_command" });
 		const errorResponse = await third.frames.findResponse("bogus-1", BOOTSTRAP_TIMEOUT_MS);
 		expect(errorResponse.success).toBe(false);

@@ -1,26 +1,19 @@
 import { beforeEach, expect, test } from "bun:test";
-import * as fs from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
+import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { ModelRegistry } from "../../config/model-registry";
+import type { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
 import type { AgentSession } from "../../session/agent-session";
-import { AuthStorage } from "../../session/auth-storage";
+import { captureSessionCommandTarget, type SessionCommandTarget } from "../../session/command-target";
 import { initThemeSync } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
 import { SelectorController } from "./selector-controller";
 
-beforeEach(() => {
-	initThemeSync();
-});
+beforeEach(() => initThemeSync());
 
-test("the model picker switches the focused agent, not the main session behind it", async () => {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-target-"));
-	const authStorage = await AuthStorage.create(path.join(dir, "auth.db"));
+function setup(contextTokens = 0) {
 	const settings = Settings.isolated();
-	const modelRegistry = new ModelRegistry(authStorage, path.join(dir, "models.yml"), { settings });
 	const model = buildModel({
 		id: "focused-model",
 		name: "Focused Model",
@@ -33,25 +26,59 @@ test("the model picker switches the focused agent, not the main session behind i
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	} as never);
 	const switched: string[] = [];
+	const completed = Promise.withResolvers<void>();
+	const compactStarted = Promise.withResolvers<SessionCommandTarget | undefined>();
+	const compactFinished = Promise.withResolvers<void>();
+	const compact = Promise.withResolvers<CompactionOutcome>();
+	const handleCompactCommand: InteractiveModeContext["handleCompactCommand"] = async (
+		_instructions,
+		_mode,
+		beforeFlush,
+		target,
+	) => {
+		compactStarted.resolve(target);
+		const outcome = await compact.promise;
+		await beforeFlush?.(outcome);
+		compactFinished.resolve();
+		return outcome;
+	};
+	let sessionId = "focused-session";
 	const makeSession = (label: string): AgentSession =>
 		({
 			model: undefined,
-			modelRegistry,
+			modelRegistry: {} as ModelRegistry, // Scoped models do not access the registry.
 			scopedModels: [{ model }],
-			getContextUsage: () => ({ tokens: 0 }),
-			getRoleModelCycle: () => undefined,
+			sessionManager: {
+				getSessionId: () => (label === "focused" ? sessionId : label),
+				getLeafId: () => null,
+			},
+			get sessionId() {
+				return label === "focused" ? sessionId : label;
+			},
+			getContextUsage: () => ({ tokens: contextTokens }),
+			getRoleModelCycle: () => ({ models: [{ role: "default", model }], currentIndex: 0 }),
 			resolveTemporaryModelThinkingLevel: () => undefined,
 			setModelTemporary: async () => {
-				switched.push(label);
+				switched.push(`${label}:temporary`);
+			},
+			applyRoleModel: async () => {
+				switched.push(`${label}:role`);
+			},
+			setModel: async () => {
+				switched.push(`${label}:default`);
+				return { switched: true };
 			},
 		}) as unknown as AgentSession;
-
-	let picker: Component | undefined;
+	let menu: Component | undefined;
 	let mounts = 0;
+	let hides = 0;
+	const errors: string[] = [];
 	const editor = {} as Component;
+	const focused = makeSession("focused");
+	const other = makeSession("other");
 	const ctx = {
 		session: makeSession("main"),
-		viewSession: makeSession("focused"),
+		viewSession: focused,
 		focusedAgentId: "Side-1",
 		settings,
 		editor,
@@ -59,31 +86,186 @@ test("the model picker switches the focused agent, not the main session behind i
 		keybindings: { getKeys: () => ["alt+m"] },
 		statusLine: { invalidate: () => {} },
 		updateEditorBorderColor: () => {},
-		showStatus: () => {},
-		showError: () => {},
+		showModelCycleTrack: () => {
+			completed.resolve();
+		},
+		showStatus: () => {
+			completed.resolve();
+		},
+		showError: (error: string) => {
+			errors.push(error);
+			completed.resolve();
+		},
+		handleCompactCommand,
 		ui: {
+			terminal: { rows: 24 },
 			showOverlay: (component: Component) => {
-				picker = component;
+				menu = component;
 				mounts++;
-				return { hide: () => {} };
+				return {
+					hide: () => {
+						hides++;
+					},
+				};
 			},
 			setFocus: () => {},
 			requestRender: () => {},
 		},
 	} as unknown as InteractiveModeContext;
+	return {
+		ctx,
+		settings,
+		switched,
+		errors,
+		focused,
+		other,
+		completed,
+		compactStarted,
+		compactFinished,
+		compact,
+		controller: new SelectorController(ctx),
+		get menu() {
+			return menu;
+		},
+		get mounts() {
+			return mounts;
+		},
+		get hides() {
+			return hides;
+		},
+		changeSessionIdentity() {
+			sessionId = "replacement-session";
+		},
+	};
+}
 
-	try {
-		const controller = new SelectorController(ctx);
-		controller.showModelSelector({ temporaryOnly: true });
-		controller.showModelSelector({ temporaryOnly: true });
-		expect(mounts).toBe(1);
-		expect(picker).toBeDefined();
-		// onActivate runs the async apply; await the microtask it schedules rather than a delay.
-		picker?.handleInput?.("\r");
-		await Promise.resolve();
-		expect(switched).toEqual(["focused"]);
-	} finally {
-		authStorage.close();
-		await fs.rm(dir, { recursive: true, force: true });
-	}
+test("the model picker switches the focused agent, not the main session behind it", async () => {
+	const state = setup();
+	state.controller.showModelSelector({ temporaryOnly: true });
+	state.controller.showModelSelector({ temporaryOnly: true });
+	expect(state.mounts).toBe(1);
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual(["focused:temporary"]);
+	expect(state.errors).toEqual([]);
+});
+
+test("a model picker opened on A refuses to mutate A or B after focus moves to B", async () => {
+	const state = setup();
+	state.controller.showModelSelector({ temporaryOnly: true });
+	Object.assign(state.ctx, { viewSession: state.other });
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
+	expect(state.hides).toBe(1);
+});
+
+test("a model picker refuses a replaced session behind the same AgentSession object", async () => {
+	const state = setup();
+	state.controller.showModelSelector({ temporaryOnly: true });
+	state.changeSessionIdentity();
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
+});
+
+test("a quick-role picker refuses a focus change instead of applying the role to B", async () => {
+	const state = setup();
+	state.controller.showModelSelector({ temporaryOnly: true });
+	state.menu?.handleInput?.("@");
+	Object.assign(state.ctx, { viewSession: state.other });
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
+});
+
+test("the model hub assigns the focused agent default without changing the root", async () => {
+	const state = setup();
+	state.controller.showModelSelector();
+	state.menu?.handleInput?.("\r");
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual(["focused:default"]);
+	expect(state.errors).toEqual([]);
+	state.menu?.handleInput?.("\x1b");
+	state.menu?.handleInput?.("\x1b");
+});
+
+test("a model hub opened on A refuses its default assignment after focus moves to B", async () => {
+	const state = setup();
+	state.controller.showModelSelector();
+	state.menu?.handleInput?.("\r");
+	Object.assign(state.ctx, { viewSession: state.other });
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
+	expect(state.settings.getModelRole("default")).toBeUndefined();
+	expect(state.hides).toBe(1);
+});
+
+test("a model hub rechecks focus after waiting for the default-role mutation lock", async () => {
+	const state = setup();
+	state.controller.showModelSelector();
+	state.menu?.handleInput?.("\r");
+	state.menu?.handleInput?.("\r");
+	Object.assign(state.ctx, { viewSession: state.other });
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
+	expect(state.settings.getModelRole("default")).toBeUndefined();
+});
+
+test("a quick-role selection still applies its model to the captured focused session", async () => {
+	const state = setup();
+	state.controller.showModelSelector({ temporaryOnly: true });
+	state.menu?.handleInput?.("@");
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual(["focused:role"]);
+	expect(state.errors).toEqual([]);
+});
+
+test("a model hub refuses a replaced session even while its AgentSession remains focused", async () => {
+	const state = setup();
+	state.controller.showModelSelector();
+	state.menu?.handleInput?.("\r");
+	state.changeSessionIdentity();
+	state.menu?.handleInput?.("\r");
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
+	expect(state.settings.getModelRole("default")).toBeUndefined();
+});
+
+test("an explicitly captured stale command target cannot open a model selector on another session", () => {
+	const state = setup();
+	const target = captureSessionCommandTarget(state.focused);
+	Object.assign(state.ctx, { viewSession: state.other });
+	state.controller.showModelSelector({ temporaryOnly: true }, target);
+	expect(state.mounts).toBe(0);
+	expect(state.switched).toEqual([]);
+});
+
+test("over-context model selection compacts the captured child and switches it once", async () => {
+	const state = setup(130_000);
+	state.controller.showModelSelector({ temporaryOnly: true });
+	state.menu?.handleInput?.("\r");
+	const target = await state.compactStarted.promise;
+	expect(target?.session).toBe(state.focused);
+	expect(state.switched).toEqual([]);
+	state.compact.resolve("ok");
+	await state.compactFinished.promise;
+	await state.completed.promise;
+	expect(state.switched).toEqual(["focused:temporary"]);
+	expect(state.errors).toEqual([]);
+});
+
+test("a delayed compaction cannot switch A or B after focus changes", async () => {
+	const state = setup(130_000);
+	state.controller.showModelSelector({ temporaryOnly: true });
+	state.menu?.handleInput?.("\r");
+	await state.compactStarted.promise;
+	Object.assign(state.ctx, { viewSession: state.other });
+	state.compact.resolve("ok");
+	await state.compactFinished.promise;
+	await state.completed.promise;
+	expect(state.switched).toEqual([]);
 });

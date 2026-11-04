@@ -7,6 +7,7 @@ import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor
 import { resolveExplicitModelRole } from "../config/model-resolver";
 import { persistedOrchestratorWorkerLabels } from "../orchestrator/runtime";
 import { assistantTurnProducedOutput } from "../session/messages";
+import { importLegacyNodeTopology, readNodeTopology, rebuildNodeIndex } from "../session/node-topology";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { readSessionLiveState } from "../session/session-liveness";
 import { visitEntriesFromFileStream } from "../session/session-loader";
@@ -406,6 +407,8 @@ export async function registerPersistedSubagents(
 ): Promise<void> {
 	if (!sessionFile?.endsWith(".jsonl")) return;
 	const shouldContinue = options.shouldContinue ?? (() => true);
+	const requestedNode = await readNodeTopology(sessionFile);
+	sessionFile = requestedNode?.rootSessionFile ?? sessionFile;
 	if (!shouldContinue()) return;
 	const root = sessionFile.slice(0, -6);
 	const fleetRoot = path.resolve(root, "fleet");
@@ -416,6 +419,7 @@ export async function registerPersistedSubagents(
 		return;
 	}
 	if (rootEntries.length === 0) return;
+	await rebuildNodeIndex(sessionFile);
 	if (!shouldContinue()) return;
 	const orchestratorWorkerLabels = await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue);
 	if (!shouldContinue()) return;
@@ -521,9 +525,18 @@ async function registerPersistedSubagentsFromDir(
 			}
 			continue;
 		}
-		const id = entry.name.slice(0, -6);
+		const stem = entry.name.slice(0, -6);
 		// The stem also names the child artifact directory; it must descend rather than alias this directory or its parent.
-		if (!id || id === "." || id === "..") continue;
+		if (!stem || stem === "." || stem === "..") continue;
+		const node = await importLegacyNodeTopology(sessionFile);
+		const id = node.id;
+		const rootSessionFile = `${path.resolve(fleetRoot, "..")}.jsonl`;
+		const rootNode = await importLegacyNodeTopology(rootSessionFile);
+		// Copied fork artifacts are historical payloads, never adoption instructions.
+		if (node.rootId !== rootNode.rootId) continue;
+		if (node.parentId !== undefined && node.parentId !== (parentId ?? rootNode.id)) {
+			throw new Error(`Persisted node parent mismatch: ${id}`);
+		}
 		const orchestratorLabel = orchestratorWorkerLabels.get(id);
 		const orchestratorOwned = orchestratorLabel !== undefined;
 		let existing = registry.get(id);
@@ -540,7 +553,7 @@ async function registerPersistedSubagentsFromDir(
 		if (orchestratorOwned && parentId === undefined && existing?.sessionFile !== sessionFile) {
 			await registerPersistedSubagentsFromDir(
 				registry,
-				path.join(dir, id),
+				sessionFile.slice(0, -6),
 				fleetRoot,
 				id,
 				await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue),
@@ -573,6 +586,12 @@ async function registerPersistedSubagentsFromDir(
 						id,
 						label: orchestratorLabel ?? id,
 						kind: isSideAgentId(id) ? "side" : "sub",
+						nodeId: node.id,
+						parentNodeId: node.parentId,
+						rootId: node.rootId,
+						spawnAnchorId: node.spawnAnchorId,
+						generation: node.generation,
+						nodeState: tombstoned ? "stopped" : node.state,
 						parentId: parentId ?? MAIN_AGENT_ID,
 						session: null,
 						sessionFile,
@@ -581,7 +600,7 @@ async function registerPersistedSubagentsFromDir(
 						createdAt: metadata.createdAt,
 						lastActivity: metadata.lastActivity,
 						history: metadata.history,
-						status: tombstoned ? "aborted" : "parked",
+						status: tombstoned || node.state !== "active" ? "aborted" : "parked",
 					});
 					const ref = registry.get(id);
 					transcripts.push({
@@ -595,7 +614,7 @@ async function registerPersistedSubagentsFromDir(
 		}
 		await registerPersistedSubagentsFromDir(
 			registry,
-			path.join(dir, id),
+			sessionFile.slice(0, -6),
 			fleetRoot,
 			id,
 			await readPersistedOrchestratorWorkerLabels(sessionFile, shouldContinue),

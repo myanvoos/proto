@@ -163,7 +163,7 @@ impl Backend for WaylandBackend {
 			self.selected_display_allowed()?;
 			let image = capture::capture()?;
 			let display = Self::synthetic_display(&image);
-			self.displays = vec![display.clone()];
+			self.displays = vec![display];
 			match target {
 				Target::Desktop => {
 					let geometry = FrameGeometry::for_displays(&self.displays);

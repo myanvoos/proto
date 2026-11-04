@@ -23,6 +23,7 @@ import type {
 	ExtensionAskDialogQuestion,
 	ExtensionAskDialogResultItem,
 	ExtensionAskDialogSubmitResult,
+	ExtensionAskDialogTimeoutResult,
 } from "../../extensibility/extensions";
 import { expandKeyHint, sanitizeCarriageReturns } from "../../tools/render-utils";
 import { getTabBarTheme } from "../shared";
@@ -72,7 +73,7 @@ function boundPromptTitle(prefix: string, question: string): string {
 }
 
 interface AskDialogCallbacks {
-	onSubmit(result: ExtensionAskDialogSubmitResult): void;
+	onSubmit(result: ExtensionAskDialogSubmitResult | ExtensionAskDialogTimeoutResult): void;
 	onCancel(): void;
 	onPrompt(title: string, prefill?: string): Promise<string | undefined>;
 }
@@ -100,7 +101,6 @@ interface QuestionState {
 	cursorIndex: number;
 	scrollOffset: number;
 	manualScroll: boolean;
-	timedOut: boolean;
 }
 
 type QuestionRowKind = "option" | "other";
@@ -393,6 +393,7 @@ export class AskDialogComponent implements Component {
 	}
 
 	#states: QuestionState[];
+	#confirmed = new Map<number, ExtensionAskDialogResultItem>();
 	#activeTabIndex = 0;
 	#submitScrollOffset = 0;
 	#bodyRows = MIN_BODY_ROWS;
@@ -400,7 +401,6 @@ export class AskDialogComponent implements Component {
 	#remainingSeconds: number | undefined;
 	#countdown: CountdownTimer | undefined;
 	#promptActive = false;
-	#timeoutExpired = false;
 	#closed = false;
 	#tabBar: TabBar | undefined;
 	#stableHeight: { key: string; total: number } | undefined;
@@ -429,7 +429,6 @@ export class AskDialogComponent implements Component {
 				cursorIndex: clamp(recommended ?? 0, 0, maxIndex),
 				scrollOffset: 0,
 				manualScroll: false,
-				timedOut: false,
 			};
 		});
 		if (options.timeout && options.timeout > 0) {
@@ -476,7 +475,6 @@ export class AskDialogComponent implements Component {
 	handleInput(keyData: string): void {
 		if (this.#closed || this.#promptActive) return;
 
-		this.#countdown?.reset();
 		if (matchesSelectCancel(keyData)) {
 			this.#finishCancel();
 			return;
@@ -817,6 +815,8 @@ export class AskDialogComponent implements Component {
 
 	#advanceAfterQuestion(): void {
 		const current = this.#currentQuestionIndex();
+		const result = this.#buildResults()[current];
+		if (result) this.#confirmed.set(current, result);
 		if (this.#questions.length === 1) {
 			this.#finishSubmit();
 			return;
@@ -849,6 +849,8 @@ export class AskDialogComponent implements Component {
 				clearNoteUnlessRow(state, rowItem.key);
 			}
 			if (question.multi && this.#questions.length === 1) {
+				const result = this.#buildResults()[0];
+				if (result) this.#confirmed.set(0, result);
 				this.#activeTabIndex = this.#submitTabIndex();
 				this.#submitScrollOffset = 0;
 			} else {
@@ -856,7 +858,6 @@ export class AskDialogComponent implements Component {
 			}
 		} finally {
 			this.#promptActive = false;
-			this.#runDeferredTimeout();
 			this.#requestRender();
 		}
 	}
@@ -877,7 +878,6 @@ export class AskDialogComponent implements Component {
 			state.noteRowKey = rowItem.key;
 		} finally {
 			this.#promptActive = false;
-			this.#runDeferredTimeout();
 			this.#requestRender();
 		}
 	}
@@ -1048,34 +1048,21 @@ export class AskDialogComponent implements Component {
 
 	#handleTimeout(): void {
 		if (this.#closed) return;
-		if (this.#promptActive) {
-			this.#timeoutExpired = true;
-			return;
-		}
+		this.#closed = true;
+		this.#countdown?.dispose();
+		const results = this.#buildResults().map(
+			(result, index) =>
+				this.#confirmed.get(index) ?? {
+					...result,
+					selectedOptions: [],
+					customInput: undefined,
+					note: undefined,
+					noteOption: undefined,
+					timedOut: true,
+				},
+		);
+		this.callbacks.onSubmit({ kind: "timeout", results });
 		this.options.onTimeout?.();
-		for (let index = 0; index < this.#questions.length; index++) {
-			const question = this.#questions[index];
-			const state = this.#states[index];
-			if (!question || !state) continue;
-			if (state.selectedOptions.size === 0 && state.customInput === undefined) {
-				const noteMatch = /^option:(\d+)$/.exec(state.noteRowKey ?? "");
-				const notedIndex = noteMatch ? Number.parseInt(noteMatch[1], 10) : Number.NaN;
-				const fallbackIndex =
-					Number.isInteger(notedIndex) && question.options[notedIndex]
-						? notedIndex
-						: clamp(question.recommended ?? 0, 0, Math.max(0, question.options.length - 1));
-				const fallback = question.options[fallbackIndex];
-				if (fallback) state.selectedOptions.add(fallback.label);
-				state.timedOut = true;
-			}
-		}
-		this.#finishSubmit();
-	}
-
-	#runDeferredTimeout(): void {
-		if (!this.#timeoutExpired) return;
-		this.#timeoutExpired = false;
-		this.#handleTimeout();
 	}
 
 	#finishSubmit(): void {
@@ -1110,7 +1097,6 @@ export class AskDialogComponent implements Component {
 				customInput: state.customInput,
 				note: noteForSubmittedAnswer(question, state)?.text,
 				noteOption: noteForSubmittedAnswer(question, state)?.option,
-				timedOut: state.timedOut || undefined,
 			});
 		}
 		return results;

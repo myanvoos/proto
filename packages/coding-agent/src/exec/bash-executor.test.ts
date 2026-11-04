@@ -151,7 +151,6 @@ test("retains background jobs from a replacement shell after cancellation", asyn
 			fsObservations: [],
 			protolensDispatches: [],
 			stageRecords: [],
-			sessionEnded: false,
 		});
 		await firstRun.promise;
 		await oldShellClosed.promise;
@@ -165,7 +164,6 @@ test("retains background jobs from a replacement shell after cancellation", asyn
 			fsObservations: [],
 			protolensDispatches: [],
 			stageRecords: [],
-			sessionEnded: false,
 		});
 		await firstRun.promise;
 		await disposeBashSessions(sessionKey);
@@ -186,7 +184,6 @@ test("keeps raw failure diagnostics when minimized output cannot be persisted", 
 			fsObservations: [],
 			protolensDispatches: [],
 			stageRecords: [],
-			sessionEnded: false,
 			minimized: {
 				filter: "lint",
 				text: "src/event-cache.ts:281-405 multiple ... errors\n",
@@ -315,7 +312,6 @@ test("watchdog timeout flags output as possibly incomplete when the native shell
 			fsObservations: [],
 			protolensDispatches: [],
 			stageRecords: [],
-			sessionEnded: false,
 		});
 		await disposeBashSessions(sessionKey);
 	}

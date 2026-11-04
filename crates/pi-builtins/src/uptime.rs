@@ -468,7 +468,7 @@ fn system_boot_time(_host: &Host) -> Option<i64> {
 /// gnulib's Linux fallbacks: the modification time of a file only the boot
 /// sequence touches, else now minus `CLOCK_BOOTTIME`.
 #[cfg(target_os = "linux")]
-fn system_boot_time(host: &Host) -> Option<i64> {
+fn system_boot_time(_host: &Host) -> Option<i64> {
 	const BOOT_TOUCHED_FILES: [&str; 4] = [
 		"/var/lib/systemd/random-seed",
 		"/var/lib/urandom/random-seed",

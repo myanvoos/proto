@@ -145,7 +145,7 @@ export declare class TtyWriter {
 
 export declare function __ompInstallTokioRuntime(): void
 
-export declare function __piNativesV19_2_1(): void
+export declare function __piNativesV19_2_2(): void
 
 export declare function astEdit(options: AstReplaceOptions): Promise<AstReplaceResult>
 
@@ -1039,11 +1039,6 @@ export interface ShellRunResult {
   fsObservations: Array<FsObservation>
   protolensDispatches: Array<string>
   stageRecords: Array<string>
-  /**
-   * The command ended the persistent session (`exit`, `exec`, top-level
-   * `return`/`break`); the next run starts a fresh shell.
-   */
-  sessionEnded: boolean
 }
 
 export interface SliceResult {

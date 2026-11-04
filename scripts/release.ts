@@ -212,24 +212,15 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	console.log(`  Version ${version} > ${latestTag}\n`);
 
 	console.log(`Updating package versions to ${version}…`);
-	const pkgJsonPaths = await Array.fromAsync(packageJsonGlob.scan("."));
-
-	const publicPkgPaths: string[] = [];
-	for (const pkgPath of pkgJsonPaths) {
+	for await (const pkgPath of packageJsonGlob.scan(".")) {
 		const pkgJson = await Bun.file(pkgPath).json();
 		if (pkgJson.private) {
 			console.log(`  Skipping ${pkgJson.name} (private)`);
 			continue;
 		}
-		publicPkgPaths.push(pkgPath);
-	}
-
-	await $`sd '"version": "[^"]+"' ${`"version": "${version}"`} ${publicPkgPaths}`;
-
-	console.log("  Verifying versions:");
-	for (const pkgPath of publicPkgPaths) {
-		const pkgJson = await Bun.file(pkgPath).json();
-		console.log(`    ${pkgJson.name}: ${pkgJson.version}`);
+		pkgJson.version = version;
+		await Bun.write(pkgPath, `${JSON.stringify(pkgJson, null, 2)}\n`);
+		console.log(`  ${pkgJson.name}: ${pkgJson.version}`);
 	}
 	console.log();
 
@@ -240,9 +231,12 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 	console.log("  Updated root catalog @oh-my-pi/* entries");
 
 	console.log(`Updating Rust workspace version to ${version}…`);
-	await $`sd '^version = "[^"]+"' ${`version = "${version}"`} Cargo.toml`;
-
-	const cargoToml = await Bun.file("Cargo.toml").text();
+	const cargoFile = Bun.file("Cargo.toml");
+	const previousCargoToml = await cargoFile.text();
+	const workspaceVersion = /(\[workspace\.package\][\s\S]*?^version = )"[^"]+"/m;
+	if (!workspaceVersion.test(previousCargoToml)) throw new Error("Rust workspace version is missing");
+	const cargoToml = previousCargoToml.replace(workspaceVersion, `$1"${version}"`);
+	await Bun.write(cargoFile, cargoToml);
 	const versionMatch = cargoToml.match(/^\[workspace\.package\][\s\S]*?^version = "([^"]+)"/m);
 	if (versionMatch) {
 		console.log(`  workspace: ${versionMatch[1]}`);
@@ -267,7 +261,13 @@ async function cmdRelease(versionOrBump: string): Promise<void> {
 		"packages/natives/native/index.d.ts",
 		"packages/natives/native/index.js",
 	];
-	await $`sd '__piNativesV[A-Za-z0-9_]+' ${sentinelName} ${sentinelFiles}`;
+	for (const sentinelPath of sentinelFiles) {
+		const sentinelFile = Bun.file(sentinelPath);
+		const content = await sentinelFile.text();
+		const sentinel = /__piNativesV[A-Za-z0-9_]+/g;
+		if (!sentinel.test(content)) throw new Error(`pi-natives version sentinel is missing in ${sentinelPath}`);
+		await Bun.write(sentinelFile, content.replace(sentinel, sentinelName));
+	}
 	const libRs = await Bun.file("crates/pi-natives/src/lib.rs").text();
 	if (!libRs.includes(`js_name = "${sentinelName}"`)) {
 		console.error(

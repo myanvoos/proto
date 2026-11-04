@@ -11,7 +11,7 @@
 
 [package]
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.92.0"
 name = "brush-parser"
 version = "0.4.0"
 authors = ["reuben olinsky"]
@@ -51,21 +51,21 @@ path = "src/lib.rs"
 bench = false
 
 [dependencies.arbitrary]
-version = "1.4.2"
+version = "1.5.0"
 features = ["derive"]
 optional = true
 
 [dependencies.bon]
-version = "3.9.1"
+version = "3.10.3"
 
 [dependencies.cached]
-version = "0.59.0"
+version = "4.1.1"
 
 [dependencies.indenter]
 version = "0.3.4"
 
 [dependencies.insta]
-version = "1.47.1"
+version = "1.49.0"
 features = ["redactions"]
 
 [dependencies.miette]
@@ -75,10 +75,10 @@ optional = true
 default-features = false
 
 [dependencies.peg]
-version = "0.8.5"
+version = "0.8.6"
 
 [dependencies.serde]
-version = "1.0.228"
+version = "1.0.229"
 features = [
     "derive",
     "rc",
@@ -86,23 +86,23 @@ features = [
 optional = true
 
 [dependencies.thiserror]
-version = "2.0.18"
+version = "2.0.21"
 
 [dependencies.tracing]
 version = "0.1.44"
 
 [dependencies.utf8-chars]
-version = "3.0.6"
+version = "3.0.7"
 
 [dependencies.winnow]
-version = "1.0.0"
+version = "1.0.4"
 optional = true
 
 [dev-dependencies.anyhow]
-version = "1.0.102"
+version = "1.0.104"
 
 [dev-dependencies.insta]
-version = "1.47.1"
+version = "1.49.0"
 features = [
     "ron",
     "redactions",
@@ -113,21 +113,21 @@ version = "1.4.1"
 features = ["unstable"]
 
 [dev-dependencies.serde]
-version = "1.0.228"
+version = "1.0.229"
 features = [
     "derive",
     "rc",
 ]
 
 [dev-dependencies.serde_json]
-version = "1.0.149"
+version = "1.0.154"
 
 [target.wasm32-unknown-unknown.dependencies.getrandom]
-version = "0.4.2"
+version = "0.4.3"
 features = ["wasm_js"]
 
 [target.wasm32-unknown-unknown.dependencies.uuid]
-version = "1.23.1"
+version = "1.29.0"
 features = ["js"]
 
 [lints.clippy]

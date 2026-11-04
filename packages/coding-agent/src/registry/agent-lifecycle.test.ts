@@ -49,7 +49,11 @@ describe("global", () => {
 			id: "remote-killed",
 			label: "remote kill",
 			kind: "sub",
-			session: { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession,
+			session: {
+				hasActiveMonitors: () => false,
+				prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+				dispose: async () => {},
+			} as unknown as AgentSession,
 			sessionFile: null,
 			status: "running",
 		});
@@ -71,6 +75,7 @@ describe("revival failure", () => {
 	function fakeSession(disposed: { count: number }): AgentSession {
 		return {
 			hasActiveMonitors: () => false,
+			prepareRuntimeRelease: (release: () => Promise<void>) => release(),
 			dispose: async () => {
 				disposed.count++;
 			},
@@ -118,7 +123,11 @@ describe("revival failure", () => {
 
 describe("idle auto-park", () => {
 	function registerIdle(registry: AgentRegistry, id: string, kind: "sub" | "side"): AgentSession {
-		const session = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
+		const session = {
+			hasActiveMonitors: () => false,
+			prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+			dispose: async () => {},
+		} as unknown as AgentSession;
 		registry.register({ id, label: id, kind, session, sessionFile: null, status: "idle" });
 		return session;
 	}
@@ -247,7 +256,161 @@ describe("reclaimDeadCorpse", () => {
 	});
 });
 
+describe("subtree lifetime", () => {
+	test("concurrent stop acknowledgments wait for one actual cleanup", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const entered = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		let attempts = 0;
+		const session = {
+			dispose: async () => {
+				attempts++;
+				entered.resolve();
+				await finish.promise;
+			},
+		} as unknown as AgentSession;
+		const ref = registry.register({ id: "worker", label: "worker", kind: "sub", session, status: "idle" });
+		const first = lifecycle.release(ref.id, ref, { tombstone: true });
+		await entered.promise;
+		const second = lifecycle.release(ref.id, ref, { tombstone: true });
+		expect(attempts).toBe(1);
+		expect(registry.get(ref.id)).toMatchObject({ status: "aborted", session: null });
+		finish.resolve();
+		expect(await first).toBe(true);
+		expect(await second).toBe(true);
+		expect(attempts).toBe(1);
+		await lifecycle.dispose();
+	});
+
+	test("failed subtree cleanup remains stopped and retryable rather than acknowledging released resources", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		let attempts = 0;
+		const session = {
+			dispose: async () => {
+				if (++attempts === 1) throw new Error("resource still running");
+			},
+		} as unknown as AgentSession;
+		const ref = registry.register({ id: "worker", label: "worker", kind: "sub", session, status: "idle" });
+		await expect(lifecycle.terminateSubtree(ref.id)).rejects.toThrow("resource still running");
+		expect(registry.get(ref.id)).toMatchObject({ status: "aborted", nodeState: "stopped", session: null });
+		await expect(lifecycle.ensureLive(ref.id)).rejects.toThrow("cannot be revived");
+		expect(await lifecycle.release(ref.id, ref, { tombstone: true })).toBe(true);
+		expect(attempts).toBe(2);
+		await lifecycle.dispose();
+	});
+
+	test("terminating a parked ancestor stops descendants without touching siblings or another root", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const stopped: string[] = [];
+		for (const [id, parentId, rootId] of [
+			["root", undefined, "root"],
+			["parent", "root", "root"],
+			["grandchild", "parent", "root"],
+			["sibling", "root", "root"],
+			["other", undefined, "other"],
+		] as const) {
+			registry.register({
+				id,
+				parentId,
+				rootId,
+				nodeId: id,
+				fleetRoot: rootId,
+				label: id,
+				kind: "sub",
+				session:
+					id === "parent"
+						? null
+						: ({
+								dispose: async () => {
+									stopped.push(id);
+								},
+							} as unknown as AgentSession),
+				status: id === "parent" ? "parked" : "idle",
+			});
+		}
+		await lifecycle.terminateSubtree("parent");
+		expect(registry.getNode("parent")?.status).toBe("aborted");
+		expect(registry.getNode("grandchild")?.status).toBe("aborted");
+		expect(stopped).toEqual(["grandchild"]);
+		expect(registry.getNode("sibling")?.status).toBe("idle");
+		expect(registry.getNode("other")?.status).toBe("idle");
+		await lifecycle.dispose();
+	});
+
+	test("an in-flight revival cannot attach after its generation is stopped", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		const entered = Promise.withResolvers<void>();
+		const resume = Promise.withResolvers<void>();
+		const ref = registry.register({ id: "worker", label: "worker", kind: "sub", session: null, status: "parked" });
+		let disposed = false;
+		lifecycle.adopt(ref.id, {
+			idleTtlMs: 0,
+			revive: async () => {
+				entered.resolve();
+				await resume.promise;
+				return {
+					prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+					dispose: async () => {
+						disposed = true;
+					},
+				} as unknown as AgentSession;
+			},
+		});
+		const pending = lifecycle.ensureLive(ref.id);
+		await entered.promise;
+		await lifecycle.terminateSubtree(ref.id);
+		resume.resolve();
+		await expect(pending).rejects.toThrow("revival aborted");
+		expect(disposed).toBe(true);
+		expect(registry.get(ref.id)).toMatchObject({ status: "aborted", session: null, nodeState: "stopped" });
+		await lifecycle.dispose();
+	});
+});
+
 describe("parking", () => {
+	test("unsafe snapshot refusal leaves the runtime attached and descendants running", async () => {
+		const registry = new AgentRegistry();
+		const lifecycle = new AgentLifecycleManager(registry);
+		let disposed = false;
+		const parent = {
+			hasActiveMonitors: () => false,
+			prepareRuntimeRelease: async () => {
+				throw new Error("unsupported live state");
+			},
+			dispose: async () => {
+				disposed = true;
+			},
+		} as unknown as AgentSession;
+		const ref = registry.register({
+			id: "parent",
+			label: "parent",
+			kind: "sub",
+			nodeId: "parent",
+			rootId: "root",
+			session: parent,
+			status: "idle",
+		});
+		registry.register({
+			id: "grandchild",
+			label: "grandchild",
+			kind: "sub",
+			parentId: "parent",
+			rootId: "root",
+			session: null,
+			status: "running",
+		});
+		lifecycle.adopt(ref.id, { idleTtlMs: 0 });
+		await expect(lifecycle.releaseRuntime(ref.id)).rejects.toThrow("unsupported live state");
+		expect(registry.get(ref.id)).toMatchObject({ session: parent, status: "idle" });
+		expect(registry.get("grandchild")?.status).toBe("running");
+		expect(disposed).toBe(false);
+		await lifecycle.dispose();
+	});
+
 	test("resumes a parked worker through its run-local reviver ahead of the persisted factory", async () => {
 		const dir = makeTempDir();
 		const sessionFile = path.join(dir, "worker.jsonl");
@@ -257,11 +420,16 @@ describe("parking", () => {
 		let disposed = false;
 		const originalSession = {
 			hasActiveMonitors: () => false,
+			prepareRuntimeRelease: (release: () => Promise<void>) => release(),
 			dispose: async () => {
 				disposed = true;
 			},
 		} as unknown as AgentSession;
-		const revivedSession = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
+		const revivedSession = {
+			hasActiveMonitors: () => false,
+			prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+			dispose: async () => {},
+		} as unknown as AgentSession;
 		const ref = registry.register({
 			id: "worker",
 			label: "worker",
@@ -333,6 +501,7 @@ describe("fleet-scoped disposal", () => {
 			status: "idle",
 			session: {
 				hasActiveMonitors: () => false,
+				prepareRuntimeRelease: (release: () => Promise<void>) => release(),
 				dispose: async () => {
 					disposed = true;
 				},
@@ -381,6 +550,7 @@ describe("fleet-scoped disposal", () => {
 					built.push(ref.id);
 					const session = {
 						hasActiveMonitors: () => false,
+						prepareRuntimeRelease: (release: () => Promise<void>) => release(),
 						dispose: async () => {
 							disposed.push(ref.id);
 						},
@@ -427,6 +597,7 @@ describe("fleet-scoped disposal", () => {
 				status: "idle",
 				session: {
 					hasActiveMonitors: () => false,
+					prepareRuntimeRelease: (release: () => Promise<void>) => release(),
 					dispose: async () => {
 						disposed.push(id);
 					},
@@ -451,7 +622,11 @@ describe("fleet-scoped disposal", () => {
 test("old parked revival blueprints retire without losing durable agent identity or cold revival", async () => {
 	const registry = new AgentRegistry();
 	const lifecycle = new AgentLifecycleManager(registry);
-	const revived = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
+	const revived = {
+		hasActiveMonitors: () => false,
+		prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+		dispose: async () => {},
+	} as unknown as AgentSession;
 	let coldRevives = 0;
 	lifecycle.setPersistedSubagentReviverFactory(
 		async () => async () => {
@@ -462,7 +637,11 @@ test("old parked revival blueprints retire without losing durable agent identity
 	);
 	for (let index = 0; index < 132; index++) {
 		const id = `historical-${index}`;
-		const session = { hasActiveMonitors: () => false, dispose: async () => {} } as unknown as AgentSession;
+		const session = {
+			hasActiveMonitors: () => false,
+			prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+			dispose: async () => {},
+		} as unknown as AgentSession;
 		registry.register({
 			id,
 			label: id,
@@ -492,7 +671,11 @@ describe("kill tombstone", () => {
 			id: "worker",
 			label: "worker",
 			kind: "sub",
-			session: { hasActiveMonitors: () => false, dispose } as unknown as AgentSession,
+			session: {
+				hasActiveMonitors: () => false,
+				prepareRuntimeRelease: (release: () => Promise<void>) => release(),
+				dispose,
+			} as unknown as AgentSession,
 			sessionFile,
 			status: "running",
 		});

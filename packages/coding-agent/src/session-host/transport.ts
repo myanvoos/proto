@@ -1,6 +1,8 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isEnoent } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { MAX_RPC_FRAME_BYTES } from "../modes/rpc/rpc-frame";
+import { MAX_SOCKET_QUEUE_BYTES, SocketWriter } from "../utils/socket-writer";
 
 /**
  * Feeds the RPC command stream from whichever client is currently attached.
@@ -17,78 +19,119 @@ import { isEnoent } from "@oh-my-pi/pi-utils";
 export class SessionHostMux {
 	readonly input: ReadableStream<Uint8Array>;
 
-	#write: ((line: string) => number) | undefined;
+	#writer: SocketWriter | undefined;
+	#attachmentGeneration = 0;
 	#pending: Uint8Array[] = [];
+	#pendingBytes = 0;
+	#fragments: Uint8Array[] = [];
+	#fragmentBytes = 0;
+	#serving = Promise.withResolvers<void>();
 	#wake: (() => void) | undefined;
 	#closed = false;
 
 	constructor() {
 		this.input = new ReadableStream<Uint8Array>({
-			pull: controller => {
-				const next = () => {
-					while (this.#pending.length > 0) {
-						const chunk = this.#pending.shift();
-						if (chunk && chunk.byteLength > 0) {
-							controller.enqueue(chunk);
-							return true;
-						}
+			pull: async controller => {
+				for (;;) {
+					const chunk = this.#pending.shift();
+					if (chunk) {
+						this.#pendingBytes -= chunk.byteLength;
+						controller.enqueue(chunk);
+						return;
 					}
-					return false;
-				};
-				if (next()) return;
-				if (this.#closed) {
-					controller.close();
-					return;
-				}
-				return new Promise<void>(resolve => {
+					if (this.#closed) {
+						controller.close();
+						return;
+					}
+					const { promise, resolve } = Promise.withResolvers<void>();
 					this.#wake = () => {
 						this.#wake = undefined;
 						resolve();
 					};
-				}).then(() => {
-					next();
-				});
+					await promise;
+				}
 			},
 		});
 	}
 
 	hasClient(): boolean {
-		return this.#write !== undefined;
+		return this.#writer !== undefined;
 	}
 
-	/** Latest-wins attach; pending bytes of a replaced client are dropped so a
-	 *  partial frame never leaks into the next client's command stream. */
-	attach(write: (line: string) => number): void {
-		this.#pending = [];
-		this.#write = write;
+	/** Authority epoch: queued commands from a retired attachment cannot retain its lease. */
+	get attachmentGeneration(): number {
+		return this.#attachmentGeneration;
+	}
+
+	whenServing(): Promise<void> {
+		return this.#serving.promise;
+	}
+
+	markServing(): void {
+		this.#serving.resolve();
+	}
+
+	/** Retire the old connection, including its unsent output and incomplete input frame. */
+	attach(writer: SocketWriter): void {
+		this.detach();
+		this.#attachmentGeneration++;
+		this.#writer = writer;
 	}
 
 	detach(): void {
-		this.#write = undefined;
+		if (this.#writer) this.#attachmentGeneration++;
+		this.#writer?.close();
+		this.#writer = undefined;
 		this.#pending = [];
+		this.#pendingBytes = 0;
+		this.#fragments = [];
+		this.#fragmentBytes = 0;
 	}
 
+	/** Only complete byte-delimited lines reach the shared UTF-8 RPC reader. */
 	feed(chunk: Uint8Array): void {
-		if (!this.#write) return;
-		this.#pending.push(chunk);
-		this.#wake?.();
+		if (!this.#writer) return;
+		let start = 0;
+		for (let index = 0; index < chunk.byteLength; index++) {
+			if (chunk[index] !== 10) continue;
+			this.#appendFragment(chunk.subarray(start, index + 1));
+			const line = new Uint8Array(this.#fragmentBytes);
+			let offset = 0;
+			for (const fragment of this.#fragments) {
+				line.set(fragment, offset);
+				offset += fragment.byteLength;
+			}
+			this.#fragments = [];
+			this.#fragmentBytes = 0;
+			this.#pending.push(line);
+			this.#pendingBytes += line.byteLength;
+			start = index + 1;
+		}
+		this.#appendFragment(chunk.subarray(start));
+		if (this.#pending.length > 0) this.#wake?.();
+	}
+
+	#appendFragment(chunk: Uint8Array): void {
+		if (this.#fragmentBytes + chunk.byteLength > MAX_RPC_FRAME_BYTES) {
+			throw new Error("Session RPC command frame exceeded the transport limit");
+		}
+		if (this.#pendingBytes + this.#fragmentBytes + chunk.byteLength > MAX_SOCKET_QUEUE_BYTES) {
+			throw new Error("Session RPC command backpressure limit exceeded");
+		}
+		if (chunk.byteLength === 0) return;
+		this.#fragments.push(chunk.slice());
+		this.#fragmentBytes += chunk.byteLength;
 	}
 
 	writeLine(line: string): void {
-		this.#write?.(line);
+		this.#writer?.send(line);
 	}
 
 	close(): void {
 		this.#closed = true;
-		this.#write = undefined;
+		this.detach();
 		this.#wake?.();
 	}
-}
-
-export interface SessionHostRpcTransport {
-	input: ReadableStream<Uint8Array>;
-	writeFrame(line: string): void;
-	hasClient(): boolean;
 }
 
 let activeMux: SessionHostMux | undefined;
@@ -101,6 +144,16 @@ export function activateSessionHostTransport(mux: SessionHostMux): void {
 /** RPC input override consumed by claimRpcInput() in protocol modes. */
 export function getSessionHostRpcInput(): ReadableStream<Uint8Array> | undefined {
 	return activeMux?.input;
+}
+
+/** The RPC command loop, not merely the socket listener, is ready to serve. */
+export function markSessionHostServing(): void {
+	activeMux?.markServing();
+}
+
+/** Captured at negotiation; a replaced/disconnected attachment loses command authority. */
+export function getSessionHostAttachmentGeneration(): number {
+	return activeMux?.attachmentGeneration ?? 0;
 }
 
 /** Frame sink override consumed by runRpcMode's writeFrames; null drops frames. */
@@ -129,33 +182,58 @@ export async function listenSessionHost(socketPath: string): Promise<SessionHost
 	}
 
 	const mux = new SessionHostMux();
-	let current: { close(): void } | undefined;
+	let current: Bun.Socket<SocketWriter | undefined> | undefined;
+	const fail = (socket: Bun.Socket<SocketWriter | undefined>, error: Error): void => {
+		logger.warn("Session host socket transport failed", { socketPath, error: error.message });
+		socket.data?.close(error);
+		if (current === socket) {
+			current = undefined;
+			mux.detach();
+		}
+		socket.terminate();
+	};
 
-	const server = Bun.listen<undefined>({
+	const server = Bun.listen<SocketWriter | undefined>({
 		unix: socketPath,
 		socket: {
 			open(socket) {
-				if (current) current.close();
+				current?.terminate();
 				current = socket;
-				mux.attach(line => socket.write(line));
+				const writer = new SocketWriter(
+					bytes => socket.write(bytes),
+					error => fail(socket, error),
+				);
+				socket.data = writer;
+				mux.attach(writer);
 			},
-			data(_socket, chunk) {
-				mux.feed(chunk);
+			data(socket, chunk) {
+				if (current !== socket) return;
+				try {
+					mux.feed(chunk);
+				} catch (error) {
+					fail(socket, error instanceof Error ? error : new Error(String(error)));
+				}
+			},
+			drain(socket) {
+				socket.data?.drain();
 			},
 			close(socket) {
+				socket.data?.close();
 				if (current === socket) {
 					current = undefined;
 					mux.detach();
 				}
 			},
-			error(socket) {
+			end(socket) {
+				socket.data?.close();
 				if (current === socket) {
 					current = undefined;
 					mux.detach();
 				}
-				try {
-					socket.end();
-				} catch {}
+				socket.terminate();
+			},
+			error(socket, error) {
+				fail(socket, error);
 			},
 		},
 	});
@@ -168,12 +246,9 @@ export async function listenSessionHost(socketPath: string): Promise<SessionHost
 		mux,
 		async stop(): Promise<void> {
 			mux.close();
-			current?.close();
+			current?.terminate();
 			current = undefined;
-			await new Promise<void>(resolve => {
-				server.stop(true);
-				resolve();
-			});
+			server.stop(true);
 			try {
 				await fs.rm(socketPath, { force: true });
 			} catch {}

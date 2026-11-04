@@ -611,12 +611,12 @@ describe("TranscriptContainer", () => {
 			}
 		}
 		const transcript = new TranscriptContainer();
-		const count = RETAINED_COMMITTED_BLOCKS + 500;
+		const count = 2500;
 		const blocks = Array.from({ length: count }, (_, index) => new ActionBlock([`settled-${index}-end`], true));
 		for (const block of blocks) transcript.addChild(block);
 		const committed = commitAll(transcript, 80);
 		expect(committed.rows).toContain("settled-0-end");
-		expect(transcript.children).toEqual(blocks.slice(-RETAINED_COMMITTED_BLOCKS));
+		expect(transcript.children).toEqual(blocks.slice(500));
 		expect(blocks.slice(0, 500).every(block => block.disposed)).toBe(true);
 		expect(blocks.slice(500).some(block => block.disposed)).toBe(false);
 		transcript.beginReplay();
@@ -629,6 +629,23 @@ describe("TranscriptContainer", () => {
 		transcript.render(80);
 		expect(transcript.getChildStartRow(blocks[0]!)).toBeUndefined();
 		expect(transcript.getChildStartRow(blocks.at(-1)!)).toBeDefined();
+		transcript.dispose();
+	});
+
+	it("retains more than the old byte window but retires acknowledged source beyond the expanded budget", () => {
+		const transcript = new TranscriptContainer();
+		const blocks = Array.from({ length: 6 }, (_, index) => new Block([`payload-${index}`], true));
+		for (const block of blocks) {
+			transcript.addChild(block);
+			transcript.accountSource(block, "x".repeat(350_000));
+		}
+		commitAll(transcript, 80);
+		expect(transcript.children).toEqual(blocks.slice(1));
+		transcript.beginReplay();
+		const replay = transcript.peekReplayBatch(80)!;
+		expect(replay.rows).not.toContain("payload-0");
+		expect(replay.rows).toContain("payload-1");
+		expect(replay.rows).toContain("payload-5");
 		transcript.dispose();
 	});
 

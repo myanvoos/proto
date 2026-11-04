@@ -18,6 +18,8 @@ import type {
 import type { ChecklistPhase } from "../../tools/checklist";
 import type { RpcMessagesPage } from "./rpc-messages";
 
+export type * from "../../session-host/node-protocol";
+
 export type RpcCommand =
 	| { id?: string; type: "negotiate_protocol"; protocolVersion: number }
 	| { id?: string; type: "prompt"; message: string; images?: ImageContent[]; streamingBehavior?: "steer" | "followUp" }

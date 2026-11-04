@@ -19,6 +19,8 @@ import {
 import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { truncateHead, truncateTail } from "../session/streaming-output";
 import { workerEnvFromParent } from "../subprocess/worker-client";
+import { SocketWriter } from "../utils/socket-writer";
+import { BrokerExecutionAdmission } from "./execution-admission";
 import { daemonBrokerEndpoint, writeDaemonScopeMeta } from "./paths";
 import { hasLiveDaemonProjectPresence, pruneDeadDaemonRuntimeDirs } from "./presence";
 import {
@@ -47,6 +49,7 @@ import {
 	parseDaemonWireMessage,
 	parseDaemonWireRequest,
 } from "./protocol";
+import { TerminalAttachments } from "./terminal-attachments";
 import { renderTerminalOutput } from "./terminal-output";
 
 const DEFAULT_IDLE_GRACE_MS = 3_000;
@@ -612,6 +615,7 @@ function connectPort(host: string, port: number): Promise<boolean> {
 }
 
 class DaemonBroker {
+	readonly #terminalAttachments = new TerminalAttachments();
 	readonly #projectDir: string;
 	readonly #runtimeDir: string;
 	readonly #endpoint: string;
@@ -626,7 +630,8 @@ class DaemonBroker {
 	readonly #completionSubscriptions = new Map<string, string | undefined>();
 	readonly #pendingCompletions = new Map<string, Map<string, DaemonCompletionNotification>>();
 	readonly #finished = Promise.withResolvers<void>();
-	readonly #sockets = new Set<net.Socket>();
+	readonly #sockets = new Map<net.Socket, SocketWriter>();
+	readonly #executionAdmission: BrokerExecutionAdmission;
 	#server: net.Server | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
 	#endpointTimer: NodeJS.Timeout | undefined;
@@ -642,6 +647,7 @@ class DaemonBroker {
 	) {
 		this.#projectDir = projectDir;
 		this.#runtimeDir = runtimeDir;
+		this.#executionAdmission = new BrokerExecutionAdmission(32, path.join(runtimeDir, "execution-leases.json"));
 		this.#endpoint = daemonBrokerEndpoint(projectDir, runtimeDir);
 		this.#token = token;
 		this.#idleGraceMs = idleGraceMs;
@@ -656,6 +662,7 @@ class DaemonBroker {
 		const { promise: listening, resolve, reject } = Promise.withResolvers<void>();
 		server.once("listening", resolve);
 		server.once("error", reject);
+		await this.#executionAdmission.initialize();
 		server.listen(this.#endpoint);
 		await listening;
 		await fs.chmod(this.#endpoint, 0o600);
@@ -691,8 +698,12 @@ class DaemonBroker {
 			await record.log?.close();
 			await record.persistQueue;
 		}
+		await this.#executionAdmission.detach();
 		this.#ownerSockets.clear();
-		for (const socket of this.#sockets) socket.destroy();
+		for (const [socket, writer] of this.#sockets) {
+			writer.close();
+			socket.destroy();
+		}
 		this.#sockets.clear();
 		this.#clients.clear();
 		if (this.#server) {
@@ -705,7 +716,15 @@ class DaemonBroker {
 	}
 
 	#accept(socket: net.Socket): void {
-		this.#sockets.add(socket);
+		const writer = new SocketWriter(
+			bytes => socket.write(bytes),
+			error => {
+				logger.warn("Daemon broker socket transport failed", { error: error.message });
+				socket.destroy(error);
+			},
+		);
+		this.#sockets.set(socket, writer);
+		socket.on("drain", () => writer.drain());
 		let authenticated = false;
 		let buffer = "";
 		socket.setEncoding("utf8");
@@ -732,6 +751,8 @@ class DaemonBroker {
 		});
 		socket.on("error", () => {});
 		socket.on("close", () => {
+			this.#terminalAttachments.disconnect(socket);
+			writer.close();
 			this.#sockets.delete(socket);
 			if (!authenticated) return;
 			this.#clients.delete(socket);
@@ -740,6 +761,17 @@ class DaemonBroker {
 				if (registration.socket === socket) this.#ownerSockets.delete(owner);
 			}
 		});
+	}
+
+	/** A failed reply retires its connection; pending completion records remain replayable. */
+	#sendFrame(socket: net.Socket, frame: string): void {
+		const writer = this.#sockets.get(socket);
+		if (!writer || socket.destroyed) return;
+		try {
+			writer.send(frame);
+		} catch {
+			// SocketWriter reports the failure and destroys the owning connection.
+		}
 	}
 
 	async #handleLine(socket: net.Socket, line: string, onAuthenticated: () => void): Promise<void> {
@@ -816,7 +848,7 @@ class DaemonBroker {
 					});
 					if (previous?.socket === socket && !replayOwners.has(owner)) continue;
 					for (const completion of this.#pendingCompletions.get(owner)?.values() ?? []) {
-						socket.write(`${JSON.stringify(completion)}\n`);
+						this.#sendFrame(socket, `${JSON.stringify(completion)}\n`);
 					}
 				}
 				for (const owner of detachedOwners) {
@@ -830,12 +862,13 @@ class DaemonBroker {
 					if (registration?.subscriptionId === request.completionSubscriptionId) this.#ownerSockets.delete(owner);
 				}
 			}
-			const result = await this.#dispatch(request.operation);
-			socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
+			const result = await this.#dispatch(request.operation, socket);
+			this.#sendFrame(socket, `${JSON.stringify({ id, ok: true, result })}\n`);
 			if (request.operation.op === "shutdown") setTimeout(() => void this.shutdown(), 10);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			socket.write(
+			this.#sendFrame(
+				socket,
 				`${JSON.stringify({
 					id,
 					ok: false,
@@ -853,9 +886,15 @@ class DaemonBroker {
 		}
 	}
 
-	async #dispatch(operation: DaemonOperation): Promise<DaemonRpcResult> {
+	async #dispatch(operation: DaemonOperation, socket: net.Socket): Promise<DaemonRpcResult> {
 		this.#assertAcceptingRequests();
 		switch (operation.op) {
+			case "execution-acquire":
+				await this.#executionAdmission.acquire(operation);
+				return { op: operation.op, leaseId: operation.leaseId };
+			case "execution-release":
+				await this.#executionAdmission.release(operation.leaseId, operation.ownerPid);
+				return { op: operation.op, leaseId: operation.leaseId };
 			case "ping":
 				return {
 					op: "ping",
@@ -883,9 +922,33 @@ class DaemonBroker {
 			case "wait":
 				return this.#wait(operation);
 			case "read":
-				return this.#read(operation);
+				return this.#read(operation, socket);
 			case "send":
-				return this.#send(operation);
+				return this.#send(operation, socket);
+			case "terminal_attach": {
+				const record = this.#record(operation.name, operation.expectedId);
+				if (!record.pty || terminalState(record.snapshot.state))
+					throw new Error("Process has no live terminal to attach");
+				const terminalLeaseId = this.#terminalAttachments.attach(record.snapshot.id, socket);
+				const cursor = record.output.end;
+				// A same-size reconnect still needs a fresh screen. Fake intermediate sizes can coalesce.
+				record.pty.resize(operation.columns, operation.rows);
+				if (record.snapshot.pid !== undefined) process.kill(record.snapshot.pid, "SIGWINCH");
+				return { op: "terminal_attach", daemon: record.snapshot, terminalLeaseId, cursor };
+			}
+			case "terminal_resize": {
+				const record = this.#record(operation.name, operation.expectedId);
+				this.#terminalAttachments.assert(record.snapshot.id, operation.terminalLeaseId, socket);
+				if (!record.pty) throw new Error("Process terminal is unavailable");
+				record.pty.resize(operation.columns, operation.rows);
+				if (record.snapshot.pid !== undefined) process.kill(record.snapshot.pid, "SIGWINCH");
+				return { op: "terminal_resize", daemon: record.snapshot };
+			}
+			case "terminal_detach": {
+				const record = this.#record(operation.name, operation.expectedId);
+				this.#terminalAttachments.detach(record.snapshot.id, operation.terminalLeaseId, socket);
+				return { op: "terminal_detach", daemon: record.snapshot };
+			}
 			case "stop": {
 				const record = this.#record(operation.name, operation.expectedId);
 				await this.#stopRecord(record, operation.timeoutMs);
@@ -1271,7 +1334,7 @@ class DaemonBroker {
 		this.#pendingCompletions.set(completion.owner, pending);
 		const registration = this.#ownerSockets.get(completion.owner);
 		if (!registration || registration.socket.destroyed) return;
-		registration.socket.write(`${JSON.stringify(completion)}\n`);
+		this.#sendFrame(registration.socket, `${JSON.stringify(completion)}\n`);
 	}
 
 	async #settle(record: ManagedDaemon, generation: number, exitCode?: number, error?: string): Promise<void> {
@@ -1480,8 +1543,10 @@ class DaemonBroker {
 		throw new Error(`Daemon ${record.spec.name} stdin is unavailable`);
 	}
 
-	async #read(operation: Extract<DaemonOperation, { op: "read" }>): Promise<DaemonRpcResult> {
+	async #read(operation: Extract<DaemonOperation, { op: "read" }>, socket: net.Socket): Promise<DaemonRpcResult> {
 		const record = this.#record(operation.name, operation.expectedId);
+		if (operation.terminalLeaseId !== undefined)
+			this.#terminalAttachments.assert(record.snapshot.id, operation.terminalLeaseId, socket);
 		await this.#refreshDetached(record);
 		const ring = record.output;
 		let timedOut = false;
@@ -1501,13 +1566,16 @@ class DaemonBroker {
 		if (record.snapshot.id !== operation.expectedId) {
 			throw staleReference(record.snapshot.name, operation.expectedId, record.snapshot.id);
 		}
+		if (operation.terminalLeaseId !== undefined)
+			this.#terminalAttachments.assert(record.snapshot.id, operation.terminalLeaseId, socket);
 		const maxBytes = Math.max(1, Math.min(DAEMON_MAX_READ_BYTES, Math.floor(operation.maxBytes)));
 		const output = readOutput(record.output, operation.cursor, maxBytes);
 		return { op: "read", daemon: record.snapshot, ...output, timedOut };
 	}
 
-	async #send(operation: Extract<DaemonOperation, { op: "send" }>): Promise<DaemonRpcResult> {
+	async #send(operation: Extract<DaemonOperation, { op: "send" }>, socket: net.Socket): Promise<DaemonRpcResult> {
 		const record = this.#record(operation.name, operation.expectedId);
+		this.#terminalAttachments.assertInput(record.snapshot.id, operation.terminalLeaseId, socket);
 		await this.#refreshDetached(record);
 		if (terminalState(record.snapshot.state) || record.snapshot.state === "stopping") {
 			throw new Error(`Daemon ${operation.name} is ${record.snapshot.state}`);
@@ -1558,6 +1626,7 @@ class DaemonBroker {
 		const record = this.#record(name, expectedId);
 		// An explicit restart is a new incarnation. Retire the old id before stopping, so readers
 		// pinned to it observe a replacement rather than an ordinary exit.
+		this.#terminalAttachments.forget(record.snapshot.id);
 		record.snapshot.id = crypto.randomUUID();
 		record.snapshot.createdAt = Date.now();
 		await this.#stopRecord(record, 2_000);

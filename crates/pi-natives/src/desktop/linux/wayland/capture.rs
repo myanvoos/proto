@@ -2,7 +2,7 @@ use std::{cell::RefCell, os::fd::OwnedFd, rc::Rc};
 
 use ashpd::desktop::{
 	PersistMode,
-	screencast::{CursorMode, Screencast, SourceType},
+	screencast::{CursorMode, Screencast, SelectSourcesOptions, SourceType},
 };
 use image::RgbaImage;
 use pipewire as pw;
@@ -18,23 +18,24 @@ async fn open_screencast() -> Result<(u32, OwnedFd), String> {
 		.await
 		.map_err(|err| format!("ScreenCast portal: {err}"))?;
 	let session = portal
-		.create_session()
+		.create_session(Default::default())
 		.await
 		.map_err(|err| format!("ScreenCast CreateSession: {err}"))?;
 	let restore_token = read_token(SCREENCAST_TOKEN);
 	portal
 		.select_sources(
 			&session,
-			CursorMode::Embedded,
-			SourceType::Monitor.into(),
-			true,
-			restore_token.as_deref(),
-			PersistMode::ExplicitlyRevoked,
+			SelectSourcesOptions::default()
+				.set_cursor_mode(CursorMode::Embedded)
+				.set_sources(Some(SourceType::Monitor.into()))
+				.set_multiple(true)
+				.set_restore_token(restore_token.as_deref())
+				.set_persist_mode(PersistMode::ExplicitlyRevoked),
 		)
 		.await
 		.map_err(|err| format!("ScreenCast SelectSources: {err}"))?;
 	let response = portal
-		.start(&session, None)
+		.start(&session, None, Default::default())
 		.await
 		.map_err(|err| format!("ScreenCast Start: {err}"))?
 		.response()
@@ -46,7 +47,7 @@ async fn open_screencast() -> Result<(u32, OwnedFd), String> {
 		.ok_or_else(|| "ScreenCast returned no monitor stream".to_string())?;
 	let node = stream.pipe_wire_node_id();
 	let fd = portal
-		.open_pipe_wire_remote(&session)
+		.open_pipe_wire_remote(&session, Default::default())
 		.await
 		.map_err(|err| format!("ScreenCast OpenPipeWireRemote: {err}"))?;
 	Ok((node, fd))

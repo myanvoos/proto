@@ -44,7 +44,12 @@ import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prom
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
-import { type CreateAgentSessionOptions, createAgentSession, discoverAuthStorage } from "../sdk";
+import {
+	type CreateAgentSessionOptions,
+	createAgentSession,
+	discoverAuthStorage,
+	type RootExtensionEnvironment,
+} from "../sdk";
 import type { AgentSession, AgentSessionEvent, Prewalk } from "../session/agent-session";
 import type { ArtifactManager } from "../session/artifacts";
 import { ASYNC_RESULT_MESSAGE_TYPE } from "../session/async-job-delivery";
@@ -52,7 +57,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../session/messages";
 import { MONITOR_EVENT_MESSAGE_TYPE } from "../session/monitor-event";
 import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
-import type { SubagentUsageTotals } from "../session/session-entries";
+import type { SessionNodeTopology, SubagentUsageTotals } from "../session/session-entries";
 import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { TailAccumulator, truncateTail } from "../session/streaming-output";
 import {
@@ -73,6 +78,7 @@ import { trackLateCleanup } from "../utils/late-cleanup";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { attributeSubagentError } from "./error-attribution";
+import { ExecutionAdmission } from "./execution-admission";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
@@ -294,6 +300,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export interface ExecutorOptions {
+	rootExtensionEnvironment?: RootExtensionEnvironment;
+	parentNode?: SessionNodeTopology;
+	spawnAnchorId?: string;
 	cwd: string;
 
 	additionalDirectories?: string[];
@@ -2318,6 +2327,8 @@ export async function finalizeSubagentLifecycle(args: {
 				id: args.id,
 				error: error instanceof Error ? error.message : String(error),
 			});
+			args.onCleanupDeferred?.(disposal);
+			throw error;
 		}
 	};
 
@@ -2408,6 +2419,21 @@ interface FollowUpTurnOptions {
 }
 
 export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Promise<SingleResult> {
+	const session = await AgentLifecycleManager.global().ensureLive(options.id);
+	const node = session.sessionManager.getNodeTopology();
+	if (!node) throw new Error(`Worker "${options.id}" has no durable execution identity`);
+	return ExecutionAdmission.global().runTurn(
+		{
+			nodeId: node.id,
+			treeId: node.rootId,
+			maxConcurrency: session.settings.get("orchestrator.maxConcurrency"),
+			signal: options.signal ?? new AbortController().signal,
+		},
+		() => runAdmittedFollowUpTurn(options),
+	);
+}
+
+async function runAdmittedFollowUpTurn(options: FollowUpTurnOptions): Promise<SingleResult> {
 	const { id, agent, message, signal } = options;
 	const index = options.index ?? 0;
 	const startTime = Date.now();
@@ -2629,6 +2655,22 @@ function createRunLocalReviver(args: {
 }
 
 export async function runSubprocess(options: ExecutorOptions): Promise<SingleResult> {
+	const settings = options.settings ?? Settings.isolated();
+	const failed = new AbortController();
+	const signal = options.signal ? AbortSignal.any([options.signal, failed.signal]) : failed.signal;
+	return ExecutionAdmission.global().runTurn(
+		{
+			nodeId: options.id,
+			treeId: options.parentNode?.rootId ?? options.id,
+			maxConcurrency: settings.get("orchestrator.maxConcurrency"),
+			signal,
+			onFailure: error => failed.abort(error),
+		},
+		() => runAdmittedSubprocess({ ...options, settings, signal }),
+	);
+}
+
+async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleResult> {
 	const {
 		cwd,
 		agent,
@@ -3015,6 +3057,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 
 			const blueprint: SubagentSessionBlueprint = {
 				session: {
+					rootExtensionEnvironment: options.rootExtensionEnvironment,
 					cwd: worktree ?? cwd,
 					additionalDirectories: worktree !== undefined ? undefined : options.additionalDirectories,
 					authStorage,
@@ -3076,6 +3119,22 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			};
 
 			const sessionManager = await awaitAbortable(sessionManagerPromise);
+			if (
+				options.parentNode &&
+				(!sessionManager.getNodeTopology() ||
+					sessionManager.getNodeTopology()?.id === sessionManager.getSessionId())
+			) {
+				await sessionManager.setNodeTopology({
+					id,
+					rootId: options.parentNode.rootId,
+					parentId: options.parentNode.id,
+					parentSessionFile: options.sessionFile ?? undefined,
+					rootSessionFile: options.sessionFile ? options.parentNode.rootSessionFile : undefined,
+					spawnAnchorId: options.spawnAnchorId,
+					generation: 0,
+					state: "active",
+				});
+			}
 			if (options.parentArtifactManager) {
 				sessionManager.adoptArtifactManager(options.parentArtifactManager);
 			}
@@ -3303,6 +3362,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			let deferredSessionShutdown: Promise<void> | undefined;
 			const deferCleanup = (completion: Promise<void>): void => {
 				lateCleanups.push(completion);
+				ExecutionAdmission.global().retainUntilSettled(completion);
 				// Teardown draining past the deadline never downgrades a settled outcome: a successful yield keeps its
 				// result while the late work finishes in the background.
 				if (!aborted) return;
@@ -3400,7 +3460,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				}
 			}
 			if (lateCleanups.length > 0) {
-				const completion = Promise.allSettled(lateCleanups).then(() => {});
+				const completion = Promise.all(lateCleanups).then(() => {});
 				trackLateCleanup(completion, { id, resource: "subagent" });
 				options.onCleanupDeferred?.(completion);
 			}

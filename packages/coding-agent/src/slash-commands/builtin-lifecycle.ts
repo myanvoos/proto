@@ -4,6 +4,7 @@ import { CompactionCancelledError } from "@oh-my-pi/pi-agent-core/compaction";
 import { setProjectDir } from "@oh-my-pi/pi-utils";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import type { AgentSession } from "../session/agent-session";
+import { isSessionCommandTargetCurrent } from "../session/command-target";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { buildReplanTitleContext, USER_INTERRUPT_LABEL } from "../session/messages";
 import { resolveResumableSession } from "../session/session-listing";
@@ -103,6 +104,7 @@ async function generateRenameTitle(session: AgentSession, signal?: AbortSignal):
 export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "ssh",
+		scope: "application",
 		description: "Manage SSH hosts (add, list, remove)",
 		acpDescription: "Manage SSH connections",
 		inlineHint: "<subcommand>",
@@ -125,6 +127,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "new",
+		scope: "root",
 		description: "Start a new session",
 		handleTui: async (_command, runtime) => {
 			clearSubmittedText(runtime);
@@ -133,16 +136,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "clear",
+		scope: "node",
 		description: "Clear the conversation context in place, keeping the session",
 		getTuiAutocompleteDescription: runtime =>
-			runtime.ctx.session.isStreaming ? "Clear: unavailable while streaming" : "Clear: drop context, keep session",
+			runtime.ctx.viewSession.isStreaming
+				? "Clear: unavailable while streaming"
+				: "Clear: drop context, keep session",
 		handleTui: async (_command, runtime) => {
 			clearSubmittedText(runtime);
-			await runtime.ctx.handleResetContextCommand();
+			await runtime.ctx.handleResetContextCommand(runtime.target);
 		},
 	},
 	{
 		name: "compact",
+		scope: "node",
 		description: "Manually compact the session context",
 		acpDescription: "Compact the conversation",
 		subcommands: COMPACT_MODES.map(mode => ({
@@ -153,7 +160,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		acpInputHint: `[${COMPACT_MODES.map(mode => mode.name).join("|")}] [focus]`,
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			const usage = runtime.ctx.session.getContextUsage();
+			const usage = runtime.ctx.viewSession.getContextUsage();
 			return usage ? `Compact: context ${Math.round(usage.percent)}% used` : "Compact: context unavailable";
 		},
 		handle: async (command, runtime) => {
@@ -194,11 +201,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.ctx.showWarning(parsed.error);
 				return;
 			}
-			await runtime.ctx.handleCompactCommand(parsed.instructions, parsed.mode);
+			await runtime.ctx.handleCompactCommand(parsed.instructions, parsed.mode, undefined, runtime.target);
 		},
 	},
 	{
 		name: "resume",
+		scope: "root",
 		description: "Resume a different session",
 		inlineHint: "[session id|@claude|@codex]",
 		allowArgs: true,
@@ -224,11 +232,13 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.ctx.showError(`Session "${sessionArg}" not found`);
 				return;
 			}
+			if (runtime.target && !isSessionCommandTargetCurrent(runtime.target, runtime.ctx.session)) return;
 			await runtime.ctx.handleResumeSession(match.session.path);
 		},
 	},
 	{
 		name: "side",
+		scope: "root",
 		description:
 			"Ask an ephemeral side question using the current session context, or delegate tangential work to a background agent via --agent",
 		inlineHint: "<question> | --agent <work>",
@@ -249,6 +259,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "rename",
+		scope: "node",
 		description: "Rename the current session (omit title to generate)",
 		inlineHint: "[title]",
 		allowArgs: true,
@@ -302,16 +313,16 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 		handleTui: async (command, runtime) => {
 			clearSubmittedText(runtime);
-			const session = runtime.ctx.session;
-			const sessionManager = runtime.ctx.sessionManager;
+			const session = runtime.target?.session ?? runtime.ctx.viewSession;
+			const sessionManager = session.sessionManager;
 			const sessionId = sessionManager.getSessionId();
 			const titleSignal = session.titleGenerationSignal;
 			const generation = command.args.trim() || generateRenameTitle(session);
 			const titleRevision = sessionManager.titleRevision;
 			const title = typeof generation === "string" ? generation : await generation;
 			if (
-				runtime.ctx.session !== session ||
-				runtime.ctx.sessionManager !== sessionManager ||
+				runtime.ctx.viewSession !== session ||
+				session.sessionManager !== sessionManager ||
 				titleSignal.aborted ||
 				sessionManager.getSessionId() !== sessionId ||
 				sessionManager.titleRevision !== titleRevision ||
@@ -322,11 +333,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				runtime.ctx.showError("Could not generate a session title. Use /rename <title> to set one.");
 				return;
 			}
-			await runtime.ctx.handleRenameCommand(title);
+			await runtime.ctx.handleRenameCommand(title, runtime.target);
 		},
 	},
 	{
 		name: "move",
+		scope: "tree",
 		description: "Move the current session to a different directory",
 		acpDescription: "Move the current session to a different directory",
 		inlineHint: "[<path>]",
@@ -372,6 +384,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "add-dir",
+		scope: "tree",
 		description: "Add a workspace directory to this session (multi-root)",
 		acpDescription: "Add a workspace directory to this session",
 		inlineHint: "<path>",
@@ -403,6 +416,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "remove-dir",
+		scope: "tree",
 		description: "Remove a workspace directory from this session",
 		acpDescription: "Remove a workspace directory from this session",
 		inlineHint: "<path>",
@@ -431,6 +445,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "dirs",
+		scope: "tree",
 		description: "List this session's workspace directories",
 		acpDescription: "List this session's workspace directories",
 		handle: async (_command, runtime) => {
@@ -440,6 +455,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "exit",
+		scope: "application",
 		description: "Exit the application",
 		handleTui: shutdownHandlerTui,
 	},

@@ -23,6 +23,11 @@ import { appendLatestCompactionSummary } from "../../modes/utils/ui-helpers";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
+import {
+	captureSessionCommandTarget,
+	isSessionCommandTargetCurrent,
+	type SessionCommandTarget,
+} from "../../session/command-target";
 import type { CompactMode } from "../../session/compact-modes";
 import { SessionManager, type SessionManagerStateSnapshot } from "../../session/session-manager";
 import { BUILTIN_SLASH_COMMAND_DEFS } from "../../slash-commands/builtin-registry";
@@ -41,6 +46,7 @@ import { resumeCommand } from "../../utils/resume-command";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
 import { collapseSharedUsageReports, formatLimitTitle, summarizeUsageResetCredits } from "../../utils/usage-display";
 import {
+	adoptIndependentRoot,
 	canParkForegroundSession,
 	createForegroundSession,
 	enforceBackgroundSessionLimit,
@@ -101,25 +107,27 @@ export class CommandController {
 		error: "error",
 	};
 
-	async handleAdvisorStatusCommand(): Promise<void> {
-		const stats = this.ctx.session.getAdvisorStats();
+	async handleAdvisorStatusCommand(
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
+		const stats = target.session.getAdvisorStats();
 		if (!stats.configured) {
 			this.ctx.presentCommandOutput([new Spacer(1), new Text("Advisor is disabled.", 1, 0)]);
 			return;
 		}
 
-		const usageProvider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
 		let usageReports: UsageReport[] | null = null;
-		if (usageProvider.fetchUsageReports) {
-			try {
-				usageReports = await usageProvider.fetchUsageReports();
-			} catch {}
-		}
+		try {
+			usageReports = await target.session.fetchUsageReports();
+		} catch {}
+
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
 
 		const resolveActiveAdvisorAccount = (provider: string, sessionId?: string): OAuthAccountIdentity | undefined =>
-			this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
+			target.session.modelRegistry.authStorage.getOAuthAccountIdentity(
 				provider,
-				sessionId ?? this.ctx.session.sessionId,
+				sessionId ?? target.session.sessionId,
 			);
 		const nowMs = Date.now();
 
@@ -213,8 +221,11 @@ export class CommandController {
 		this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
 	}
 
-	async handleJobsCommand(): Promise<void> {
-		const snapshot = this.ctx.viewSession.getAsyncJobSnapshot({ recentLimit: 5 });
+	async handleJobsCommand(
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
+		const snapshot = target.session.getAsyncJobSnapshot({ recentLimit: 5 });
 		if (!snapshot) {
 			this.ctx.showWarning("Async background jobs are unavailable in this session.");
 			return;
@@ -250,39 +261,38 @@ export class CommandController {
 		this.ctx.presentCommandOutput([new Spacer(1), new Text(info.trimEnd(), 1, 0)]);
 	}
 
-	async handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {
+	async handleUsageCommand(
+		reports?: UsageReport[] | null,
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
 		let usageReports = reports ?? null;
 		if (!usageReports) {
-			const provider = this.ctx.session as { fetchUsageReports?: () => Promise<UsageReport[] | null> };
-			if (provider.fetchUsageReports) {
-				try {
-					usageReports = await provider.fetchUsageReports();
-				} catch (error) {
-					this.ctx.showError(
-						`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`,
-					);
-					return;
-				}
+			try {
+				usageReports = await target.session.fetchUsageReports();
+			} catch (error) {
+				if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
+				this.ctx.showError(`Failed to fetch usage data: ${error instanceof Error ? error.message : String(error)}`);
+				return;
 			}
 		}
+
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
 
 		if (!usageReports || usageReports.length === 0) {
 			// No provider quota to report: what the session itself spent, subagents included, is still
 			// the answer the user asked for.
-			const summary = renderSessionUsageSummary(this.ctx.session.sessionManager.getUsageStatistics());
+			const summary = renderSessionUsageSummary(target.session.sessionManager.getUsageStatistics());
 			this.ctx.presentCommandOutput([new Spacer(1), new Text(summary, 1, 0)]);
 			return;
 		}
 
 		const availableWidth = Math.max(40, (this.ctx.ui.terminal.columns ?? 100) - 2);
-		const currentProvider = this.ctx.session.model?.provider;
+		const currentProvider = target.session.model?.provider;
 		const activeAccount = currentProvider
-			? this.ctx.session.modelRegistry.authStorage.getOAuthAccountIdentity(
-					currentProvider,
-					this.ctx.session.sessionId,
-				)
+			? target.session.modelRegistry.authStorage.getOAuthAccountIdentity(currentProvider, target.session.sessionId)
 			: undefined;
-		const usageModelSelectors = this.ctx.session.getUsageReportingModelSelectors(usageReports);
+		const usageModelSelectors = target.session.getUsageReportingModelSelectors(usageReports);
 		const output = renderUsageReports(
 			usageReports,
 			theme,
@@ -304,16 +314,18 @@ export class CommandController {
 		showMarkdownPanel(this.ctx, "Keyboard Shortcuts", hotkeys);
 	}
 
-	handleToolsCommand(): void {
+	handleToolsCommand(target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession)): void {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
 		const tools = buildToolsMarkdown({
-			tools: this.ctx.session.agent.state.tools,
-			xdevTools: this.ctx.session.getXdevToolEntries(),
+			tools: target.session.agent.state.tools,
+			xdevTools: target.session.getXdevToolEntries(),
 		});
 		showMarkdownPanel(this.ctx, "Available Tools", tools);
 	}
 
-	handleContextCommand(): void {
-		const breakdown = computeContextBreakdown(this.ctx.session);
+	handleContextCommand(target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession)): void {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
+		const breakdown = computeContextBreakdown(target.session);
 		if (breakdown.contextWindow <= 0) {
 			this.ctx.showWarning("Context usage is unavailable: no model is selected for this session.");
 			return;
@@ -398,14 +410,19 @@ export class CommandController {
 		return previousFile;
 	}
 
-	async handleResetContextCommand(): Promise<void> {
-		if (this.ctx.session.isCompacting) {
-			this.ctx.session.abortCompaction();
-			while (this.ctx.session.isCompacting) {
+	async handleResetContextCommand(
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return;
+		if (target.session.isCompacting) {
+			target.session.abortCompaction();
+			while (target.session.isCompacting) {
 				await Bun.sleep(10);
 			}
 		}
-		const result = await this.ctx.session.resetSessionContext();
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return;
+		const result = await target.session.resetSessionContext();
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return;
 		if (!result) {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before resetting the context.");
 			return;
@@ -427,28 +444,24 @@ export class CommandController {
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 
-	async handleForkCommand(): Promise<void> {
-		if (this.ctx.session.isStreaming) {
+	async handleForkCommand(
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return;
+		if (target.session.isStreaming) {
 			this.ctx.showWarning("Wait for the current response to finish or abort it before forking.");
 			return;
 		}
-		if (this.ctx.loadingAnimation) {
-			this.ctx.loadingAnimation.stop();
-			this.ctx.loadingAnimation = undefined;
-		}
-		this.ctx.statusContainer.disposeChildren();
-
-		// fork() moves the live session onto the new file; the hint names the one left behind (if it reached disk).
-		const previousSessionId = this.ctx.sessionManager.isSessionOnDisk()
-			? this.ctx.sessionManager.getSessionId()
-			: undefined;
-
-		const success = await this.ctx.session.fork();
-		if (!success) {
-			this.ctx.showError("Fork failed (session not persisted or cancelled)");
+		const previousSessionId = target.sessionManager.isSessionOnDisk() ? target.sessionId : undefined;
+		const forked = await target.session.fork();
+		if (!forked) {
+			if (isSessionCommandTargetCurrent(target, this.ctx.viewSession)) {
+				this.ctx.showError("Fork failed (session not persisted or cancelled)");
+			}
 			return;
 		}
-
+		if (!(await adoptIndependentRoot(this.ctx, forked, target))) return;
+		if (this.ctx.session !== forked || this.ctx.viewSession !== forked) return;
 		this.ctx.statusLine.invalidate();
 		this.ctx.ui.requestRender();
 
@@ -544,18 +557,19 @@ export class CommandController {
 		]);
 	}
 
-	async handleRenameCommand(title: string): Promise<void> {
-		const session = this.ctx.session;
-		const sessionManager = this.ctx.sessionManager;
-		const sessionId = sessionManager.getSessionId();
+	async handleRenameCommand(
+		title: string,
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
+	): Promise<void> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return;
+		const session = target.session;
+		const sessionManager = target.sessionManager;
 		const signal = session.titleGenerationSignal;
 		let titleRevision = sessionManager.titleRevision;
 		// Persistence can be overtaken by a session switch, an interrupt, or a newer rename: report only our own.
 		const isCurrent = (): boolean =>
-			this.ctx.session === session &&
-			this.ctx.sessionManager === sessionManager &&
+			isSessionCommandTargetCurrent(target, this.ctx.viewSession) &&
 			!signal.aborted &&
-			sessionManager.getSessionId() === sessionId &&
 			sessionManager.titleRevision === titleRevision;
 		try {
 			const persistence = sessionManager.setSessionName(title, "user");
@@ -756,8 +770,10 @@ export class CommandController {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
 	): Promise<CompactionOutcome> {
-		const entries = this.ctx.sessionManager.getEntries();
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return "cancelled";
+		const entries = target.sessionManager.getEntries();
 		const messageCount = entries.filter(e => e.type === "message").length;
 
 		if (messageCount < 2) {
@@ -765,14 +781,16 @@ export class CommandController {
 			return "ok";
 		}
 
-		return this.executeCompaction(customInstructions, false, beforeFlush, mode);
+		return this.executeCompaction(customInstructions, false, beforeFlush, mode, target);
 	}
 	async executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto = false,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
 		mode?: CompactMode,
+		target: SessionCommandTarget = captureSessionCommandTarget(this.ctx.viewSession),
 	): Promise<CompactionOutcome> {
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession, true)) return "cancelled";
 		if (this.ctx.loadingAnimation) {
 			this.ctx.loadingAnimation.stop();
 			this.ctx.loadingAnimation = undefined;
@@ -803,10 +821,11 @@ export class CommandController {
 				baseOptions || effectiveMode
 					? { ...baseOptions, ...(effectiveMode ? { mode: effectiveMode } : {}) }
 					: undefined;
-			await this.ctx.session.compact(instructions, options);
+			await target.session.compact(instructions, options);
+			if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return outcome;
 
 			compactingLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
+			this.ctx.statusContainer.removeChild(compactingLoader);
 			appendLatestCompactionSummary(this.ctx);
 
 			this.ctx.statusLine.invalidate();
@@ -815,19 +834,25 @@ export class CommandController {
 		} catch (error) {
 			if (error instanceof CompactionCancelledError) {
 				outcome = "cancelled";
-				this.ctx.showError("Compaction cancelled");
+				if (isSessionCommandTargetCurrent(target, this.ctx.viewSession)) this.ctx.showError("Compaction cancelled");
 			} else {
 				outcome = "failed";
 				const message = error instanceof Error ? error.message : String(error);
-				this.ctx.showError(`Compaction failed: ${message}`);
+				if (isSessionCommandTargetCurrent(target, this.ctx.viewSession))
+					this.ctx.showError(`Compaction failed: ${message}`);
 			}
 		} finally {
 			compactingLoader.stop();
-			this.ctx.statusContainer.disposeChildren();
+			if (isSessionCommandTargetCurrent(target, this.ctx.viewSession)) {
+				this.ctx.statusContainer.removeChild(compactingLoader);
+			}
 		}
 
+		if (!isSessionCommandTargetCurrent(target, this.ctx.viewSession)) return outcome;
 		if (beforeFlush) await beforeFlush(outcome);
-		await this.ctx.flushCompactionQueue({ willRetry: false });
+		if (isSessionCommandTargetCurrent(target, this.ctx.viewSession)) {
+			await this.ctx.flushCompactionQueue({ willRetry: false });
+		}
 		return outcome;
 	}
 }
