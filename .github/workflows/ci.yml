@@ -275,6 +275,7 @@ jobs:
            with:
               name: proto-binary-${{ matrix.target_id }}
               path: ${{ matrix.binary_path }}
+              retention-days: 1
 
    release_binary_darwin:
       name: "Release binary: ${{ matrix.target_id }}"
@@ -336,6 +337,7 @@ jobs:
            with:
               name: proto-binary-${{ matrix.target_id }}
               path: ${{ matrix.binary_path }}
+              retention-days: 1
 
    release_github:
       name: Publish GitHub release
