@@ -12,7 +12,7 @@
     },
     "packages/agent": {
       "name": "@oh-my-pi/pi-agent-core",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "dependencies": {
         "@oh-my-pi/pi-ai": "catalog:",
         "@oh-my-pi/pi-catalog": "catalog:",
@@ -26,7 +26,7 @@
     },
     "packages/ai": {
       "name": "@oh-my-pi/pi-ai",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "0.3.317",
         "@anthropic-ai/sdk": "1.4.0",
@@ -49,7 +49,7 @@
     },
     "packages/catalog": {
       "name": "@oh-my-pi/pi-catalog",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "dependencies": {
         "@oh-my-pi/omptype": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
@@ -61,7 +61,7 @@
     },
     "packages/coding-agent": {
       "name": "@oh-my-pi/pi-coding-agent",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "bin": {
         "proto": "src/cli.ts",
       },
@@ -100,7 +100,7 @@
     },
     "packages/natives": {
       "name": "@oh-my-pi/pi-natives",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "devDependencies": {
         "@napi-rs/cli": "catalog:",
         "@types/bun": "catalog:",
@@ -108,14 +108,14 @@
     },
     "packages/omptype": {
       "name": "@oh-my-pi/omptype",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "devDependencies": {
         "@types/bun": "catalog:",
       },
     },
     "packages/tui": {
       "name": "@oh-my-pi/pi-tui",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "dependencies": {
         "@oh-my-pi/pi-natives": "catalog:",
         "@oh-my-pi/pi-utils": "catalog:",
@@ -123,7 +123,7 @@
     },
     "packages/utils": {
       "name": "@oh-my-pi/pi-utils",
-      "version": "20.0.1",
+      "version": "20.0.2",
       "dependencies": {
         "@oh-my-pi/pi-natives": "catalog:",
       },
@@ -140,13 +140,13 @@
     "@biomejs/biome": "2.6.4",
     "@huggingface/transformers": "4.3.2",
     "@napi-rs/cli": "3.10.9",
-    "@oh-my-pi/omptype": "20.0.1",
-    "@oh-my-pi/pi-agent-core": "20.0.1",
-    "@oh-my-pi/pi-ai": "20.0.1",
-    "@oh-my-pi/pi-catalog": "20.0.1",
-    "@oh-my-pi/pi-natives": "20.0.1",
-    "@oh-my-pi/pi-tui": "20.0.1",
-    "@oh-my-pi/pi-utils": "20.0.1",
+    "@oh-my-pi/omptype": "20.0.2",
+    "@oh-my-pi/pi-agent-core": "20.0.2",
+    "@oh-my-pi/pi-ai": "20.0.2",
+    "@oh-my-pi/pi-catalog": "20.0.2",
+    "@oh-my-pi/pi-natives": "20.0.2",
+    "@oh-my-pi/pi-tui": "20.0.2",
+    "@oh-my-pi/pi-utils": "20.0.2",
     "@opentelemetry/api": "1.10.0",
     "@opentelemetry/api-logs": "0.223.0",
     "@opentelemetry/context-async-hooks": "3.0.0",

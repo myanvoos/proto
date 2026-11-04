@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.0.2] - 2026-11-04
+
 ### Fixed
 
 - Publish complete binary releases even when GitHub Actions artifact storage is exhausted.
