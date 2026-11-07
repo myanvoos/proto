@@ -68,6 +68,13 @@
 - An open whose navigation Chrome detaches the debugger from now keeps the tab it reattached to and reports the recovery instead of closing it.
 - SEC EDGAR filing and filing-document URLs open the requested document instead of the company profile.
 - The computer tool prompt now says a screenshot's saved path holds the capped frame, so agents call `zoom` instead of cropping that file.
+### Changed
+
+- Subagents can no longer broadcast: `fleet` `message` with `to: "all"` is refused unless the caller is the main agent, which messages the one agent that can answer instead.
+- `jobs` `wait` reports jobs that finish within 1.5 s of each other in one result instead of one wait call per job.
+- Broadcasts from other agents no longer cut short a `jobs` `wait` or interrupt running bash/eval; they arrive after the wait returns. A direct message still ends the wait, and the result now carries every message queued by then instead of one per call.
+- Subagent prompts no longer tell agents to message or broadcast before editing shared files; subagents message only to get unblocked and wait only on their own jobs.
+- `jobs` `wait` with nothing new returns a still-running snapshot after 5s instead of blocking on `irc.timeoutMs`, with the window climbing 5s → 10s → 30s → 1m → 5m across back-to-back waits (5s again after news or a minute away); from the 10s rung it tells the agent to get on with work that does not need the result.
 
 ## [20.1.2] - 2026-11-04
 

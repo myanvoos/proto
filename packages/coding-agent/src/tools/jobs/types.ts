@@ -60,8 +60,8 @@ export interface JobsDetails {
 	/** Non-consuming watch event page (inspect). */
 	events?: AsyncJobEventPage;
 	receipt?: CancelReceipt;
-	/** Wait: the mailbox message that won. */
-	message?: IrcMessage;
+	/** Wait: the mailbox messages that won, oldest first. */
+	messages?: IrcMessage[];
 	/** Wait: process targets that exited. */
 	exited?: ProcessRef[];
 	/** Wait: the window elapsed with nothing to report. */

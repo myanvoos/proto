@@ -74,6 +74,25 @@ describe("IrcBus wait liveness", () => {
 	});
 });
 
+describe("IrcBus wait filters", () => {
+	test("a direct-only wait ignores broadcast legs but still wakes on a direct message", async () => {
+		const registry = makeRegistryWithPeer("running");
+		const bus = new IrcBus(registry);
+		const waiting = bus.wait("waiter", { directOnly: true }, 0);
+		let settled = false;
+		void waiting.finally(() => {
+			settled = true;
+		});
+
+		await bus.send({ from: "peer", to: "waiter", body: "all-hands", broadcast: true });
+		await Bun.sleep(0);
+		expect(settled).toBe(false);
+
+		await bus.send({ from: "peer", to: "waiter", body: "for you" });
+		expect((await waiting)?.body).toBe("for you");
+	});
+});
+
 describe("IrcBus fleet isolation", () => {
 	test("keeps a detached fleet connected to its own main session", async () => {
 		const registry = new AgentRegistry();

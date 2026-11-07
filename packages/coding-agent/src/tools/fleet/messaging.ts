@@ -5,7 +5,7 @@ import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
-import { type AgentRegistry, agentLifecycle, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { type AgentRegistry, agentLifecycle } from "../../registry/agent-registry";
 import { Ellipsis, renderStatusLine, renderTreeList, truncateToWidth } from "../../tui";
 import {
 	createCachedComponent,
@@ -27,16 +27,17 @@ function formatIncoming(msg: IrcMessage): string {
 	return `[${msg.id}] ${msg.from}${replyTag}: ${msg.body}`;
 }
 
+/** Takes every message buffered in `senderId`'s session inbox before automatic injection; with `ifAny`, none unless one satisfies it. */
 export function drainPendingInbox(
 	registry: AgentRegistry,
 	senderId: string,
-	from?: string,
+	ifAny?: (msg: IrcMessage) => boolean,
 	fleetRoot?: string,
-): IrcMessage | undefined {
+): IrcMessage[] {
 	const session = fleetRoot ? registry.getInFleet(senderId, fleetRoot)?.session : registry.get(senderId)?.session;
 	return typeof session?.drainPendingIrcInboxMessages === "function"
-		? session.drainPendingIrcInboxMessages(senderId, { from, limit: 1 })[0]
-		: undefined;
+		? session.drainPendingIrcInboxMessages(senderId, ifAny ? { ifAny } : undefined)
+		: [];
 }
 
 export async function executeList(
@@ -110,14 +111,27 @@ export async function executeMessage(
 		return fleetErrorResult("Cannot send a message to yourself.", { op: "message", senderId, to });
 	}
 	const isBroadcast = to === "all";
+	// A subagent's broadcast wakes every live peer for news that is almost never
+	// theirs; it messages the one agent that can answer instead.
+	const sender = fleetRoot ? registry.getInFleet(senderId, fleetRoot) : registry.get(senderId);
+	if (isBroadcast && sender?.kind !== "main")
+		return fleetErrorResult(
+			'Only the main agent can broadcast. Message the one agent that can answer via `to: "<id>"`.',
+			{ op: "message", senderId, to },
+		);
 	const bus = IrcBus.global();
 	const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
-	const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
 	const receipts = await Promise.all(
 		targets.map(target =>
 			bus.send(
-				{ from: senderId, to: target, body: message, replyTo: params.replyTo },
-				{ suppressRelay: suppressRelay || undefined, fleetRoot },
+				{
+					from: senderId,
+					to: target,
+					body: message,
+					replyTo: params.replyTo,
+					...(isBroadcast ? { broadcast: true } : {}),
+				},
+				{ fleetRoot },
 			),
 		),
 	);

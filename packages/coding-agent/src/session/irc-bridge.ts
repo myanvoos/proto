@@ -32,6 +32,9 @@ export class IrcBridge {
 	#interruptBytes = 0;
 	#asideBytes = 0;
 	#deferredWakes: CustomMessage[] = [];
+	/** Queued broadcast legs: they ask nothing of the recipient, so they inject at the next
+	 *  step boundary like any record but never cut a `wait` short or interrupt a running turn. */
+	readonly #quietRecords = new WeakSet<AgentMessage>();
 
 	constructor(host: IrcBridgeHost) {
 		this.#host = host;
@@ -69,7 +72,7 @@ export class IrcBridge {
 	}
 
 	hasInterrupts(): boolean {
-		return this.#interrupts.length > 0;
+		return this.#interrupts.some(record => !this.#quietRecords.has(record));
 	}
 
 	hasPending(): boolean {
@@ -115,7 +118,7 @@ export class IrcBridge {
 		this.#enqueuePending(this.#asides, records);
 	}
 
-	drainInboxMessages(agentId: string, opts?: { from?: string; limit?: number; peek?: boolean }): IrcMessage[] {
+	drainInboxMessages(agentId: string, opts?: { ifAny?: (msg: IrcMessage) => boolean; peek?: boolean }): IrcMessage[] {
 		const messages: IrcMessage[] = [];
 		const remainingInterrupts: CustomMessage[] = [];
 		const remainingAsides: CustomMessage[] = [];
@@ -138,15 +141,8 @@ export class IrcBridge {
 				const from = Reflect.get(details, "from");
 				const body = Reflect.get(details, "message");
 				const replyTo = Reflect.get(details, "replyTo");
+				const broadcast = Reflect.get(details, "broadcast");
 				if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
-					queue.remaining.push(record);
-					continue;
-				}
-				if (opts?.from !== undefined && from !== opts.from) {
-					queue.remaining.push(record);
-					continue;
-				}
-				if (opts?.limit !== undefined && messages.length >= opts.limit) {
 					queue.remaining.push(record);
 					continue;
 				}
@@ -161,9 +157,11 @@ export class IrcBridge {
 					body,
 					ts: record.timestamp,
 					...(typeof replyTo === "string" ? { replyTo } : {}),
+					...(broadcast === true ? { broadcast: true } : {}),
 				});
 			}
 		}
+		if (opts?.ifAny && !messages.some(opts.ifAny)) return [];
 		this.#interrupts = remainingInterrupts;
 		this.#asides = remainingAsides;
 		this.#interruptBytes = remainingInterrupts.reduce((total, record) => total + this.#recordBytes(record), 0);
@@ -188,6 +186,9 @@ export class IrcBridge {
 		}
 		const peerMessage = parentId !== undefined && !fromParent && !fromDescendant;
 		const autoReply = (opts?.expectsReply ?? false) && streaming && !this.#host.settings.get("async.enabled");
+		// A broadcast leg asks nothing of the recipient, so a busy one reads it at
+		// its next step boundary without being interrupted.
+		const quiet = msg.broadcast === true;
 		const record: CustomMessage = {
 			role: "custom",
 			customType: "irc:incoming",
@@ -196,7 +197,7 @@ export class IrcBridge {
 				message: escapeHarnessTags(msg.body),
 				replyTo: msg.replyTo ?? "",
 				autoReplied: autoReply,
-				interrupting: streaming,
+				interrupting: streaming && !quiet,
 			}),
 			display: true,
 			details: {
@@ -206,6 +207,7 @@ export class IrcBridge {
 				fromParent,
 				peerMessage,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
+				...(msg.broadcast ? { broadcast: true } : {}),
 			},
 			attribution: "agent",
 			timestamp: msg.ts,
@@ -221,6 +223,7 @@ export class IrcBridge {
 				};
 				this.#host.agent.steer(steer);
 			} else {
+				if (quiet) this.#quietRecords.add(record);
 				this.#enqueuePending(this.#interrupts, [record]);
 			}
 			void this.#host.emitSessionEvent({ type: "irc_message", message: record });

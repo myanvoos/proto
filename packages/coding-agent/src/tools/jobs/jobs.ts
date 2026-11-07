@@ -191,7 +191,7 @@ export async function describeJobs(session: ToolSession, jobs: JobSnapshot[]): P
 export function isWaitingPollDetails(details: unknown): boolean {
 	const d = details as JobsDetails | undefined;
 	if (d?.op !== "wait" || !Array.isArray(d.jobs) || d.jobs.length === 0) return false;
-	if (d.message || d.exited?.length || d.jobs.some(job => job.events?.length)) return false;
+	if (d.messages?.length || d.exited?.length || d.jobs.some(job => job.events?.length)) return false;
 	return d.jobs.every(job => job?.status === "running");
 }
 

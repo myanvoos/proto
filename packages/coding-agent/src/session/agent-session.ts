@@ -7277,7 +7277,7 @@ export class AgentSession {
 
 	drainPendingIrcInboxMessages(
 		agentId: string,
-		opts?: { from?: string; limit?: number; peek?: boolean },
+		opts?: { ifAny?: (msg: IrcMessage) => boolean; peek?: boolean },
 	): IrcMessage[] {
 		return this.#irc.drainInboxMessages(agentId, opts);
 	}
