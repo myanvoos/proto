@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours.
 - Fixed `/mcp reauth` not taking effect for a server whose definition carries its own `Authorization` header, and refresh the project entry when a user config shadows the same name.
 - Fixed resumed OpenAI Responses sessions forgetting earlier reasoning on the first request; a retry after a stale Responses item error now rebuilds history instead of resending the refused items.
 
