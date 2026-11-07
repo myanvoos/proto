@@ -1329,19 +1329,36 @@ export function isEmptyAnthropicContentDelta(event: unknown): boolean {
 	}
 }
 
-function createAnthropicSseStreamError(data: string): Error {
+function createAnthropicSseStreamError(data: string, midMessage: boolean): Error {
+	let parsed: { error?: { type?: unknown; code?: unknown; message?: unknown } } | undefined;
 	try {
-		const parsed = JSON.parse(data) as { error?: { type?: unknown; message?: unknown } };
-		const errorType = typeof parsed?.error?.type === "string" ? parsed.error.type : undefined;
-		const message = typeof parsed?.error?.message === "string" ? parsed.error.message : undefined;
-		if (message) {
-			return new AIError.ProviderResponseError(
-				errorType ? `Anthropic stream error (${errorType}): ${message}` : `Anthropic stream error: ${message}`,
-				{ provider: "anthropic", kind: "output" },
-			);
-		}
-	} catch {}
-	return new AIError.ProviderResponseError(data, { provider: "anthropic", kind: "output" });
+		parsed = JSON.parse(data) as { error?: { type?: unknown; code?: unknown; message?: unknown } };
+	} catch {
+		// Not a JSON envelope; the raw payload is the diagnostic.
+	}
+	const errorType = typeof parsed?.error?.type === "string" ? parsed.error.type : undefined;
+	const errorCode = typeof parsed?.error?.code === "string" ? parsed.error.code : undefined;
+	const message = typeof parsed?.error?.message === "string" ? parsed.error.message : undefined;
+	const rejection = new AIError.ProviderResponseError(
+		message
+			? errorType
+				? `Anthropic stream error (${errorType}): ${message}`
+				: `Anthropic stream error: ${message}`
+			: data,
+		{ provider: "anthropic", kind: "output" },
+	);
+	// Only frame types the provider loop already retries take the truncation
+	// path. A deterministic rejection keeps its completed-turn error: rewriting
+	// it as a truncation would replay a request that can never succeed.
+	if (!midMessage || !AIError.isProviderRetryableError(rejection)) {
+		return rejection;
+	}
+	const fields = [errorType ? `type=${errorType}` : undefined, errorCode ? `code=${errorCode}` : undefined]
+		.filter(field => field !== undefined)
+		.join(" ");
+	return new AIError.AnthropicStreamEnvelopeError(
+		`error frame received before message_stop${fields ? ` (${fields})` : ""}: ${message ?? data}`,
+	);
 }
 
 async function* iterateAnthropicEvents(
@@ -1355,11 +1372,19 @@ async function* iterateAnthropicEvents(
 
 	let sawMessageStart = false;
 	let sawMessageEnd = false;
+	// A `message_delta` carrying `stop_reason` is the consumer's terminal stop
+	// signal: generation finished there, and a non-conforming gateway only omits
+	// the trailing `message_stop`. A later `error` frame is a completed-turn
+	// report, not a truncation, so the envelope has to count as closed here too.
+	let sawTerminalDelta = false;
 
 	for await (const sse of readSseEvents(response.body, signal)) {
 		notifyRawSseEvent(onSseEvent, sse);
+		// A frame inside an open message envelope ends a message the wire can never
+		// complete: classify it as the truncation family so the failure is
+		// retryable/continuable instead of a completed-turn provider rejection.
 		if (sse.event === "error") {
-			throw createAnthropicSseStreamError(sse.data);
+			throw createAnthropicSseStreamError(sse.data, sawMessageStart && !sawMessageEnd && !sawTerminalDelta);
 		}
 
 		if (sse.event === "ping") {
@@ -1395,6 +1420,8 @@ async function* iterateAnthropicEvents(
 			sawMessageStart = true;
 		} else if (event.type === "message_stop") {
 			sawMessageEnd = true;
+		} else if (event.type === "message_delta" && event.delta?.stop_reason) {
+			sawTerminalDelta = true;
 		}
 		yield event;
 	}

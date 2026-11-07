@@ -60,4 +60,20 @@ describe("Muse Spark replay policy", () => {
 		expect(sibling.includeEncryptedReasoning).toBe(true);
 		expect(sibling.filterReasoningHistory).toBe(false);
 	});
+
+	test("binds native history items only for GitHub Copilot", () => {
+		// Copilot 401s on items minted on an earlier connection (#488); other hosts accept them back.
+		expect(
+			buildOpenAIResponsesCompat(responsesSpec("github-copilot", "gpt-5.4", "https://api.githubcopilot.com"))
+				.connectionBoundNativeHistory,
+		).toBe(true);
+		expect(
+			buildOpenAIResponsesCompat(responsesSpec("openai", "gpt-5-mini", "https://api.openai.com/v1"))
+				.connectionBoundNativeHistory,
+		).toBe(false);
+		expect(
+			buildOpenAIResponsesCompat(responsesSpec("xai-oauth", "grok-4.7", "https://api.x.ai/v1"))
+				.connectionBoundNativeHistory,
+		).toBe(false);
+	});
 });

@@ -2,6 +2,7 @@ import { describe, expect, it, spyOn } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as utils from "@oh-my-pi/pi-utils";
 import { NO_AUTH_SENTINEL } from "../auth-retry";
+import * as AIError from "../error";
 import type { AssistantMessage, Context, FetchImpl, Model, ModelSpec, ProviderSessionState } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import {
@@ -1079,5 +1080,113 @@ describe("Anthropic provider recovery dependencies", () => {
 		});
 		expect((await streamAnthropicMessages(reasoningModel, context, options).result()).stopReason).toBe("stop");
 		expect(transport.bodies).toHaveLength(3);
+	});
+});
+
+describe("Anthropic in-band stream error frames", () => {
+	/** A success stream cut before either terminal signal: content blocks finished, but no stop_reason and no message_stop. */
+	function openMessageSse(text: string): string {
+		return [
+			sseFrame("message_start", {
+				type: "message_start",
+				message: { id: "message-1", usage: { input_tokens: 3, output_tokens: 0 } },
+			}),
+			sseFrame("content_block_start", {
+				type: "content_block_start",
+				index: 0,
+				content_block: { type: "text", text: "" },
+			}),
+			sseFrame("content_block_delta", {
+				type: "content_block_delta",
+				index: 0,
+				delta: { type: "text_delta", text },
+			}),
+			sseFrame("content_block_stop", { type: "content_block_stop", index: 0 }),
+		].join("");
+	}
+
+	it("reports a transient in-band error frame inside an open message as a stream truncation", async () => {
+		// A gateway that cuts the upstream stream substitutes an in-band `error`
+		// frame after the message started; the message can never complete.
+		for (const { error, expectedFields } of [
+			{
+				error: {
+					type: "server_error",
+					code: "upstream_stream_truncated",
+					message: "upstream stream truncated (no completion event)",
+				},
+				expectedFields: "type=server_error code=upstream_stream_truncated",
+			},
+			{ error: { type: "overloaded_error", message: "Overloaded" }, expectedFields: "type=overloaded_error" },
+		]) {
+			const transport = sseFetchSequence([
+				`${openMessageSse("Here is the first half")}${sseFrame("error", { type: "error", error })}`,
+			]);
+
+			const result = await runAnthropicSse(transport);
+
+			expect(result.stopReason).toBe("error");
+			const errorMessage = result.errorMessage ?? "";
+			expect(errorMessage).toContain("error frame received before message_stop");
+			expect(errorMessage).toContain(expectedFields);
+			expect(AIError.isStreamEnvelopeErrorText(errorMessage)).toBe(true);
+			expect(AIError.isStreamEnvelopeTruncationText(errorMessage)).toBe(true);
+			// No replay of committed text, but the turn stays continuable.
+			expect(AIError.retriable(AIError.classifyMessage(result))).toBe(true);
+			expect(textContent(result)).toEqual([{ type: "text", text: "Here is the first half" }]);
+			expect(transport.calls()).toBe(1);
+		}
+	});
+
+	it("keeps a deterministic in-band rejection terminal inside an open message", async () => {
+		// The envelope being open says the wire was cut, not that the request was accepted.
+		for (const [type, message] of [
+			["invalid_request_error", "prompt is too long: 210000 tokens > 200000 maximum"],
+			["authentication_error", "invalid x-api-key"],
+			["billing_error", "Your credit balance is too low to access the Anthropic API"],
+		] as const) {
+			const transport = sseFetchSequence([
+				`${openMessageSse("")}${sseFrame("error", { type: "error", error: { type, message } })}`,
+			]);
+
+			const result = await runAnthropicSse(transport);
+
+			expect(result.stopReason).toBe("error");
+			expect(result.errorMessage).toBe(`Anthropic stream error (${type}): ${message}`);
+			expect(AIError.isStreamEnvelopeErrorText(result.errorMessage ?? "")).toBe(false);
+			expect(AIError.retriable(AIError.classifyMessage(result))).toBe(false);
+			expect(transport.calls()).toBe(1);
+		}
+	});
+
+	it("does not treat an error frame after a message_delta stop_reason as a truncation", async () => {
+		// Only the trailing `message_stop` is missing; the answer already ended.
+		const frames = completeAnthropicSse("complete answer").replace(
+			sseFrame("message_stop", { type: "message_stop" }),
+			"",
+		);
+		const transport = sseFetchSequence([
+			`${frames}${sseFrame("error", { type: "error", error: { type: "server_error", message: "An unexpected error occurred" } })}`,
+		]);
+
+		const result = await runAnthropicSse(transport);
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Anthropic stream error (server_error): An unexpected error occurred");
+		expect(AIError.isStreamEnvelopeErrorText(result.errorMessage ?? "")).toBe(false);
+		expect(textContent(result)).toEqual([{ type: "text", text: "complete answer" }]);
+	});
+
+	it("keeps an error frame before message_start a terminal provider rejection", async () => {
+		const transport = sseFetchSequence([
+			sseFrame("error", { type: "error", error: { type: "api_error", message: "invalid response" } }),
+		]);
+
+		const result = await runAnthropicSse(transport);
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("Anthropic stream error (api_error): invalid response");
+		expect(AIError.isStreamEnvelopeErrorText(result.errorMessage ?? "")).toBe(false);
+		expect(AIError.retriable(AIError.classifyMessage(result))).toBe(false);
 	});
 });

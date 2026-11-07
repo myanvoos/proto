@@ -137,6 +137,7 @@ import {
 	isOpenAIResponsesProgressEvent,
 	mapOpenAIResponsesStopReason,
 	normalizeOpenAIPromptCacheKey,
+	pickUnrecordedResponsesToolCalls,
 	populateResponsesUsageFromResponse,
 	promoteResponsesToolUseStopReason,
 	type SequentialCutoffSummaryState,
@@ -1702,26 +1703,6 @@ async function openCodexWebSocketTransport(
 	if (websocketState.connection?.hasActiveRequest()) {
 		throw new CodexWebSocketBusyError("websocket request already in progress");
 	}
-	const canAppendBeforeRequest = websocketState.canAppend === true;
-	const chainedBody = buildCodexChainedRequestBody(requestContext.transformedBody, websocketState);
-
-	const websocketClientMetadata = { ...(chainedBody.client_metadata ?? {}) };
-	if (requestContext.responsesLite) {
-		websocketClientMetadata[CODEX_WS_RESPONSES_LITE_CLIENT_METADATA_KEY] = "true";
-	}
-	if (requestContext.turnState.value) {
-		websocketClientMetadata[X_CODEX_TURN_STATE_HEADER] = requestContext.turnState.value;
-	}
-	let websocketRequest = {
-		type: "response.create",
-		...chainedBody,
-		client_metadata: websocketClientMetadata,
-	};
-	const replacementWebsocketRequest = await options?.onPayload?.(websocketRequest, model);
-	if (replacementWebsocketRequest !== undefined) {
-		websocketRequest = replacementWebsocketRequest as typeof websocketRequest;
-	}
-	recordCodexTurnRequestDiagnostics(websocketState, websocketRequest, "websocket", canAppendBeforeRequest);
 	const websocketHeaders = createCodexHeaders(
 		requestContext.requestHeaders,
 		requestContext.accountId,
@@ -1736,6 +1717,46 @@ async function openCodexWebSocketTransport(
 		await getCodexAttestationHeader(requestContext.accountId),
 		requestContext.transformedBody,
 	);
+	const websocketConnection = await getOrCreateCodexWebSocketConnection(
+		websocketState,
+		requestContext.turnState,
+		toWebSocketUrl(requestContext.url),
+		websocketHeaders,
+		model.provider,
+		requestSetup.requestSignal,
+	);
+	// Reconnecting (closed socket, idle eviction, token refresh, or routing-hint
+	// change) resets `canAppend`; build the frame only after the socket is known
+	// so a delta computed against the old socket is never replayed.
+	const canAppendBeforeRequest = websocketState.canAppend === true;
+	const chainedBody = buildCodexChainedRequestBody(requestContext.transformedBody, websocketState);
+
+	const websocketClientMetadata = { ...(chainedBody.client_metadata ?? {}) };
+	if (requestContext.responsesLite) {
+		websocketClientMetadata[CODEX_WS_RESPONSES_LITE_CLIENT_METADATA_KEY] = "true";
+	}
+	if (requestContext.turnState.value) {
+		websocketClientMetadata[X_CODEX_TURN_STATE_HEADER] = requestContext.turnState.value;
+	}
+	let websocketRequest: RequestBody = {
+		type: "response.create",
+		...chainedBody,
+		client_metadata: websocketClientMetadata,
+	};
+	const replacementWebsocketRequest = await options?.onPayload?.(websocketRequest, model);
+	if (replacementWebsocketRequest !== undefined) {
+		websocketRequest = replacementWebsocketRequest as RequestBody;
+	}
+	// An `onPayload` hook that deleted `previous_response_id` asked for a full
+	// replay; restore the transformed transcript instead of the delta input.
+	if (
+		!websocketRequest.previous_response_id &&
+		chainedBody.input !== requestContext.transformedBody.input &&
+		Bun.deepEquals(websocketRequest.input, chainedBody.input)
+	) {
+		websocketRequest.input = requestContext.transformedBody.input;
+	}
+	recordCodexTurnRequestDiagnostics(websocketState, websocketRequest, "websocket", canAppendBeforeRequest);
 	const requestBodyForState = cloneJsonTree(requestContext.transformedBody);
 
 	if (websocketRequest.stream_options === undefined) {
@@ -1761,14 +1782,6 @@ async function openCodexWebSocketTransport(
 			retry,
 			retryBudget: CODEX_WEBSOCKET_RETRY_BUDGET,
 		});
-	const websocketConnection = await getOrCreateCodexWebSocketConnection(
-		websocketState,
-		requestContext.turnState,
-		toWebSocketUrl(requestContext.url),
-		websocketHeaders,
-		model.provider,
-		requestSetup.requestSignal,
-	);
 	const eventStream = websocketConnection.streamRequest(
 		websocketRequest,
 		{
@@ -3004,6 +3017,10 @@ export async function prewarmOpenAICodexResponses(
 		attestation,
 		routedRequest,
 	);
+	// Late prewarm must not disturb a socket with an active request.
+	if (state.connection?.hasActiveRequest()) {
+		return;
+	}
 	await logger.time(
 		"prewarmCodex:establishWs",
 		getOrCreateCodexWebSocketConnection,
@@ -3434,7 +3451,9 @@ function buildCodexChainedRequestBody(
 	if (appendInput && appendInput.length > 0 && state?.lastResponseId) {
 		return { ...requestBody, previous_response_id: state.lastResponseId, input: appendInput };
 	}
-	if (chainable && state) {
+	if (state?.canAppend) {
+		// Chaining was eligible but the prefix/options check failed: history
+		// mutated or options changed — break the chain.
 		CODEX_DEBUG &&
 			logger.debug("[codex] codex append reset", {
 				hadModelsEtagHeader: Boolean(state.modelsEtag),
@@ -3525,6 +3544,10 @@ class CodexWebSocketConnection {
 
 	matchesAuth(headers: Record<string, string>): boolean {
 		return this.#headers.authorization === headers.authorization;
+	}
+
+	matchesRoutingHint(headers: Record<string, string>): boolean {
+		return this.#headers[OPENAI_HEADERS.ROUTING_HINT] === headers[OPENAI_HEADERS.ROUTING_HINT];
 	}
 
 	close(reason = "done"): void {
@@ -4017,6 +4040,9 @@ async function getOrCreateCodexWebSocketConnection(
 		if (!state.connection.matchesAuth(headerRecord)) {
 			state.connection.close("token-refresh");
 			resetCodexWebSocketAppendState(state);
+		} else if (!state.canAppend && !state.connection.matchesRoutingHint(headerRecord)) {
+			state.connection.close("routing-change");
+			resetCodexWebSocketAppendState(state);
 		} else if (state.connection.isHealthyForReuse()) {
 			logger.time("codexWs:reuseOpenSocket");
 			return state.connection;
@@ -4369,6 +4395,22 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 						model.supportsComputerUse === true
 							? sanitizedHistoryItems
 							: unrollCodexComputerItems(sanitizedHistoryItems, model.compat.supportsImageDetailOriginal);
+					const missingCalls = pickUnrecordedResponsesToolCalls(assistantMsg, historyItems);
+					if (missingCalls.length > 0) {
+						const rebuilt = convertResponsesAssistantMessage(
+							{ ...assistantMsg, content: missingCalls },
+							model,
+							msgIndex,
+							knownCallIds,
+							false,
+							customCallIds,
+							false,
+							true,
+							undefined,
+							computerCallIds,
+						);
+						rawReplayItems.push(...rebuilt);
+					}
 					const replayItems = escapeControlTokens ? escapeReplayedControlTokens(rawReplayItems) : rawReplayItems;
 					for (const item of replayItems) {
 						if (item.type === "custom_tool_call") {

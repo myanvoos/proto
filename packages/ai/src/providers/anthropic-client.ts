@@ -5,6 +5,7 @@ import { AnthropicApiError, AnthropicConnectionError, AnthropicConnectionTimeout
 export { AnthropicApiError, AnthropicConnectionError, AnthropicConnectionTimeoutError };
 
 import type { FetchImpl } from "../types";
+import { getShouldRetryFromHeaders } from "../utils/retry-after";
 import type { MessageCreateParams } from "./anthropic-wire";
 import { mergeHeaders } from "./inference-headers";
 
@@ -59,9 +60,8 @@ function createAbortError(): Error {
 }
 
 function shouldRetryResponse(response: Response): boolean {
-	const shouldRetryHeader = response.headers.get("x-should-retry");
-	if (shouldRetryHeader === "true") return true;
-	if (shouldRetryHeader === "false") return false;
+	const verdict = getShouldRetryFromHeaders(response.headers);
+	if (verdict !== undefined) return verdict;
 	const status = response.status;
 
 	return AIError.isTransientStatus(status) || status === 409;

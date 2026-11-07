@@ -512,6 +512,13 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	strictResponsesPairing: boolean;
 	supportsImageDetailOriginal: boolean;
 	supportsObfuscationOptOut: boolean;
+	/**
+	 * Whether the host binds native history items (`encrypted_content`, item
+	 * ids) to the connection that issued them, so a new process must rebuild
+	 * prior turns from message content until its first successful response.
+	 * Rule-owned: GitHub Copilot.
+	 */
+	connectionBoundNativeHistory: boolean;
 
 	supportsReasoningSummary: boolean;
 	statefulResponses?: boolean;

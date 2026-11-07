@@ -120,7 +120,7 @@ describe("Responses synthesized reasoning replay", () => {
 });
 
 describe("Responses orphan repair ordering", () => {
-	it("keeps a repaired orphan-output note out of another call's call→output batch", () => {
+	it("pairs a call missing from a native snapshot before sending its result (#11473)", () => {
 		// Strict validators (DeepSeek via opencode-go) 400 with "No tool output found" when a message splits the batch.
 		const model = responsesModel({
 			id: "deepseek-v4-flash",
@@ -157,14 +157,20 @@ describe("Responses orphan repair ordering", () => {
 			nativeHistory: { replay: true, filterReasoning: false },
 		}) as WireItem[];
 
-		const noteIndex = items.findIndex(
-			item => item.role === "assistant" && typeof item.content === "string" && item.content.includes("call_00"),
+		// The call omitted from the native snapshot is rebuilt from its assistant block, so
+		// its result pairs instead of surfacing as an orphan note.
+		expect(items).toContainEqual(
+			expect.objectContaining({ type: "function_call", call_id: "call_00", name: "todo" }),
 		);
-		const callIndex = items.findIndex(item => item.type === "function_call" && item.call_id === "call_01");
-		const outputIndex = items.findIndex(item => item.type === "function_call_output" && item.call_id === "call_01");
-		expect(items[noteIndex]?.content).toContain("[Orphan tool result; call_id=call_00]");
-		expect(noteIndex).toBeLessThan(callIndex);
-		expect(outputIndex).toBe(callIndex + 1);
+		expect(
+			items.find(
+				item => item.role === "assistant" && typeof item.content === "string" && item.content.includes("call_00"),
+			),
+		).toBeUndefined();
+		const callIds = items.filter(item => item.type === "function_call").map(item => item.call_id);
+		const outputIds = items.filter(item => item.type === "function_call_output").map(item => item.call_id);
+		expect(callIds.sort()).toEqual(["call_00", "call_01"]);
+		expect(outputIds).toEqual(["call_00", "call_01"]);
 	});
 });
 
@@ -294,6 +300,134 @@ describe("Responses plaintext reasoning replay", () => {
 		]);
 		const encrypted = reasoningItems(replay({ type: "reasoning", summary, encrypted_content: "opaque" }, true, true));
 		expect(encrypted[0]).not.toHaveProperty("content");
+	});
+});
+
+describe("Responses native history warm start", () => {
+	function completed(): Response {
+		const events = [
+			{ type: "response.created", response: { id: "resp_ok", status: "in_progress" } },
+			{ type: "response.completed", response: { id: "resp_ok", status: "completed" } },
+		];
+		return new Response(`${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`, {
+			headers: { "content-type": "text/event-stream" },
+		});
+	}
+
+	async function captureBodies(
+		model: Model<"openai-responses">,
+		context: Context,
+		providerSessionState: Map<string, ProviderSessionState>,
+	): Promise<Record<string, unknown>[]> {
+		const bodies: Record<string, unknown>[] = [];
+		const fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				bodies.push(JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>);
+				return completed();
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		await streamOpenAIResponses(model, context, { apiKey: "test-key", fetch, providerSessionState }).result();
+		return bodies;
+	}
+
+	function resumedEncryptedReasoningContext(model: Model<"openai-responses">): Context {
+		const prior = assistant(model, [{ type: "text", text: "generic assistant that should be rebuilt" }]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, [
+			{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc_turn_1" },
+			{
+				type: "message",
+				role: "assistant",
+				content: [{ type: "output_text", text: "generic assistant that should be rebuilt" }],
+			},
+		]);
+		return { messages: [prior, { role: "user", content: "follow-up user", timestamp: 2 }] };
+	}
+
+	it("replays encrypted reasoning on the first resumed request unless the host binds items to a connection", async () => {
+		const replayed: Record<string, boolean> = {};
+		for (const model of [
+			responsesModel({ id: "grok-4.7", provider: "xai-oauth", baseUrl: "https://api.x.ai/v1" }),
+			responsesModel({ id: "gpt-5-mini", provider: "openai", baseUrl: "https://api.openai.com/v1" }),
+			responsesModel({ id: "gpt-5.4", provider: "github-copilot", baseUrl: "https://api.githubcopilot.com" }),
+		]) {
+			const bodies = await captureBodies(
+				model,
+				resumedEncryptedReasoningContext(model),
+				new Map<string, ProviderSessionState>(),
+			);
+			replayed[model.provider] = JSON.stringify(bodies[0]?.input).includes("enc_turn_1");
+		}
+
+		expect(replayed).toEqual({ "xai-oauth": true, openai: true, "github-copilot": false });
+	});
+
+	it("rebuilds history after the provider session state closes on a host without connection binding", async () => {
+		const model = responsesModel({ id: "grok-4.7", provider: "xai-oauth", baseUrl: "https://api.x.ai/v1" });
+		const context = resumedEncryptedReasoningContext(model);
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const warm = await captureBodies(model, context, providerSessionState);
+		for (const state of providerSessionState.values()) state.close();
+		const closed = await captureBodies(model, context, providerSessionState);
+
+		expect(JSON.stringify(warm[0]?.input)).toContain("enc_turn_1");
+		expect(JSON.stringify(closed[0]?.input)).not.toContain("enc_turn_1");
+		expect(JSON.stringify(closed[0]?.input)).toContain("generic assistant that should be rebuilt");
+	});
+});
+
+describe("Responses rebuilt cut tool calls on native replay", () => {
+	const model = responsesModel({ id: "gpt-5-mini", provider: "openai", baseUrl: "https://api.openai.com/v1" });
+
+	function replay(prior: AssistantMessage): WireItem[] {
+		return buildResponsesInput({
+			model,
+			context: { messages: [prior, { role: "user", content: "continue", timestamp: 2 }] },
+			strictResponsesPairing: false,
+			supportsImageDetailOriginal: false,
+			nativeHistory: { replay: true, filterReasoning: false },
+			requiresReasoningReplayForToolCalls: true,
+		}) as WireItem[];
+	}
+
+	it("rebuilds a call cut by the output limit that has no native item", () => {
+		const prior = assistant(model, [
+			{ type: "thinking", thinking: "plan" },
+			{ type: "toolCall", id: "call_cut", name: "bash", arguments: { command: "echo hi" } },
+		]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, [
+			{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc" },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "partial" }] },
+		]);
+
+		const items = replay(prior);
+
+		// Without the rebuild the wire lost the only call of the turn and its tool result 400s.
+		expect(items).toContainEqual(expect.objectContaining({ type: "function_call", call_id: "call_cut" }));
+		// The required-reasoning repair runs after the rebuild, so the turn still carries reasoning.
+		expect(reasoningItems(items)).not.toEqual([]);
+	});
+
+	it("does not treat a call id reused in an earlier snapshot round as recorded", () => {
+		const prior = assistant(model, [
+			{ type: "toolCall", id: "call_cut", name: "bash", arguments: { command: "ls" } },
+		]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(
+			model.provider,
+			[
+				{ type: "function_call", call_id: "call_cut", name: "old_round", arguments: "{}" },
+				{ type: "message", role: "user", content: "next round" },
+				{ type: "message", role: "assistant", content: [{ type: "output_text", text: "cut" }] },
+			],
+			false,
+		);
+
+		const items = replay(prior);
+
+		// The earlier round's call_id must not hide this turn's cut call.
+		expect(items).toContainEqual(
+			expect.objectContaining({ type: "function_call", call_id: "call_cut", name: "bash" }),
+		);
 	});
 });
 

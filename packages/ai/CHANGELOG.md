@@ -11,6 +11,12 @@
 - A cancelled request whose OAuth credential was mid-refresh no longer kills the session with an unhandled `AbortError`, and a request that joins a refresh started by an already-cancelled request gets the refreshed credential.
 - A 401 recovery no longer adopts a peer row that still carries the rejected access token, and a joined by-id refresh that lands on the rejected token refreshes again.
 - A refresh token rejected after taking over a lapsed lease is treated as transient instead of disabling a login another process may still be saving.
+- Honor `x-should-retry: false` in the OpenAI wire transport and provider retry loops so a retrying gateway's terminal 5xx is not replayed.
+- Treat a 429 or 402 token-cap response as a rate limit instead of context overflow, so throttled turns still retry and walk the fallback chain.
+- Replay the full Codex transcript after a WebSocket reconnect (closed socket, idle eviction, token refresh, routing change, or an `onPayload` hook that drops `previous_response_id`) instead of sending a stale delta.
+- Replay encrypted reasoning on the first request of a resumed Responses session, except on connection-bound hosts such as GitHub Copilot.
+- Rebuild Responses tool calls cut by the output limit that have no stored native item, before the required-reasoning repair and scoped to the current turn.
+- Treat an in-band Anthropic `error` frame inside an open message as a retryable stream truncation, while deterministic rejections stay terminal.
 
 ## [19.2.1] - 2026-11-03
 

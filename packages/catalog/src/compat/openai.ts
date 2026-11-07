@@ -603,6 +603,11 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 
 		strictResponsesPairing: isAzure || spec.provider === "github-copilot",
 
+		// GitHub Copilot answers `401 input item does not belong to this connection`
+		// for native history items minted on an earlier connection (#488); every
+		// other Responses host accepts them back unchanged.
+		connectionBoundNativeHistory: spec.provider === "github-copilot",
+
 		supportsImageDetailOriginal:
 			isOpenAIUrl ||
 			isAzure ||
@@ -709,6 +714,7 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		strictResponsesPairing: compat.strictResponsesPairing,
 		supportsImageDetailOriginal: compat.supportsImageDetailOriginal,
 		supportsObfuscationOptOut: compat.supportsObfuscationOptOut,
+		connectionBoundNativeHistory: compat.connectionBoundNativeHistory,
 		supportsReasoningSummary: compat.supportsReasoningSummary,
 		statefulResponses: compat.statefulResponses,
 		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,
