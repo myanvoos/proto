@@ -84,9 +84,14 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 		}
 	}
 
-	const loadOpts = cwd
-		? { cwd, includeDisabled: true, disabledExtensions: effectiveDisabledIds }
-		: { includeDisabled: true, disabledExtensions: effectiveDisabledIds };
+	// An opted-out provider's rows are listed but never claim a key, so an active
+	// lower-priority source with the same name wins, as it does at runtime.
+	const loadOpts = {
+		cwd,
+		includeDisabled: true,
+		disabledExtensions: effectiveDisabledIds,
+		isSourceDisabled: (source: SourceMeta) => !isProviderEnabled(source.provider),
+	};
 
 	try {
 		const skills = await loadCapability<Skill>("skills", loadOpts);

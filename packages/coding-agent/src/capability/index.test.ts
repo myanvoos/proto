@@ -53,6 +53,20 @@ test("a disabled higher-priority item never shadows the enabled item that wins a
 	expect(dashboard.items).toContain(enabled!);
 });
 
+test("a row from an opted-out source never shadows the active row that wins at runtime", async () => {
+	const id = "test-disabled-source-winner";
+	defineTwoProviderCapability(id, item("same", "a", `${id}-high`), item("same", "b", `${id}-low`));
+	// The dashboard lists opted-out providers too; their rows must not claim the name.
+	const isSourceDisabled = (source: SourceMeta): boolean => source.provider === `${id}-high`;
+
+	const dashboard = await loadCapability<Item>(id, { includeDisabled: true, isSourceDisabled });
+	const active = dashboard.all.find(entry => entry._source.provider === `${id}-low`);
+	const optedOut = dashboard.all.find(entry => entry._source.provider === `${id}-high`);
+	expect(active?._shadowed).toBeUndefined();
+	expect(dashboard.items).toContain(active!);
+	expect(optedOut?._shadowed).toBeUndefined();
+});
+
 test("a disabled item never wins an equivalence class over an enabled alias", async () => {
 	const id = "test-disabled-alias";
 	defineTwoProviderCapability(id, item("first", "same", `${id}-high`), item("second", "same", `${id}-low`));

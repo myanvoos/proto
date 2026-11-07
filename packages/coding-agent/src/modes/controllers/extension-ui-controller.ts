@@ -166,6 +166,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: (instructionsOrOptions, advisory) => this.#compactSession(instructionsOrOptions, advisory),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			keybindings: this.ctx.keybindings,
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -398,6 +399,7 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: (instructionsOrOptions, advisory) => this.#compactSession(instructionsOrOptions, advisory),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			keybindings: this.ctx.keybindings,
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { fsObservationLedger } from "../eval/fs-observations";
 import { EvalRunner, type EvalRunnerHost } from "./eval-runner";
+import type { PythonExecutionMessage } from "./messages";
 import { SessionManager } from "./session-manager";
 
 function runner(sessionId: string, ownerId: string): EvalRunner {
@@ -113,6 +114,49 @@ test("aborting a user-python hook discards its late displays and persistence", a
 	expect(hookSignal?.aborted).toBe(true);
 	expect(displayed).toEqual([]);
 	expect(persisted).toEqual([]);
+	evalRunner.beginDispose();
+	evalRunner.disposeObservations();
+});
+
+test("onRecorded receives the recorded $ run even when the callback throws", async () => {
+	const persisted: PythonExecutionMessage[] = [];
+	const host = {
+		sessionManager: SessionManager.inMemory("/tmp"),
+		extensionRunner: () =>
+			({
+				hasHandlers: (event: string) => event === "user_python",
+				emitUserPython: async () => ({
+					result: {
+						output: "hooked",
+						exitCode: 0,
+						cancelled: false,
+						truncated: false,
+						totalLines: 1,
+						totalBytes: 6,
+						outputLines: 1,
+						outputBytes: 6,
+						displayOutputs: [],
+						stdinRequested: false,
+					},
+				}),
+			}) as unknown,
+		isStreaming: () => false,
+		appendSessionMessage: (message: PythonExecutionMessage) => persisted.push(message),
+	} as unknown as EvalRunnerHost;
+	const evalRunner = new EvalRunner(host, { kernelOwnerId: "recorded-owner", parentSessionId: "recorded" });
+	const recorded: PythonExecutionMessage[] = [];
+	const result = await evalRunner.executePython("1", undefined, {
+		onRecorded: message => {
+			recorded.push(message);
+			throw new Error("presenter redraw failed");
+		},
+	});
+
+	// The callback's throw must not cost the cell its record.
+	expect(result.output).toBe("hooked");
+	expect(persisted).toHaveLength(1);
+	expect(recorded).toHaveLength(1);
+	expect(recorded[0]).toBe(persisted[0]!);
 	evalRunner.beginDispose();
 	evalRunner.disposeObservations();
 });

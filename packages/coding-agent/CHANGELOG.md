@@ -51,6 +51,13 @@
 - Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
 - Revived subagents now resolve their per-agent soft request budget by the agent definition name (such as `scout`) instead of the generated task label.
 - Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact.
+- Extensions can call `pi.getShortcutConflict(chord)` to learn whether a key chord is free or held by proto, a keybinding (an `app.*` action or an editing key) or another extension.
+
+### Fixed
+
+- A skill from an opted-out provider no longer hides the same-named skill from an active source in the extension dashboard.
+- Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling.
+- When extensions register one shortcut in different spellings (`alt+ctrl+x` and `ctrl+alt+x`, or `?` and `shift+?`), only the last one loaded is bound instead of the first silently winning.
 
 ## [20.1.2] - 2026-11-04
 
