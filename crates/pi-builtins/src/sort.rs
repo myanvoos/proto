@@ -3,7 +3,7 @@ use std::{
 	thread,
 };
 
-use crate::{host::ChildEnv, locale::shell_locale};
+use crate::host::ChildEnv;
 
 #[derive(Clone)]
 pub struct Compressor {
@@ -1283,7 +1283,7 @@ mod chunks {
 				let key = format!("{FIELD},{FIELD}");
 				settings.selectors =
 					vec![super::super::FieldSelector::parse(&key, &settings).expect("key")];
-				settings.init_precomputed(false);
+				settings.init_precomputed();
 				let mut input = b"a ".repeat(FIELD);
 				input.push(b'\n');
 				input.extend(b"b c\n".repeat(1000));
@@ -2621,7 +2621,7 @@ use std::{
 	ops::Range,
 	path::{Path, PathBuf},
 	sync::{
-		Arc, LazyLock, OnceLock,
+		Arc, OnceLock,
 		atomic::{AtomicBool, Ordering as AtomicOrdering},
 	},
 };
@@ -2635,6 +2635,7 @@ use clap::{
 use custom_str_cmp::custom_str_cmp;
 use ext_sort::ext_sort;
 use foldhash::{HashMap, SharedSeed, fast::FoldHasher};
+use icu_collator::CollatorBorrowed;
 use numeric_str_cmp::{NumInfo, NumInfoParseSettings, human_numeric_str_cmp, numeric_str_cmp};
 use rand::{RngExt as _, rng};
 #[cfg(not(target_os = "wasi"))]
@@ -2643,12 +2644,7 @@ use thiserror::Error;
 use uucore::{
 	display::Quotable,
 	extendedbigdecimal::ExtendedBigDecimal,
-	i18n,
-	i18n::{
-		collator::{compute_sort_key_utf8, locale_cmp},
-		datetime::get_locale_months,
-		decimal::locale_decimal_separator,
-	},
+	i18n::datetime::get_locale_months,
 	line_ending::LineEnding,
 	parser::{
 		num_parser::{ExtendedParser, ExtendedParserError},
@@ -2661,6 +2657,7 @@ use uucore::{
 
 use crate::{
 	host::{Host, Utility, format_usage, rayon_global_pool_available, util},
+	locale::{collation_locale_failed, numeric_symbols, shell_collator, shell_locale},
 	sort::{buffer_hint::automatic_buffer_size, tmp_dir::TmpDirWrapper},
 };
 
@@ -2771,14 +2768,6 @@ mod options {
 }
 
 const DECIMAL_PT: u8 = b'.';
-
-fn locale_decimal_pt() -> u8 {
-	match locale_decimal_separator().as_bytes().first().copied() {
-		Some(b'.') => b'.',
-		Some(b',') => b',',
-		_ => DECIMAL_PT,
-	}
-}
 
 const NEGATIVE: &u8 = &b'-';
 const POSITIVE: &u8 = &b'+';
@@ -2934,6 +2923,8 @@ pub struct GlobalSettings {
 	compress:         Option<Compressor>,
 	merge_batch_size: usize,
 	numeric_locale:   NumericLocaleSettings,
+	/// ICU collator for the shell's LC_COLLATE; `None` compares text by bytes.
+	collator:         Option<Arc<CollatorBorrowed<'static>>>,
 	parallelism:      Parallelism,
 	precomputed:      Precomputed,
 	cancel:           Arc<AtomicBool>,
@@ -2982,7 +2973,6 @@ struct Precomputed {
 	selections_per_line: usize,
 	fast_lexicographic: bool,
 	fast_locale_collation: bool,
-	locale_collation: bool,
 	fast_ascii_insensitive: bool,
 	tokenize_blank_thousands_sep: bool,
 	tokenize_allow_unit_after_blank: bool,
@@ -3016,7 +3006,7 @@ impl GlobalSettings {
 		})
 	}
 
-	fn init_precomputed(&mut self, locale_collation: bool) {
+	fn init_precomputed(&mut self) {
 		self.precomputed.needs_tokens = self.selectors.iter().any(|s| s.needs_tokens);
 		let mut key_fields: Vec<usize> = self
 			.selectors
@@ -3053,7 +3043,7 @@ impl GlobalSettings {
 		self.precomputed.tokenize_allow_unit_after_blank =
 			self.precomputed.tokenize_blank_thousands_sep && uses_human_numeric;
 
-		self.precomputed.locale_collation = locale_collation;
+		let locale_collation = self.collator.is_some();
 		self.precomputed.fast_lexicographic = !locale_collation && self.can_use_fast_lexicographic();
 		self.precomputed.fast_locale_collation =
 			locale_collation && self.can_use_fast_lexicographic();
@@ -3121,6 +3111,7 @@ impl Default for GlobalSettings {
 			compress:              None,
 			merge_batch_size:      default_merge_batch_size(),
 			numeric_locale:        NumericLocaleSettings::default(),
+			collator:              None,
 			parallelism:           Parallelism::Global,
 			cancel:                Arc::new(AtomicBool::new(false)),
 			precomputed:           Precomputed::default(),
@@ -3284,8 +3275,10 @@ impl<'a> Line<'a> {
 		token_buffer: &mut Vec<Field>,
 		settings: &GlobalSettings,
 	) -> Self {
-		if settings.precomputed.fast_locale_collation {
-			compute_sort_key_utf8(line, &mut line_data.collation_key_buffer);
+		if settings.precomputed.fast_locale_collation
+			&& let Some(collator) = &settings.collator
+		{
+			let Ok(()) = collator.write_sort_key_utf8_to(line, &mut line_data.collation_key_buffer);
 			line_data
 				.collation_key_ends
 				.push(line_data.collation_key_buffer.len());
@@ -3953,54 +3946,12 @@ impl FieldSelector {
 	}
 }
 
-/// Whether `locale` names the C/POSIX locale, using uucore's name parsing.
-fn is_c_locale_name(locale: &str) -> bool {
-	matches!(locale.split(['.', '@']).next(), Some("C" | "POSIX"))
-}
-
-/// Whether the process-global ICU collator exists. uucore builds a single
-/// collator from the process environment's locale, and only for UTF-8 locales;
-/// probing once avoids constructing a throwaway collator on every call.
-static PROCESS_COLLATOR: LazyLock<bool> = LazyLock::new(|| {
-	i18n::collator::init_locale_collation();
-	i18n::get_locale_encoding() == i18n::UEncoding::Utf8
-});
-
-/// Whether text comparisons use locale collation: the shell's LC_COLLATE must
-/// be a UTF-8 locale (uucore's rule) that the system can load (GNU falls back
-/// to byte order otherwise), and the process collator must exist.
-fn use_locale_collation(host: &Host) -> bool {
-	shell_locale(host, "LC_COLLATE").is_some_and(|locale| {
-		let mut parts = locale.split(['.', '@']);
-		!matches!(parts.next(), Some("C" | "POSIX"))
-			&& parts.next().is_some_and(|encoding| {
-				encoding.eq_ignore_ascii_case("utf-8") || encoding.eq_ignore_ascii_case("utf8")
-			})
-	}) && !locale_failed_to_set(host)
-		&& *PROCESS_COLLATOR
-}
-
+/// Decimal point and thousands separator for the shell's LC_NUMERIC.
 fn detect_numeric_locale(host: &Host) -> NumericLocaleSettings {
-	let numeric_locale = i18n::get_numeric_locale();
-	let locale = &numeric_locale.0;
-	let encoding = numeric_locale.1;
-	let is_c_locale = shell_locale(host, "LC_NUMERIC").is_none_or(is_c_locale_name)
-		|| (encoding == i18n::UEncoding::Ascii && locale.to_string() == "und");
-
-	if is_c_locale {
-		return NumericLocaleSettings { decimal_pt: Some(DECIMAL_PT), thousands_sep: None };
-	}
-
-	let grouping = i18n::decimal::locale_grouping_separator();
+	let symbols = numeric_symbols(host);
 	NumericLocaleSettings {
-		decimal_pt: Some(locale_decimal_pt()),
-
-		thousands_sep: match grouping.as_bytes() {
-			[b] => Some(*b),
-
-			[0xc2, 0xa0] if encoding != i18n::UEncoding::Utf8 => Some(0xa0),
-			_ => None,
-		},
+		decimal_pt:    Some(symbols.decimal_point),
+		thousands_sep: symbols.thousands_sep,
 	}
 }
 
@@ -4401,32 +4352,6 @@ fn default_merge_batch_size() -> usize {
 	}
 }
 
-#[cfg(not(unix))]
-fn locale_failed_to_set(host: &Host) -> bool {
-	host.var("LC_ALL") == Some("missing")
-}
-
-#[cfg(unix)]
-fn locale_failed_to_set(host: &Host) -> bool {
-	use nix::libc;
-	let Some(locale) = shell_locale(host, "LC_COLLATE") else {
-		return false;
-	};
-	let Ok(locale) = std::ffi::CString::new(locale) else {
-		return true;
-	};
-	// SAFETY: `locale` is a valid NUL-terminated string; a non-null result is
-	// a fresh locale object owned here and freed immediately.
-	unsafe {
-		let handle = libc::newlocale(libc::LC_COLLATE_MASK, locale.as_ptr(), std::ptr::null_mut());
-		if handle.is_null() {
-			return true;
-		}
-		libc::freelocale(handle);
-	}
-	false
-}
-
 fn key_zero_width(selector: &FieldSelector) -> bool {
 	let Some(to) = &selector.to else {
 		return false;
@@ -4464,20 +4389,18 @@ fn emit_debug_warnings(
 	settings: &GlobalSettings,
 	flags: &GlobalOptionFlags,
 	legacy_warnings: &[LegacyKeyWarning],
-	locale_collation: bool,
 ) {
-	if locale_failed_to_set(host) {
+	if collation_locale_failed(host) {
 		show_error!(&mut host.stderr, "{}", "failed to set locale");
 	}
 
-	if locale_collation {
-		let locale = &i18n::get_collating_locale().0;
-		let locale_as_posix = format!("{}.UTF-8", locale.to_string().replace('-', "_"));
-		show_error!(
-			&mut host.stderr,
-			"{}",
-			format!("text ordering performed using ‘{locale_as_posix}’ sorting rules")
-		);
+	// GNU names the locale as selected (`setlocale(LC_COLLATE, NULL)`), so this
+	// is the shell's value, not ICU's spelling of it.
+	let collation_message = shell_locale(host, "LC_COLLATE")
+		.filter(|_| settings.collator.is_some())
+		.map(|locale| format!("text ordering performed using ‘{locale}’ sorting rules"));
+	if let Some(message) = collation_message {
+		show_error!(&mut host.stderr, "{}", message);
 	} else {
 		show_error!(&mut host.stderr, "{}", "text ordering performed using simple byte comparison");
 	}
@@ -5117,19 +5040,18 @@ fn uu_sort(
 	let output = Output::new(output_path.as_ref(), Some(host.stdout_clone()))?;
 	host.commit_write(observation);
 
-	let locale_collation = use_locale_collation(host);
-	if settings.debug {
-		let global_flags = GlobalOptionFlags::from_matches(matches);
-		emit_debug_warnings(host, &settings, &global_flags, legacy_warnings, locale_collation);
-	}
-
 	if let Some(requested) = parallel
 		&& !settings.check
 		&& !settings.merge
 	{
 		settings.parallelism = invocation_parallelism(requested);
 	}
-	settings.init_precomputed(locale_collation);
+	settings.collator = shell_collator(host);
+	if settings.debug {
+		let global_flags = GlobalOptionFlags::from_matches(matches);
+		emit_debug_warnings(host, &settings, &global_flags, legacy_warnings);
+	}
+	settings.init_precomputed();
 
 	exec(&stdin_operand, &mut files, &settings, output, &mut tmp_dir, host.stderr_clone())
 }
@@ -5613,8 +5535,8 @@ fn compare_by<'a>(
 						settings.dictionary_order,
 						settings.ignore_case,
 					)
-				} else if global_settings.precomputed.locale_collation {
-					locale_cmp(a_str, b_str)
+				} else if let Some(collator) = &global_settings.collator {
+					collator.compare_utf8(a_str, b_str)
 				} else {
 					a_str.cmp(b_str)
 				}
@@ -5999,5 +5921,63 @@ fn format_error_message(error: &ParseSizeError, s: &str, option: &str) -> String
 		ParseSizeError::SizeTooBig(_) => {
 			format!("--{option} argument {} too large", s.quote())
 		},
+	}
+}
+
+#[cfg(test)]
+mod locale_tests {
+	use icu_collator::{
+		CollatorBorrowed,
+		options::{AlternateHandling, CollatorOptions, Strength},
+	};
+	use icu_locale_core::Locale;
+
+	use super::{
+		Arc, FieldSelector, GlobalSettings, Line, LineData, Ordering, compare_by,
+	};
+
+	fn en_us_collator() -> Arc<CollatorBorrowed<'static>> {
+		let mut options = CollatorOptions::default();
+		options.alternate_handling = Some(AlternateHandling::Shifted);
+		options.strength = Some(Strength::Quaternary);
+		let locale = Locale::try_from_str("en-US").expect("locale");
+		Arc::new(CollatorBorrowed::try_new(locale.into(), options).expect("collator"))
+	}
+
+	/// Failure mode: text keys compared by bytes because the collator came from
+	/// the process locale, so under a UTF-8 shell locale `sort` put `B` before
+	/// `a`. The shell's collator now orders them as GNU does.
+	#[test]
+	fn text_keys_collate_with_the_shell_locale() {
+		let mut settings = GlobalSettings {
+			collator:  Some(en_us_collator()),
+			selectors: vec![FieldSelector::parse("1", &GlobalSettings::default()).expect("key")],
+			..Default::default()
+		};
+		settings.init_precomputed();
+		assert!(
+			settings.precomputed.fast_locale_collation,
+			"a whole-line key must take the collation-key path"
+		);
+
+		let mut line_data = LineData::default();
+		let mut tokens = Vec::new();
+		let a = Line::create(b"a", 0, &mut line_data, &mut tokens, &settings);
+		let b = Line::create(b"B", 1, &mut line_data, &mut tokens, &settings);
+		assert_eq!(
+			compare_by(&a, &b, &settings, &line_data, &line_data),
+			Ordering::Less,
+			"en_US collation puts a before B"
+		);
+
+		// The same pair without a collator is byte order, which puts B first.
+		let byte_settings = GlobalSettings::default();
+		let mut byte_data = LineData::default();
+		let a = Line::create(b"a", 0, &mut byte_data, &mut tokens, &byte_settings);
+		let b = Line::create(b"B", 1, &mut byte_data, &mut tokens, &byte_settings);
+		assert_eq!(
+			compare_by(&a, &b, &byte_settings, &byte_data, &byte_data),
+			Ordering::Greater
+		);
 	}
 }
