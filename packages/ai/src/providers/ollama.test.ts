@@ -227,3 +227,72 @@ it("reports an Ollama HTTP-200 in-band runtime error instead of incomplete succe
 	expect(result.stopReason).toBe("error");
 	expect(result.errorMessage).toContain("model runner crashed");
 });
+
+describe("Ollama assistant thinking history", () => {
+	function thinkingContext(provider: string, id: string): Context {
+		return {
+			messages: [
+				{ role: "user", content: "hello", timestamp: 0 },
+				{
+					role: "assistant",
+					provider,
+					api: "ollama-chat",
+					model: id,
+					content: [
+						{ type: "thinking", thinking: "reasoning" },
+						{ type: "text", text: "answer" },
+					],
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				},
+				{ role: "user", content: "continue", timestamp: 2 },
+			],
+		};
+	}
+
+	for (const { provider, id, expectedThinking, compat } of [
+		{ provider: "ollama-cloud", id: "deepseek-v4-flash", expectedThinking: false },
+		{ provider: "ollama-cloud", id: "glm-5.2", expectedThinking: true },
+		{ provider: "ollama-cloud", id: "glm-5.2:cloud", expectedThinking: true },
+		{ provider: "ollama", id: "deepseek-v4-flash", expectedThinking: true },
+		{ provider: "ollama-cloud", id: "glm-5.2", expectedThinking: false, compat: { stripThinkingHistory: true } },
+		{
+			provider: "ollama-cloud",
+			id: "deepseek-v4-flash",
+			expectedThinking: true,
+			compat: { stripThinkingHistory: false },
+		},
+	]) {
+		it(`replays ${provider}/${id} thinking=${expectedThinking}`, async () => {
+			const historyModel = buildModel({
+				...model,
+				provider,
+				id,
+				reasoning: true,
+				compat,
+			} satisfies ModelSpec<"ollama-chat">);
+			let requestBody: { messages?: { role: string; thinking?: string }[] } | undefined;
+			await streamOllama(historyModel, thinkingContext(provider, id), {
+				apiKey: "test-key",
+				fetch: Object.assign(
+					async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+						requestBody = JSON.parse(String(init?.body));
+						return new Response(`${JSON.stringify({ done: true, done_reason: "stop" })}\n`);
+					},
+					{ preconnect: fetch.preconnect },
+				),
+			}).result();
+
+			const assistant = requestBody?.messages?.find(message => message.role === "assistant");
+			expect(assistant?.thinking !== undefined).toBe(expectedThinking);
+		});
+	}
+});

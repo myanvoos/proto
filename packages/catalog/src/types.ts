@@ -542,6 +542,14 @@ export interface DevinCompat {
 
 export type ResolvedDevinCompat = Required<DevinCompat>;
 
+/** Ollama chat history compatibility resolved by the catalog. */
+export interface OllamaCompat {
+	/** Omit assistant thinking when the deployment rejects it in history. */
+	stripThinkingHistory?: boolean;
+}
+
+export type ResolvedOllamaCompat = Required<OllamaCompat>;
+
 export type CompatConfigOf<TApi extends Api> = TApi extends
 	| "openai-completions"
 	| "openrouter"
@@ -555,7 +563,9 @@ export type CompatConfigOf<TApi extends Api> = TApi extends
 			? BedrockCompat
 			: TApi extends "devin-agent"
 				? DevinCompat
-				: undefined;
+				: TApi extends "ollama-chat"
+					? OllamaCompat
+					: undefined;
 
 export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 	? ResolvedOpenRouterCompat
@@ -569,7 +579,9 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 					? ResolvedBedrockCompat
 					: TApi extends "devin-agent"
 						? ResolvedDevinCompat
-						: undefined;
+						: TApi extends "ollama-chat"
+							? ResolvedOllamaCompat
+							: undefined;
 
 export interface RemoteCompactionConfig<TApi extends Api = Api> {
 	enabled?: boolean;

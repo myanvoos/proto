@@ -259,14 +259,16 @@ function convertMessages(model: Model<"ollama-chat">, context: Context): OllamaM
 		timestamp: Date.now(),
 	}));
 	const messages: Message[] = [...systemMessages, ...context.messages];
-	const stripCloudThinking = model.provider === "ollama-cloud" && !/^glm-5\.2(?::cloud)?$/.test(model.id);
+	// Legacy Ollama Cloud deployments reject assistant thinking in history (#1000);
+	// the catalog resolves the per-model replay contract (#9693).
+	const stripThinkingHistory = model.compat.stripThinkingHistory;
 	const supportsImages = model.input.includes("image");
 	const converted = transformMessages(messages, model).map((msg, index) => {
 		const developerRole =
 			msg.role === "developer" && (index < systemPrompts.length || msg.attribution !== "user") ? "system" : "user";
 		const converted = convertMessage(msg, supportsImages, developerRole);
 
-		if (stripCloudThinking && converted.role === "assistant" && converted.thinking) {
+		if (stripThinkingHistory && converted.role === "assistant" && converted.thinking) {
 			const { thinking: _t, ...rest } = converted;
 			return rest;
 		}
