@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Keep saving a session whose tool result details hold a throwing accessor instead of latching a disk failure.
 - Surface an out-of-credit provider balance immediately instead of sleeping through a quota wait that never reopens.
 
 ## [20.1.2] - 2026-11-04
