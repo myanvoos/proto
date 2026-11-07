@@ -556,7 +556,7 @@ const fn extensions(lang: SupportLang) -> &'static [&'static str] {
 		Odin => &["odin"],
 		Php => &["php"],
 		Proto => &["proto"],
-		Python => &["py", "py3", "pyi", "bzl"],
+		Python => &["py", "py3", "pyi"],
 		R => &["r"],
 		Regex => &[],
 		Ruby => &["rb", "rbw", "gemspec"],
@@ -855,6 +855,11 @@ mod tests {
 		assert_eq!(SupportLang::from_path(Path::new("MAIN.PY")), Some(SupportLang::Python));
 		assert_eq!(SupportLang::from_path(Path::new("kernel.C")), Some(SupportLang::Cpp));
 		assert_eq!(SupportLang::from_path(Path::new("kernel.c")), Some(SupportLang::C));
+	}
+
+	#[test]
+	fn infers_bazel_starlark_sources_as_starlark() {
+		assert_eq!(SupportLang::from_path(Path::new("defs.bzl")), Some(SupportLang::Starlark));
 	}
 
 	#[test]

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `.bzl` files resolving to Python instead of Starlark in AST grep, edit, summaries, and block operations.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
