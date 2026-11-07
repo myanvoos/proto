@@ -99,9 +99,12 @@ running and nothing falls back to name-only control.
 - Worker callers lend their runnable permit through
   `OrchestratorRuntime.withWaitPermit`, so a parent waiting on its own children cannot starve
   them at `orchestrator.maxConcurrency`.
-- `timeoutMs` omitted: `async.pollWaitDuration` (smart ladder by default) for executions, or
-  `irc.timeoutMs` for mailbox-only waits. `0` waits until woken or interrupted; process targets use
-  the broker's 1 h ceiling for a zero window.
+- `timeoutMs` omitted: `async.pollWaitDuration` (smart ladder by default) for executions and
+  mailbox-only reply waits, or `irc.timeoutMs` for mailbox waits when the ladder is off. The
+  ladder climbs 5s → 10s → 30s → 1m → 5m across back-to-back idle waits, restarts at 5s after
+  news or a minute away, and from the 10s rung appends a reminder to make progress instead of
+  waiting again. `0` waits until woken or interrupted; process targets use the broker's 1 h
+  ceiling for a zero window.
 
 ## Settings
 

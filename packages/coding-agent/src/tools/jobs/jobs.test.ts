@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -68,6 +68,18 @@ function harness(
 
 function text(result: JobsResult): string {
 	return result.content.find(part => part.type === "text")?.text ?? "";
+}
+
+/** The progress reminder an elapsed wait appends after its own report, if any. */
+function notice(result: JobsResult): string | undefined {
+	return result.content.slice(1).find(part => part.type === "text")?.text;
+}
+
+/** Runs one wait that elapses with nothing new, advancing fake timers by its window. */
+async function elapseWait(run: Harness["run"], windowMs: number): Promise<JobsResult> {
+	const waiting = run({ op: "wait" });
+	vi.advanceTimersByTime(windowMs);
+	return waiting;
 }
 
 function pendingJob(
@@ -145,6 +157,68 @@ test("list observes a settled job without consuming its automatic delivery", asy
 	// The first delivery attempt failed; its retry must still arrive after the snapshot.
 	await manager.drainDeliveries({ timeoutMs: 5_000 });
 	expect(delivered).toEqual([job.id]);
+});
+
+test("back-to-back idle waits climb the smart ladder and remind the agent to work from the 10s rung", async () => {
+	vi.useFakeTimers();
+	const { manager, run } = harness();
+	const job = pendingJob(manager);
+	try {
+		const first = await elapseWait(run, 5_000);
+		expect(first.details?.timedOut).toBe(true);
+		expect(notice(first)).toBeUndefined();
+
+		const second = await elapseWait(run, 10_000);
+		expect(notice(second)).toContain("15.0s");
+
+		const third = await elapseWait(run, 30_000);
+		expect(notice(third)).toContain("45.0s");
+
+		// News resets the ladder: a completed job returns at once, and the next idle wait starts at 5s.
+		const done = pendingJob(manager);
+		done.finish.resolve("done");
+		await manager.getJob(done.id)!.promise;
+		await run({ op: "wait", targets: [{ kind: "job", id: done.id }] });
+		const restarted = await elapseWait(run, 5_000);
+		expect(restarted.details?.timedOut).toBe(true);
+		expect(notice(restarted)).toBeUndefined();
+	} finally {
+		job.finish.resolve("done");
+		vi.useRealTimers();
+	}
+});
+
+test("a mailbox-only reply wait uses the same smart ladder and reminder", async () => {
+	vi.useFakeTimers();
+	const registry = AgentRegistry.global();
+	registry.register({
+		id: "Main",
+		label: "Main",
+		kind: "main",
+		session: null,
+		fleetRoot: FLEET_ROOT,
+		status: "idle",
+	});
+	registry.register({
+		id: "peer",
+		label: "peer",
+		kind: "sub",
+		parentId: "Main",
+		session: null,
+		fleetRoot: FLEET_ROOT,
+		status: "idle",
+	});
+	const { run } = harness({ messaging: true });
+	try {
+		const first = await elapseWait(run, 5_000);
+		expect(first.details?.timedOut).toBe(true);
+		expect(notice(first)).toBeUndefined();
+
+		const second = await elapseWait(run, 10_000);
+		expect(notice(second)).toContain("15.0s");
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 test("a wait consumes its winning job once so automatic delivery never repeats it", async () => {

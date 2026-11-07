@@ -1,6 +1,6 @@
 import { type AgentToolUpdateCallback, TOOL_INTERRUPT_ABORT_REASON } from "@oh-my-pi/pi-agent-core";
-import { formatDuration } from "@oh-my-pi/pi-utils";
-import type { AsyncJob, AsyncJobEvent, AsyncJobManager } from "../../async";
+import { formatDuration, prompt } from "@oh-my-pi/pi-utils";
+import { type AsyncJob, type AsyncJobEvent, type AsyncJobManager, POLL_WAIT_LADDER_MS } from "../../async";
 import { sessionProjectCwd } from "../../eval/bridge-cwd";
 import { IrcBus, type IrcMessage, ircWaitAccepts } from "../../irc/bus";
 import type { JobsWaitRequest, ProcessRef, WaitParticipant } from "../../jobs/contracts";
@@ -8,6 +8,7 @@ import { withJobWait } from "../../jobs/wait";
 import { daemonClientForProject } from "../../launch/client";
 import { DAEMON_MAX_TIMEOUT_MS, DaemonBrokerRejectedError, type DaemonSnapshot } from "../../launch/protocol";
 import { OrchestratorRuntime } from "../../orchestrator/runtime";
+import waitIdleTemplate from "../../prompts/tools/wait-idle.md" with { type: "text" };
 import type { ToolSession } from "..";
 import { drainPendingInbox } from "../fleet/messaging";
 import { asyncJobOwner, describeJobs, ownedJob, snapshotJob } from "./jobs";
@@ -24,6 +25,8 @@ const WAIT_DURATION_MS: Record<string, number> = {
 const PROGRESS_INTERVAL_MS = 500;
 /** After one watched job settles, keep collecting briefly so near-simultaneous completions share one wait result. */
 const WAIT_SETTLE_WINDOW_MS = 1_500;
+/** First rung whose elapsed window appends the progress reminder: one idle wait is patience, a second back-to-back is a loop. */
+const WAIT_NOTICE_RUNG = 1;
 export const MAX_WAIT_TARGETS = 32;
 
 interface Mailbox {
@@ -59,7 +62,10 @@ function takeQueuedMessages(mailbox: Mailbox, woke?: IrcMessage): IrcMessage[] {
 	// Without a wake, take the session inbox only when it holds a message that
 	// ends a wait: broadcast legs alone stay queued and inject as asides after
 	// the wait returns. Mailbox mail reaches the caller only through here.
-	const ifAny = queued.length > 0 ? undefined : (msg: IrcMessage) => ircWaitAccepts({ directOnly: true }, msg);
+	const ifAny =
+		queued.length > 0
+			? undefined
+			: (msg: IrcMessage) => ircWaitAccepts({ from: mailbox.from, directOnly: true }, msg);
 	queued.push(...drainPendingInbox(mailbox.registry, mailbox.agentId, ifAny, mailbox.fleetRoot));
 	// Bus ids are snowflakes: they order messages sent within one millisecond.
 	return queued.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -102,6 +108,9 @@ export async function executeWait(
 		};
 	}
 	const ownerId = asyncJobOwner(session);
+	// Any wait ends the idle streak unless its window elapses too (recorded in the block's finally).
+	if (request.timeoutMs === undefined && session.settings.get("async.pollWaitDuration") === "smart" && manager)
+		manager.noteWaitStarted(ownerId);
 	const bare = request.targets === undefined && request.mailbox === undefined;
 	const targets = request.targets ?? [];
 	if (targets.length > MAX_WAIT_TARGETS) {
@@ -184,11 +193,12 @@ export async function executeWait(
 		}
 	}
 
-	const windowMs = waitWindowMs(session, manager, ownerId, request, running.length > 0 || processes.length > 0);
-	const usedSmartWindow =
-		request.timeoutMs === undefined &&
-		session.settings.get("async.pollWaitDuration") === "smart" &&
-		running.length > 0;
+	const mode = running.length > 0 ? "jobs" : processes.length > 0 ? "processes" : "none";
+	const window = waitWindowMs(session, manager, ownerId, request, mode);
+	const windowMs = window.ms;
+	const usedSmartWindow = window.smart;
+	const rung = usedSmartWindow ? POLL_WAIT_LADDER_MS.indexOf(windowMs as (typeof POLL_WAIT_LADDER_MS)[number]) : -1;
+	let elapsed = false;
 	const legs = new AbortController();
 	const cancelled = new Error("jobs wait settled");
 	const jobRaces = running.map(job => job.promise.then(() => "job" as const));
@@ -300,12 +310,19 @@ export async function executeWait(
 		if (result && (result.details?.jobs?.some(job => job.status !== "running" || job.events?.length) || exits.length))
 			return result;
 		if (!result && exits.length > 0) return exitResult(exits);
+		elapsed = true;
 		const text = `Nothing settled within ${windowMs > 0 ? formatDuration(windowMs) : "the wait"}; still waiting on ${running.length} job(s)/watch(es)${processes.length ? ` and ${processes.length} process(es)` : ""}.`;
-		return {
+		const timedOut: JobsResult = {
 			content: [{ type: "text", text }],
 			details: { op: "wait", jobs: manager ? snapshot() : [], timedOut: true },
 			useless: true,
 		};
+		if (usedSmartWindow && manager && rung >= WAIT_NOTICE_RUNG) {
+			const waitedMs = manager.pollWaitWaitedMs(ownerId) + windowMs;
+			const notice = prompt.render(waitIdleTemplate, { waited: formatDuration(waitedMs) });
+			return { ...timedOut, content: [...timedOut.content, { type: "text", text: notice }] };
+		}
+		return timedOut;
 	};
 
 	try {
@@ -322,7 +339,7 @@ export async function executeWait(
 		clearTimeout(timer);
 		clearInterval(progress);
 		signal?.removeEventListener("abort", onAbort);
-		if (usedSmartWindow && manager) manager.recordPollWaitEnd(ownerId);
+		if (usedSmartWindow && manager && elapsed) manager.recordPollWaitElapsed(ownerId, windowMs);
 	}
 }
 
@@ -331,13 +348,16 @@ function waitWindowMs(
 	manager: AsyncJobManager | undefined,
 	ownerId: string | undefined,
 	request: JobsWaitRequest,
-	hasExecutions: boolean,
-): number {
-	if (request.timeoutMs !== undefined) return Math.max(0, Math.trunc(request.timeoutMs));
-	if (!hasExecutions) return Math.max(0, Math.trunc(session.settings.get("irc.timeoutMs")));
+	mode: "jobs" | "processes" | "none",
+): { ms: number; smart: boolean } {
+	if (request.timeoutMs !== undefined) return { ms: Math.max(0, Math.trunc(request.timeoutMs)), smart: false };
 	const setting = session.settings.get("async.pollWaitDuration");
-	if (setting === "smart" && manager) return manager.nextPollWaitMs(ownerId);
-	return WAIT_DURATION_MS[setting] ?? WAIT_DURATION_MS["30s"];
+	// The smart ladder covers job waits and reply (mailbox-only) waits; a
+	// process-only wait keeps its fixed window for the broker round trip.
+	if (setting === "smart" && manager && mode !== "processes")
+		return { ms: manager.nextPollWaitMs(ownerId), smart: true };
+	if (mode === "none") return { ms: Math.max(0, Math.trunc(session.settings.get("irc.timeoutMs"))), smart: false };
+	return { ms: WAIT_DURATION_MS[setting] ?? WAIT_DURATION_MS["30s"], smart: false };
 }
 
 function exitLines(exits: ProcessExit[]): string[] {

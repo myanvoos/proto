@@ -16,7 +16,7 @@ const DEFAULT_MAX_RUNNING_JOBS = 15;
 
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
-const POLL_WAIT_LADDER_MS = [5_000, 10_000, 30_000, 60_000, 300_000] as const;
+export const POLL_WAIT_LADDER_MS = [5_000, 10_000, 30_000, 60_000, 300_000] as const;
 
 const POLL_ESCALATION_RESET_MS = 60_000;
 
@@ -24,6 +24,12 @@ interface PollEscalationState {
 	level: number;
 
 	lastPollEndAt: number;
+
+	/** Window time spent across the current back-to-back idle streak. */
+	waitedMs: number;
+
+	/** Whether the latest wait whose window was requested actually elapsed with nothing new. */
+	elapsed: boolean;
 }
 
 export type AsyncJobType = "bash" | "worker" | "monitor";
@@ -698,13 +704,59 @@ export class AsyncJobManager {
 		const prev = this.#pollEscalation.get(ownerId);
 		const reset = !prev || now - prev.lastPollEndAt >= POLL_ESCALATION_RESET_MS;
 		const level = reset ? 0 : Math.min(prev.level + 1, POLL_WAIT_LADDER_MS.length - 1);
-		this.#pollEscalation.set(ownerId, { level, lastPollEndAt: prev?.lastPollEndAt ?? now });
+		this.#pollEscalation.set(ownerId, {
+			level,
+			lastPollEndAt: prev?.lastPollEndAt ?? now,
+			waitedMs: reset ? 0 : (prev?.waitedMs ?? 0),
+			elapsed: false,
+		});
 		return POLL_WAIT_LADDER_MS[level];
+	}
+
+	/**
+	 * Mark the start of a wait. A previous wait that did not elapse returned
+	 * news, so the ladder restarts at the floor; one that did elapse keeps the
+	 * streak for the next rung.
+	 */
+	noteWaitStarted(ownerId: string | undefined): void {
+		const prev = this.#pollEscalation.get(ownerId);
+		if (!prev) return;
+		if (!prev.elapsed) {
+			this.#pollEscalation.delete(ownerId);
+			return;
+		}
+		this.#pollEscalation.set(ownerId, { ...prev, elapsed: false });
+	}
+
+	/** Window time spent across the current back-to-back idle streak. */
+	pollWaitWaitedMs(ownerId: string | undefined): number {
+		return this.#pollEscalation.get(ownerId)?.waitedMs ?? 0;
 	}
 
 	recordPollWaitEnd(ownerId: string | undefined, now: number = Date.now()): void {
 		const prev = this.#pollEscalation.get(ownerId);
-		this.#pollEscalation.set(ownerId, { level: prev?.level ?? 0, lastPollEndAt: now });
+		this.#pollEscalation.set(ownerId, {
+			level: prev?.level ?? 0,
+			lastPollEndAt: now,
+			waitedMs: prev?.waitedMs ?? 0,
+			elapsed: false,
+		});
+	}
+
+	/** Record an elapsed idle wait: it extends the streak and the ladder for the next one. */
+	recordPollWaitElapsed(ownerId: string | undefined, waitedMs: number, now: number = Date.now()): void {
+		const prev = this.#pollEscalation.get(ownerId);
+		this.#pollEscalation.set(ownerId, {
+			level: prev?.level ?? 0,
+			lastPollEndAt: now,
+			waitedMs: (prev?.waitedMs ?? 0) + waitedMs,
+			elapsed: true,
+		});
+	}
+
+	/** A wait returned news: the agent worked, so the ladder restarts at the floor. */
+	resetPollWaitLadder(ownerId: string | undefined): void {
+		this.#pollEscalation.delete(ownerId);
 	}
 
 	acknowledgeDeliveries(jobIds: string[]): number {
