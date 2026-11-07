@@ -417,9 +417,10 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	}
 
 	async fn execute_via_builtin(
-		self,
+		mut self,
 		builtin: builtins::Registration<SE>,
 	) -> Result<ExecutionSpawnResult, error::Error> {
+		interp::materialize_deferred_redirects(&self.shell, &mut self.params).await?;
 		match self.shell {
 			ShellForCommand::OwnedShell { target, .. } => {
 				Ok(Self::execute_via_builtin_in_owned_shell(
@@ -484,9 +485,10 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 	}
 
 	async fn execute_via_function(
-		self,
+		mut self,
 		func_registration: functions::Registration,
 	) -> Result<ExecutionSpawnResult, error::Error> {
+		interp::materialize_deferred_redirects(&self.shell, &mut self.params).await?;
 		let mut params = self.params;
 		params.disable_command_output_marking();
 
