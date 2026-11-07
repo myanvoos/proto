@@ -102,6 +102,7 @@ function fixture(holdReplacement = false) {
 		kind: { kind: "headless", headless: true },
 		refCount: 0,
 		stealth: { browserSession: null, override: null },
+		wsEndpoint: "ws://127.0.0.1/fake",
 		browser: {
 			connected: true,
 			wsEndpoint: () => "ws://127.0.0.1/fake",

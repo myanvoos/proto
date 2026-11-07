@@ -7,6 +7,7 @@ import type { Browser, Page, Target } from "puppeteer-core";
 import {
 	attachPageWithTimeout,
 	findReusableCdp,
+	gracefulKillTreeOnce,
 	pickElectronTarget,
 	probeCdpResponse,
 	resolveSpawnArgs,
@@ -40,7 +41,7 @@ describe("spawned app reuse", () => {
 		return {
 			pid: child.pid,
 			async close() {
-				child.kill();
+				await gracefulKillTreeOnce(child.pid);
 				await child.exited;
 			},
 		};

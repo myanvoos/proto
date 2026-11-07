@@ -838,8 +838,7 @@ function isLastSurfaceCloseError(err: unknown): boolean {
 
 async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTabOptions): Promise<WorkerInitPayload> {
 	const safeDir = getPuppeteerDir();
-	const browserWSEndpoint = browser.browser.wsEndpoint();
-	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
+	const browserWSEndpoint = browser.wsEndpoint;
 	if (browser.kind.kind === "headless") {
 		return {
 			mode: "headless",
@@ -1052,8 +1051,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	holdBrowser(tab.browser);
 	try {
 		await oldWorker.terminate().catch(() => undefined);
-		const browserWSEndpoint = tab.browser.browser.wsEndpoint();
-		if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
+		const browserWSEndpoint = tab.browser.wsEndpoint;
 		const payload: WorkerInitPayload = {
 			mode: "attach",
 			userDriven: tab.kindTag === "connected" || tab.kindTag === "relay",
