@@ -6,6 +6,7 @@
 
 - Abort signals now cancel command output reads that a surviving descendant keeps open after the root process exits.
 - A command deadline now still bounds output collection when the root process exits before the timeout is attached.
+- The terminal stderr guard no longer leaks a copy of the terminal into processes spawned from native code.
 
 ## [20.1.2] - 2026-11-04
 
