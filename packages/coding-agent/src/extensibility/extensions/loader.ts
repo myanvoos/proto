@@ -55,6 +55,7 @@ import type {
 	PreparedExtension,
 	ProviderConfig,
 	RegisteredCommand,
+	ShortcutConflict,
 	ToolDefinition,
 	ToolInfo,
 } from "./types";
@@ -84,6 +85,10 @@ export class ExtensionRuntime implements IExtensionRuntime {
 	unregisterProvider(name: string): void {
 		const remaining = this.pendingProviderRegistrations.filter(registration => registration.name !== name);
 		this.pendingProviderRegistrations.splice(0, this.pendingProviderRegistrations.length, ...remaining);
+	}
+
+	getShortcutConflict(): ShortcutConflict | undefined {
+		throw new ExtensionRuntimeNotInitializedError();
 	}
 
 	sendMessage(): void {
@@ -214,6 +219,10 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		},
 	): void {
 		this.extension.shortcuts.set(shortcut, { shortcut, extensionPath: this.extension.path, ...options });
+	}
+
+	getShortcutConflict(shortcut: KeyId): ShortcutConflict | undefined {
+		return this.runtime.getShortcutConflict(shortcut, this.extension.path);
 	}
 
 	registerFlag(

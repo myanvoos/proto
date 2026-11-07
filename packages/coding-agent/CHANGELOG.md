@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Extensions can call `pi.getShortcutConflict(chord)` to learn whether a key chord is free or held by proto, a keybinding (an `app.*` action or an editing key) or another extension.
+
+### Fixed
+
+- Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling.
+- When extensions register one shortcut in different spellings (`alt+ctrl+x` and `ctrl+alt+x`, or `?` and `shift+?`), only the last one loaded is bound instead of the first silently winning.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

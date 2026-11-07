@@ -63,7 +63,7 @@ export function getDefaultPasteImageKeys(platform: NodeJS.Platform = process.pla
 	return ["ctrl+v"];
 }
 
-const KEYBINDINGS = {
+export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
 	"app.interrupt": {
 		defaultKeys: "escape",

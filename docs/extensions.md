@@ -113,7 +113,7 @@ export default function (pi: ExtensionAPI) {
 Core methods:
 
 - `on(event, handler)`
-- `registerTool`, `registerCommand`, `registerShortcut`, `registerFlag`
+- `registerTool`, `registerCommand`, `registerShortcut`, `getShortcutConflict`, `registerFlag`
 - `registerMessageRenderer`, `registerAssistantThinkingRenderer`
 - `setLabel`, `getFlag`
 - `sendMessage`, `sendUserMessage`, `appendEntry`, `exec`
@@ -128,6 +128,20 @@ Core methods:
 `ExtensionAPI` methods keep their extension binding when destructured or passed as callbacks.
 
 `getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
+
+### Keyboard shortcuts
+
+Register shortcuts in the extension factory; omp binds them before `session_start`, so a later registration applies on the next start.
+
+`getShortcutConflict(chord)` returns `undefined` for a free chord, otherwise the first holder of:
+
+- `{ kind: "reserved" }`: omp keeps the chord (see [Constraints and pitfalls](#constraints-and-pitfalls)); a shortcut on it is never bound.
+- `{ kind: "keybinding", keybindings }`: keymap actions bound to it in the editor (Ctrl+Enter counts for follow-up when its bindings are emptied). `app.*` actions usually take the key first where they apply; editing keys (`tui.editor.*`, `tui.input.*`, e.g. `alt+y` yank-pop) lose it to the shortcut.
+- `{ kind: "extension", extensionPath }`: another extension's shortcut. When several extensions register one chord, in any spelling, only the last one loaded is bound.
+
+Chords compare as the TUI matches them: `alt+ctrl+x` is `ctrl+alt+x`, and `?` also covers `shift+?`. The caller's own registrations don't count. Keybindings come from the session's TUI keymap, user remaps included; sessions without a TUI (print, RPC, ACP, SDK) use omp's defaults.
+
+It throws while extensions are loading, so call it from a handler (a command, `session_start`), e.g. to validate a chord the user picks; the factory then registers it on the next start.
 
 ### Provider registration
 
@@ -540,7 +554,7 @@ Provide `renderCall` / `renderResult` on `registerTool` definitions for custom t
 - Runtime actions are unavailable during extension load.
 - `tool_call` errors block execution (fail-closed).
 - Command name conflicts with built-ins are skipped with diagnostics.
-- Reserved shortcuts are ignored (`ctrl+c`, `ctrl+d`, `ctrl+z`, `ctrl+k`, `ctrl+p`, `ctrl+l`, `ctrl+o`, `ctrl+t`, `ctrl+g`, `ctrl+q`, `alt+m`, `shift+tab`, `shift+ctrl+p`, `alt+enter`, `escape`, `enter`).
+- Reserved shortcuts are ignored (`ctrl+c`, `ctrl+d`, `ctrl+z`, `ctrl+k`, `ctrl+p`, `ctrl+l`, `ctrl+o`, `ctrl+t`, `ctrl+g`, `ctrl+q`, `alt+m`, `shift+tab`, `shift+ctrl+p`, `alt+enter`, `escape`, `enter`); `getShortcutConflict` reports them as `reserved`.
 - Treat `ctx.reload()` as terminal for the current command handler frame.
 
 ## Extensions vs hooks vs custom-tools
