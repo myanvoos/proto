@@ -13,6 +13,7 @@
 - Search 64 levels deep in `find()`, reaching content such as VS Code's editor that nests deeper than 24 levels.
 - Drain an autorelease pool around macOS spell-server calls so spellcheck, autocorrect and completion stop leaking every result for the life of the process.
 - Name the loaded addon file, its release and the rebuild command when a symbol this checkout exports is missing from it, instead of only the symbol name.
+- Fixed `.bzl` files resolving to Python instead of Starlark in AST grep, edit, summaries, and block operations.
 
 ## [20.1.2] - 2026-11-04
 

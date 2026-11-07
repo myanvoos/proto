@@ -252,6 +252,9 @@ class Builder {
 			}
 			case "sub":
 				return `!(${this.ref(node.schema.run)}(${v}) instanceof AE)`;
+			case "refine":
+				if (node.check !== undefined) return `(${this.predicate(node.base, v)})&&${this.ref(node.check)}(${v})`;
+				return `!(${this.ref(boundWalk(node))}(${v}) instanceof AE)`;
 			default:
 				return `!(${this.ref(boundWalk(node))}(${v}) instanceof AE)`;
 		}
@@ -1066,6 +1069,21 @@ function resolvedRoot(ir: IR): IR {
 	return ir.k === "alias" ? ir.resolve() : ir;
 }
 
+/** Set once the runtime refuses code generation from strings (strict CSP); the interpreter serves from then on. */
+let jitBlocked = false;
+
+/** Build with `build`, or `undefined` when code generation from strings is forbidden. */
+function tryBuild<T>(build: () => T): T | undefined {
+	if (jitBlocked) return undefined;
+	try {
+		return build();
+	} catch (error) {
+		if (!(error instanceof EvalError)) throw error;
+		jitBlocked = true;
+		return undefined;
+	}
+}
+
 const compiledCache = new WeakMap<IR, (value: unknown) => unknown>();
 const allowsCache = new WeakMap<IR, (value: unknown) => value is unknown>();
 
@@ -1074,10 +1092,12 @@ export function compile(ir: IR): (value: unknown) => unknown {
 	const validator = compiledCache.get(root);
 	if (validator === undefined) {
 		let built: ((value: unknown) => unknown) | undefined;
-		compiledCache.set(root, value => (built === undefined ? walk(root, value) : built(value)));
-		built = new Builder().build(root);
-		compiledCache.set(root, built);
-		return built;
+		const deferred = (value: unknown) => (built === undefined ? walk(root, value) : built(value));
+		compiledCache.set(root, deferred);
+		const compiled = tryBuild(() => new Builder().build(root)) ?? ((value: unknown) => walk(root, value));
+		built = compiled;
+		compiledCache.set(root, compiled);
+		return compiled;
 	}
 	return validator;
 }
@@ -1091,7 +1111,10 @@ export function compileAllows(ir: IR): (value: unknown) => value is unknown {
 			built === undefined ? !(walk(root, value) instanceof OmpErrors) : built(value)) as (
 			value: unknown,
 		) => value is unknown);
-		built = new Builder().buildAllows(root);
+		const compiled =
+			tryBuild(() => new Builder().buildAllows(root)) ??
+			((value: unknown): value is unknown => !(walk(root, value) instanceof OmpErrors));
+		built = compiled;
 		allowsCache.set(root, built);
 		return built;
 	}

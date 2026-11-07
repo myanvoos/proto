@@ -86,6 +86,9 @@
 
 - A read summary that names URLs links each of them so the terminal can open it.
 - The editor's magic-keyword sweep stops when decorative motion is off, including a live switch.
+### Fixed
+
+- Fixed `ast_grep` and `ast_edit` ignoring files whose extension is not lowercase (`.R`, `.PY`, …) unless `lang` was given; `.C`/`.H` resolve to C++.
 
 ## [20.1.2] - 2026-11-04
 

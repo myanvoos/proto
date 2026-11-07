@@ -418,7 +418,7 @@ function tRecord<K extends AnySchema, V extends AnySchema>(key: K, value: V, opt
 			if (key(name) instanceof type.errors) return ctx.mustBe("an object with valid record keys");
 		return true;
 	});
-	return applyMeta(base, opts) as TRecord<K, V>;
+	return asSchema<Record<Extract<Static<K>, PropertyKey>, Static<V>>>(applyMeta(base, opts));
 }
 
 function tOptional<E extends AnySchema>(schema: E, opts?: Meta): TOptional<E> {
@@ -445,7 +445,7 @@ function tPartial<P extends Record<string, AnySchema>>(schema: TObject<P>): TTyp
 	const props: Record<string, AnySchema> = {};
 	for (const key in info.props)
 		props[key] = asRuntime<unknown>(info.props[key])[OPTIONAL_INNER] ? info.props[key] : tOptional(info.props[key]);
-	return tObject(props, { additionalProperties: info.additionalProperties }) as TTyped<Partial<ObjectStatic<P>>>;
+	return asSchema<Partial<ObjectStatic<P>>>(tObject(props, { additionalProperties: info.additionalProperties }));
 }
 
 function tRequired<P extends Record<string, AnySchema>>(schema: TObject<P>): TObject<RequiredProps<P>> {
@@ -454,7 +454,7 @@ function tRequired<P extends Record<string, AnySchema>>(schema: TObject<P>): TOb
 	for (const key in info.props) {
 		props[key] = asRuntime<unknown>(info.props[key])[OPTIONAL_INNER] ?? info.props[key];
 	}
-	return tObject(props, { additionalProperties: info.additionalProperties }) as TObject<RequiredProps<P>>;
+	return asSchema<ObjectStatic<RequiredProps<P>>>(tObject(props, { additionalProperties: info.additionalProperties }));
 }
 
 function tPick<P extends Record<string, AnySchema>, const K extends readonly (keyof P)[]>(
@@ -464,7 +464,9 @@ function tPick<P extends Record<string, AnySchema>, const K extends readonly (ke
 	const info = requireObject(schema, "Pick");
 	const props: Record<string, AnySchema> = {};
 	for (const key of keys) if (typeof key === "string" && info.props[key]) props[key] = info.props[key];
-	return tObject(props, { additionalProperties: info.additionalProperties }) as TObject<Pick<P, K[number]>>;
+	return asSchema<ObjectStatic<Pick<P, K[number]>>>(
+		tObject(props, { additionalProperties: info.additionalProperties }),
+	);
 }
 
 function tOmit<P extends Record<string, AnySchema>, const K extends readonly (keyof P)[]>(
@@ -475,7 +477,9 @@ function tOmit<P extends Record<string, AnySchema>, const K extends readonly (ke
 	const omitted = new Set<PropertyKey>(keys);
 	const props: Record<string, AnySchema> = {};
 	for (const key in info.props) if (!omitted.has(key)) props[key] = info.props[key];
-	return tObject(props, { additionalProperties: info.additionalProperties }) as TObject<Omit<P, K[number]>>;
+	return asSchema<ObjectStatic<Omit<P, K[number]>>>(
+		tObject(props, { additionalProperties: info.additionalProperties }),
+	);
 }
 
 function tComposite<const E extends readonly TObject<Record<string, AnySchema>>[]>(

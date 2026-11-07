@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { OmpErrors } from "./errors";
 import { fromJsonSchema } from "./from-json-schema";
+import { type } from "./type";
 
 test("local definition references decode URI fragments before JSON Pointer escapes", () => {
 	const imported = fromJsonSchema({
@@ -12,8 +13,17 @@ test("local definition references decode URI fragments before JSON Pointer escap
 	const empty = fromJsonSchema({ definitions: { "": { type: "integer" } }, $ref: "#/definitions/" });
 	expect(empty(2.5)).toBeInstanceOf(OmpErrors);
 	expect(empty(2)).toBe(2);
-	for (const ref of ["#/$defs/%E0%A4%A", "https://example.com/schema#/$defs/value"])
-		expect(() => fromJsonSchema({ $ref: ref })).toThrow(`unsupported $ref: ${ref}`);
+	for (const ref of ["#/$defs/%E0%A4%A", "https://example.com/schema#/$defs/value"]) {
+		expect(() => fromJsonSchema({ $ref: ref })).toThrow(
+			ref.startsWith("#") ? `invalid $ref: ${ref}` : `unresolved $ref: ${ref}`,
+		);
+	}
+	const remote = fromJsonSchema(
+		{ $ref: "https://example.com/schema#/$defs/value" },
+		{ schemas: { "https://example.com/schema": { $defs: { value: { type: "string" } } } } },
+	);
+	expect(remote("value")).toBe("value");
+	expect(remote(1)).toBeInstanceOf(OmpErrors);
 });
 
 const BOTH_RUNTIMES = [true, true, true, true];
@@ -192,4 +202,70 @@ test("JSON Schema default fills a missing required property but required still a
 
 	const noDefault = { type: "object", properties: { y: { type: "string" } }, required: ["y"] };
 	expectRejected(noDefault, {});
+
+	const strict = fromJsonSchema(withDefault, { fillDefaultedRequired: false });
+	expect(strict({})).toBeInstanceOf(OmpErrors);
+});
+
+test("JSON Schema formats keep their built-in checks and accept caller overrides", () => {
+	const email = { type: "string", format: "email" };
+	expect(fromJsonSchema(email)("a@omp.sh")).toBe("a@omp.sh");
+	expect(fromJsonSchema(email)("nope")).toBeInstanceOf(OmpErrors);
+	expect(fromJsonSchema(email, { formats: { email: value => value.includes("@") } })("nope@")).toBe("nope@");
+	expect(fromJsonSchema({ format: "custom" })("anything")).toBe("anything");
+	expect(fromJsonSchema({ type: "number", format: "email" }, { formats: { email: () => false } })(42)).toBe(42);
+});
+
+test("JSON Schema recursive references terminate and report nested paths", () => {
+	const node = fromJsonSchema({
+		$defs: {
+			node: {
+				type: "object",
+				properties: { value: { type: "number" }, next: { $ref: "#/$defs/node" } },
+				required: ["value"],
+			},
+		},
+		$ref: "#/$defs/node",
+	});
+	expect(node({ value: 1, next: { value: 2 } })).toEqual({ value: 1, next: { value: 2 } });
+	const invalid = node({ value: 1, next: { value: "two" } });
+	expect(invalid).toBeInstanceOf(OmpErrors);
+	if (invalid instanceof OmpErrors) expect(invalid[0].path).toEqual(["next", "value"]);
+});
+
+test("JSON Schema draft selects $ref sibling semantics", () => {
+	const schema = { $defs: { text: { type: "string" } }, $ref: "#/$defs/text", maxLength: 1 };
+	expect(fromJsonSchema(schema)("long")).toBeInstanceOf(OmpErrors);
+	expect(fromJsonSchema(schema, { draft: "7" })("long")).toBe("long");
+});
+
+test("JSON Schema validation stays consistent once the generated validator takes over", () => {
+	const validator = fromJsonSchema({
+		type: "object",
+		properties: { id: { type: "string", pattern: "^[a-z]+$" }, n: { type: "integer", minimum: 0 } },
+		required: ["id"],
+	});
+	for (let i = 0; i < 100; i++) {
+		expect(validator.allows({ id: "abc", n: i })).toBe(true);
+		expect(validator.allows({ id: "ABC", n: i })).toBe(false);
+	}
+	expect(validator({ id: "abc" })).toEqual({ id: "abc" });
+	expect(validator({ id: 1 })).toBeInstanceOf(OmpErrors);
+});
+
+test("JSON Schema import round-trips the source document and its constraints", () => {
+	const original = type({
+		name: "1 <= string <= 32",
+		"retries?": "number.integer >= 0",
+		mode: "'read' | 'write'",
+		tags: "string[]",
+	});
+	const emitted = original.toJsonSchema();
+	const imported = fromJsonSchema(emitted);
+	expect(imported.toJsonSchema()).toEqual(emitted);
+	const valid = { name: "job", mode: "read", tags: ["a"] };
+	expect(imported(valid)).toEqual(valid);
+	expect(imported({ name: "job", mode: "delete", tags: [] })).toBeInstanceOf(OmpErrors);
+	expect(imported({ name: "", mode: "read", tags: [] })).toBeInstanceOf(OmpErrors);
+	expect(imported({ mode: "read", tags: [] })).toBeInstanceOf(OmpErrors);
 });
