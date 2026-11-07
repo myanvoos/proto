@@ -1,5 +1,5 @@
 import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
-import type { OAuthAccess } from "./auth-storage";
+import type { OAuthAccess, OAuthRefreshReason } from "./auth-storage";
 import * as AIError from "./error";
 import { isAuthRetryableError, isInvalidatedOAuthTokenError } from "./error/auth-classify";
 import { isAccountPolicyError, isUsageLimit } from "./error/flags";
@@ -214,7 +214,12 @@ export interface OAuthAccessSource {
 	getOAuthAccess(
 		provider: string,
 		sessionId?: string,
-		options?: { forceRefresh?: boolean; signal?: AbortSignal },
+		options?: {
+			forceRefresh?: boolean;
+			refreshReason?: OAuthRefreshReason;
+			rejectedAccessToken?: string;
+			signal?: AbortSignal;
+		},
 	): Promise<OAuthAccess | undefined>;
 	rotateSessionCredential(
 		provider: string,
@@ -268,7 +273,11 @@ export async function withOAuthAccess<T>(
 			tokenRefreshReplayUsed = true;
 			refreshedCurrent = true;
 			try {
-				next = await storage.getOAuthAccess(provider, sessionId, { forceRefresh: true, signal });
+				next = await storage.getOAuthAccess(provider, sessionId, {
+					forceRefresh: true,
+					rejectedAccessToken: lastAccess.accessToken,
+					signal,
+				});
 			} catch {
 				next = undefined;
 			}
@@ -290,7 +299,12 @@ export async function withOAuthAccess<T>(
 			if (!refreshedCurrent) {
 				refreshedCurrent = true;
 				try {
-					next = await storage.getOAuthAccess(provider, sessionId, { forceRefresh: true, signal });
+					next = await storage.getOAuthAccess(provider, sessionId, {
+						forceRefresh: true,
+						refreshReason: AIError.status(lastError) === 401 ? "auth-recovery" : undefined,
+						rejectedAccessToken: lastAccess.accessToken,
+						signal,
+					});
 				} catch {
 					next = undefined;
 				}

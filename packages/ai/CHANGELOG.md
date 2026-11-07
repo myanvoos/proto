@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Several processes that share one OAuth login no longer disable it when they race to refresh: a 401 recovery adopts a peer's freshly rotated token instead of exchanging the refresh token again, and a token already exchanged is saved through a busy database instead of being dropped.
+- A token refresh that outlasts the 10-second wait now finishes in the background and saves the provider's rotated refresh token, so the next request no longer fails with `invalid_grant`.
+- Closing or replacing the auth store while a token exchange is in flight waits for the rotated token to be saved and refuses new refreshes.
+- Quitting during a token refresh no longer loses the rotated token, including when the credential database is briefly locked by another process.
+- A cancelled request whose OAuth credential was mid-refresh no longer kills the session with an unhandled `AbortError`, and a request that joins a refresh started by an already-cancelled request gets the refreshed credential.
+- A 401 recovery no longer adopts a peer row that still carries the rejected access token, and a joined by-id refresh that lands on the rejected token refreshes again.
+- A refresh token rejected after taking over a lapsed lease is treated as transient instead of disabling a login another process may still be saving.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
