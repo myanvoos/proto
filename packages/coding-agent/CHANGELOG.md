@@ -9,7 +9,8 @@
 
 ### Fixed
 
-- Keep the prompt-cache marker right across warm refreshes, `/clear`, rewinds and reopened sessions.
+- Keep the prompt-cache marker accurate across warm refreshes, `/clear`, rewinds and reopened sessions.
+- Flag cache misses that re-send most of the conversation even when the shared system prompt block stayed warm.
 
 ## [20.1.2] - 2026-11-04
 
