@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A read summary that names URLs links each of them so the terminal can open it.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
