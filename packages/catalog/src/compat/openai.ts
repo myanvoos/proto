@@ -616,8 +616,6 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 
 		supportsReasoningSummary: !isXaiHost,
 		statefulResponses: undefined,
-		// Muse Code subscription keys answer 403 when a request declares certain exact tool names.
-		toolNamePrefix: spec.provider === "muse-code" ? "_" : undefined,
 		supportsConfigurationUpdate: !isOpenRouter && parseOpenAIModel(bareModelId(id))?.version.major === 6,
 		reasoningEffortMap: isXaiHost ? { ...xaiResponsesReasoningEffortMap(id) } : {},
 		supportsReasoningParams: true,
@@ -726,7 +724,6 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		connectionBoundNativeHistory: compat.connectionBoundNativeHistory,
 		supportsReasoningSummary: compat.supportsReasoningSummary,
 		statefulResponses: compat.statefulResponses,
-		toolNamePrefix: compat.toolNamePrefix,
 		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,
 		toolNamePrefix: compat.toolNamePrefix,
 		isVercelGatewayHost: compat.isVercelGatewayHost,

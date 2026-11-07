@@ -941,7 +941,6 @@ const streamOpenAIResponsesOnce = (
 							activeTrailingScaffoldingItems = currentBuilt.trailingScaffoldingItems;
 							activeStrictToolsApplied = currentBuilt.strictToolsApplied;
 						}
-
 					}
 				} catch (error) {
 					if (error instanceof OpenAIResponsesRequestRejection) {
