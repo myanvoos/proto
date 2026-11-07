@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A session whose request carries no titleable text of its own — an attached `@brief.md`, a greeting — is now named once from the assistant's reading of it, instead of staying untitled until the next titleable message
+- Tool results whose `details` hold an object with a throwing getter no longer stop the session from saving for the rest of the process
+- `/quit` and `/exit` no longer wait several seconds for an unresponsive OTLP telemetry collector
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
