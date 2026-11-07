@@ -6,6 +6,7 @@ export { OpenAIHttpError };
 
 import type { FetchImpl } from "../types";
 import type { CapturedHttpErrorResponse } from "./http-inspector";
+import { getShouldRetryFromHeaders } from "./retry-after";
 
 const DEFAULT_MAX_ATTEMPTS = 6;
 
@@ -55,6 +56,7 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 			maxAttempts: init.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
 
 			shouldRetryResponse: async (response, bodyText) =>
+				getShouldRetryFromHeaders(response.headers) !== false &&
 				!isConcurrencyAdmissionRejection(response, bodyText) &&
 				(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 

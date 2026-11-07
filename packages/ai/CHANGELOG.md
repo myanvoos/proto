@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Honor `x-should-retry: false` in the OpenAI wire transport and provider retry loops so a retrying gateway's terminal 5xx is not replayed.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
