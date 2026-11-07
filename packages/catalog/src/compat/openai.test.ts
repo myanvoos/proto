@@ -92,3 +92,15 @@ describe("Muse Spark replay policy", () => {
 		).toBeUndefined();
 	});
 });
+
+describe("Muse Code tool-name prefix", () => {
+	test("prefixes declared function tools only for the attested Muse Code host", () => {
+		// Muse Code subscription keys 403 on requests declaring certain exact tool names; Meta
+		// pay-as-you-go keys are not attested and keep plain names.
+		const muse = buildOpenAIResponsesCompat(responsesSpec("muse-code", "muse-spark-1.3", "https://api.meta.ai/v1"));
+		expect(muse.toolNamePrefix).toBe("_");
+
+		const meta = buildOpenAIResponsesCompat(responsesSpec("meta", "muse-spark-1.3", "https://api.meta.ai/v1"));
+		expect(meta.toolNamePrefix).toBeUndefined();
+	});
+});

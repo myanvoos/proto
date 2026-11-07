@@ -35,6 +35,7 @@
 		"toolMode": "code_mode_only",
 		"priority": 3,
 		"applyPatchToolType": "freeform",
+		"int": 23.8,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -241,6 +242,7 @@
 		"toolMode": "code_mode_only",
 		"priority": 2,
 		"applyPatchToolType": "freeform",
+		"int": 32.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -429,7 +431,7 @@
 		"maxTokens": 128000,
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
-		"int": 27.8,
+		"int": 27.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -523,6 +525,7 @@
 		"maxTokens": 128000,
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
+		"int": 44.2,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -616,7 +619,7 @@
 		"maxTokens": 128000,
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
-		"int": 54.5,
+		"int": 54.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -718,7 +721,7 @@
 		"maxTokens": 128000,
 		"preferWebsockets": true,
 		"applyPatchToolType": "freeform",
-		"int": 51,
+		"int": 51.3,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

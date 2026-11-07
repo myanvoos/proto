@@ -1273,7 +1273,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 524288,
-		"int": 18.7,
+		"int": 18.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1697,6 +1697,100 @@
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
 		"int": 17.4,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"effortMap": {
+				"max": "max"
+			},
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"trustExplicitThinkingOnly": false,
+			"supportsStore": true,
+			"supportsDeveloperRole": false,
+			"supportsMultipleSystemMessages": true,
+			"supportsReasoningEffort": true,
+			"supportsReasoningParams": true,
+			"supportsSamplingParams": true,
+			"supportsPenaltyAndStopParams": true,
+			"reasoningEffortMap": {
+				"minimal": "low",
+				"medium": "high",
+				"xhigh": "max",
+				"max": "max"
+			},
+			"supportsUsageInStreaming": true,
+			"alwaysSendMaxTokens": true,
+			"clampOutputToModelMax": false,
+			"disableReasoningOnForcedToolChoice": true,
+			"disableReasoningOnToolChoice": false,
+			"disableReasoningWithTools": false,
+			"supportsToolChoice": true,
+			"supportsForcedToolChoice": true,
+			"supportsNamedToolChoice": true,
+			"maxTokensField": "max_completion_tokens",
+			"requiresToolResultName": false,
+			"requiresAssistantAfterToolResult": false,
+			"requiresThinkingAsText": false,
+			"requiresMistralToolIds": false,
+			"thinkingFormat": "openai",
+			"reasoningDisableMode": "lowest-effort",
+			"omitReasoningEffort": false,
+			"includeEncryptedReasoning": true,
+			"filterReasoningHistory": false,
+			"reasoningContentField": "reasoning_content",
+			"requiresReasoningContentForToolCalls": true,
+			"requiresReasoningContentForAllAssistantTurns": false,
+			"allowsSyntheticReasoningContentForToolCalls": true,
+			"replayReasoningContent": false,
+			"qwenPreserveThinking": false,
+			"qwenTemplateReasoningEffort": false,
+			"requiresAssistantContentForToolCalls": true,
+			"supportsPromptCacheBreakpoints": false,
+			"isOpenRouterHost": false,
+			"wireModelIdMode": "raw",
+			"isVercelGatewayHost": false,
+			"supportsStrictMode": true,
+			"toolStrictMode": "mixed",
+			"toolSchemaFlavor": "moonshot-mfjs",
+			"stripDeepseekSpecialTokens": false,
+			"streamMarkupHealingPattern": "thinking",
+			"reasoningDeltasMayBeCumulative": false,
+			"emptyLengthFinishIsContextError": false,
+			"usesOpenAIToolCallIdLimit": false,
+			"dropThinkingWhenReasoningEffort": false
+		}
+	},
+	"moonshotai/Kimi-K3.1-Pro": {
+		"id": "moonshotai/Kimi-K3.1-Pro",
+		"name": "Kimi K3.1 Pro",
+		"api": "openai-completions",
+		"provider": "together",
+		"baseUrl": "https://api.together.xyz/v1",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"int": 46.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

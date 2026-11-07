@@ -3269,6 +3269,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 23.8,
 		"applyPatchToolType": "freeform",
 		"compat": {
 			"trustExplicitThinkingOnly": false,
@@ -3366,6 +3367,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 23.8,
 		"requestModelId": "gpt-5.6-luna",
 		"reasoningMode": "pro",
 		"applyPatchToolType": "freeform",
@@ -3661,6 +3663,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 32.3,
 		"applyPatchToolType": "freeform",
 		"compat": {
 			"trustExplicitThinkingOnly": false,
@@ -3758,6 +3761,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 32.3,
 		"requestModelId": "gpt-5.6-terra",
 		"reasoningMode": "pro",
 		"applyPatchToolType": "freeform",
@@ -3953,7 +3957,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 27.8,
+		"int": 27.9,
 		"applyPatchToolType": "freeform",
 		"thinking": {
 			"mode": "effort",
@@ -4048,6 +4052,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 44.2,
 		"applyPatchToolType": "freeform",
 		"thinking": {
 			"mode": "effort",
@@ -4142,7 +4147,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 54.5,
+		"int": 54.6,
 		"applyPatchToolType": "freeform",
 		"thinking": {
 			"mode": "effort",

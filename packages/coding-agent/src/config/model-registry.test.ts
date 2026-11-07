@@ -714,3 +714,75 @@ test("offline account-scoped discovery restores its cached roster from an expire
 	expect(registry.find("kimi-code", "account-only-route")?.name).toBe("Account route");
 	expect(network).toEqual([]);
 });
+
+test("reports a throwing dynamic fetcher in the provider discovery state", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-registry-fetch-error-"));
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	const registry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"), {
+		cacheDbPath: path.join(tempDir, "models.db"),
+		fetch: () => Promise.reject(new Error("network disabled in test")),
+	});
+	registry.registerProvider("throwing-ext", {
+		api: "openai-completions",
+		baseUrl: "https://throwing.invalid/v1",
+		apiKey: "test-key",
+		fetchDynamicModels: async () => {
+			throw new Error("HTTP 503");
+		},
+	});
+
+	await registry.refreshProvider("throwing-ext", "online");
+
+	const state = registry.getProviderDiscoveryState("throwing-ext");
+	expect(state?.status).toBe("unavailable");
+	expect(state?.error).toBe("HTTP 503");
+});
+
+test("keeps an authHeader extension provider's cached catalog when a forced refresh fails", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-registry-auth-header-"));
+	const modelsPath = path.join(tempDir, "models.yml");
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	let fail = false;
+	const register = (target: ModelRegistry) =>
+		target.registerProvider("auth-ext", {
+			baseUrl: "https://auth-ext.example.test/v1",
+			apiKey: "literal-test-key",
+			authHeader: true,
+			api: "openai-completions",
+			fetchDynamicModels: async () => {
+				if (fail) throw new Error("HTTP 503");
+				return [
+					{
+						id: "auth-model",
+						name: "Auth Model",
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 128000,
+						maxTokens: 4096,
+					},
+				];
+			},
+		});
+
+	const first = new ModelRegistry(authStorage, modelsPath, { cacheDbPath: path.join(tempDir, "models.db") });
+	register(first);
+	await first.refreshProvider("auth-ext", "online");
+	expect(first.find("auth-ext", "auth-model")).toBeDefined();
+
+	// Each step runs in a fresh registry, as separate CLI invocations do.
+	fail = true;
+	const failedRefresh = new ModelRegistry(authStorage, modelsPath, {
+		cacheDbPath: path.join(tempDir, "models.db"),
+	});
+	register(failedRefresh);
+	await failedRefresh.refreshProvider("auth-ext", "online");
+	const kept = failedRefresh.find("auth-ext", "auth-model");
+	expect(await kept?.resolveHeaders?.()).toEqual({ Authorization: "Bearer literal-test-key" });
+
+	fail = false;
+	const nextLaunch = new ModelRegistry(authStorage, modelsPath, { cacheDbPath: path.join(tempDir, "models.db") });
+	register(nextLaunch);
+	await nextLaunch.refreshRuntimeProviders();
+	expect(nextLaunch.find("auth-ext", "auth-model")).toBeDefined();
+});

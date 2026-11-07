@@ -80,7 +80,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 49,
+		"int": 49.2,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -707,6 +707,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
+		"int": 44.2,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -769,7 +770,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 58.4,
+		"int": 59.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -1075,7 +1076,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 54.2,
+		"int": 54.5,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [

@@ -5246,7 +5246,7 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"int": 28.9,
+		"int": 29.1,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -6752,7 +6752,7 @@
 		"api": "openai-completions",
 		"provider": "nvidia",
 		"baseUrl": "https://integrate.api.nvidia.com/v1",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text",
 			"image"
@@ -6765,17 +6765,6 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 262144,
-		"thinking": {
-			"mode": "effort",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh",
-				"max"
-			]
-		},
 		"tokenizer": "kimi-k2",
 		"requiresGlyphTokenization": false,
 		"int": 23.5,
@@ -11408,7 +11397,7 @@
 	},
 	"qwen/qwen3-next-80b-a3b-instruct": {
 		"id": "qwen/qwen3-next-80b-a3b-instruct",
-		"name": "Qwen3-Next 80B-A3B Instruct",
+		"name": "Qwen3 Next 80B A3B (Instruct)",
 		"api": "openai-completions",
 		"provider": "nvidia",
 		"baseUrl": "https://integrate.api.nvidia.com/v1",

@@ -585,6 +585,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
+		"int": 31,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -691,7 +692,7 @@
 			"usesOpenAIToolCallIdLimit": false,
 			"promptCacheSessionHeader": "x-grok-conv-id"
 		},
-		"int": 35.3,
+		"int": 35.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

@@ -1853,6 +1853,7 @@ export class ModelRegistry {
 		options: ModelManagerOptions<Api>,
 		strategy: ModelRefreshStrategy,
 	): Promise<BuiltInDiscoveryResult> {
+		let failure: string | undefined;
 		try {
 			const manager = createModelManager({ ...options, cacheDbPath: this.#cacheDbPath });
 			const result = await withModelDiscoveryTimeout(RUNTIME_DYNAMIC_MODEL_FETCH_TIMEOUT_MS, () =>
@@ -1871,6 +1872,8 @@ export class ModelRegistry {
 						: models.length > 0
 							? "ok"
 							: "empty";
+			// A throwing fetcher still resolves (cache or bundled), but the failure must reach the state and the log.
+			failure = result.fetchError;
 			this.#providerDiscoveryStates.set(options.providerId, {
 				provider: options.providerId,
 				status,
@@ -1879,6 +1882,7 @@ export class ModelRegistry {
 				fetchedAt: result.updatedAt,
 				source: result.source,
 				models: models.map(model => model.id),
+				...(failure !== undefined ? { error: failure } : {}),
 			});
 			const authoritativeProviders = new Set<string>();
 			if (options.dynamicModelsAuthoritative && !result.stale) {
@@ -1889,6 +1893,7 @@ export class ModelRegistry {
 			return { models, authoritativeProviders, replaceRuntimeProviders };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			failure = message;
 			const previous = this.#providerDiscoveryStates.get(options.providerId);
 			const authRejected = (previous?.models.length ?? 0) === 0 && isDiscoveryAuthRejection(error);
 			this.#providerDiscoveryStates.set(options.providerId, {
@@ -1901,8 +1906,11 @@ export class ModelRegistry {
 				models: previous?.models ?? [],
 				error: message,
 			});
-			logger.warn("model discovery failed for provider", { provider: options.providerId, error: message });
 			return { models: [], authoritativeProviders: new Set(), replaceRuntimeProviders: new Set() };
+		} finally {
+			if (failure !== undefined) {
+				logger.warn("model discovery failed for provider", { provider: options.providerId, error: failure });
+			}
 		}
 	}
 
@@ -2590,9 +2598,6 @@ export class ModelRegistry {
 			const fetcher = config.fetchDynamicModels;
 			const providerBaseUrl = config.baseUrl ?? "";
 			const providerApi = config.api;
-			const providerHeaders = config.headers;
-			const providerApiKey = config.apiKey;
-			const providerAuthHeader = config.authHeader;
 			const providerCompat = config.compat;
 			const managerOptions: ModelManagerOptions<Api> = {
 				providerId: providerName as Parameters<typeof createModelManager>[0]["providerId"],
@@ -2612,13 +2617,17 @@ export class ModelRegistry {
 					if (target.size > 0) this.#runtimeCommandConfigsByProvider.set(providerName, target);
 					const results: Model<Api>[] = [];
 					for (const modelDef of modelDefs) {
+						// Provider-level headers/authHeader stay off live rows: this registration's
+						// #runtimeProviderOverrides entry applies them at projection. Baked in, every row
+						// would be header-bearing, which the model cache cannot persist, so a failed
+						// refresh would find no restorable rows and empty the catalog (#18227).
 						const overlay = buildCustomModelOverlay(
 							providerName,
 							modelDef.baseUrl ?? providerBaseUrl,
 							modelDef.api ?? providerApi,
-							providerHeaders,
-							providerApiKey,
-							providerAuthHeader,
+							undefined,
+							undefined,
+							undefined,
 							providerCompat,
 							undefined,
 							config.remoteCompaction,

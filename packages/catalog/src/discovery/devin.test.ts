@@ -1,4 +1,7 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { buildModel } from "../build";
+import { calculateUncachedInputCost, getTimeBasedPricingPeriod } from "../models";
+import type { Api, Model, ModelSpec } from "../types";
 import { devinCliMetadata } from "../wire/devin";
 import { fetchDevinModels } from "./devin";
 import {
@@ -106,5 +109,87 @@ describe("Devin account discovery", () => {
 			"devin-session-token$eyJ.payload.signature",
 		);
 		expect(devinCliMetadata("sk-ws-enterprise").apiKey).toBe("sk-ws-enterprise");
+	});
+});
+
+describe("Devin catalog pricing", () => {
+	async function discover(ids: readonly string[]): Promise<Map<string, ModelSpec<"devin-agent">>> {
+		const payload = toBinary(
+			GetCliModelConfigsResponseSchema,
+			create(GetCliModelConfigsResponseSchema, { clientModelConfigs: ids.map(id => config(id)) }),
+		);
+		const specs = await fetchDevinModels({
+			apiKey: "fixture",
+			fetch: async () => new Response(payload, { status: 200, headers: { "content-type": "application/proto" } }),
+		});
+		if (!specs) throw new Error("Devin discovery returned no catalog");
+		return new Map(specs.map(spec => [spec.id, spec]));
+	}
+
+	const SWE_2_PROMO_ENDS = Date.parse("2027-01-01T08:00:00Z");
+	const inputRateAt = (model: Model<Api>, timestamp: number) =>
+		calculateUncachedInputCost(model.cost, 1_000_000, timestamp);
+
+	it("prices SWE-2 Flash separately from SWE-2 across its own promo cutoff", async () => {
+		// SWE-2 Flash was billed at SWE-2's enterprise rates, about 7.5x its real price.
+		const now = Date.parse("2026-11-06T00:00:00Z");
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const specs = await discover(["swe-2", "swe-2-flash"]);
+
+			const flash = buildModel(specs.get("swe-2-flash")!);
+			expect(flash.cost).toMatchObject({ input: 0.075, output: 0.375, cacheRead: 0.0075, cacheWrite: 0.09375 });
+			expect(inputRateAt(flash, now)).toBeCloseTo(0.075, 10);
+			expect(inputRateAt(flash, SWE_2_PROMO_ENDS)).toBeCloseTo(0.1, 10);
+
+			const swe2 = buildModel(specs.get("swe-2")!);
+			expect(swe2.cost).toMatchObject({ input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0 });
+			expect(inputRateAt(swe2, now)).toBeCloseTo(0.5, 10);
+			expect(inputRateAt(swe2, SWE_2_PROMO_ENDS)).toBeCloseTo(3, 10);
+			// A dated card is not a peak/off-peak tariff.
+			expect(getTimeBasedPricingPeriod(swe2.cost, SWE_2_PROMO_ENDS)).toBeUndefined();
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	it("prices SWE-2 Fast at its reported rate and covers raw effort uids", async () => {
+		const now = Date.parse("2026-11-06T00:00:00Z");
+		const clock = spyOn(Date, "now").mockReturnValue(now);
+		try {
+			// Each family's logical id and a raw effort uid that arrives without family metadata.
+			for (const [ids, promoEnds, promo, list] of [
+				[
+					["swe-2-flash", "swe-2-flash-max"],
+					Date.parse("2026-11-18T18:00:00Z"),
+					{ input: 0.075, output: 0.375, cacheRead: 0.0075, cacheWrite: 0.09375 },
+					{ input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
+				],
+				[
+					["swe-2", "swe-2-high"],
+					SWE_2_PROMO_ENDS,
+					{ input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0 },
+					{ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
+				],
+				[
+					// No dated card: Devin publishes no end date or list price for SWE-2 Fast.
+					["swe-2-fast", "swe-2-high-lightning"],
+					SWE_2_PROMO_ENDS,
+					{ input: 1, output: 5, cacheRead: 0.1, cacheWrite: 0 },
+					{ input: 1, output: 5, cacheRead: 0.1, cacheWrite: 0 },
+				],
+			] as const) {
+				const specs = await discover(ids);
+				for (const id of ids) {
+					const model = buildModel(specs.get(id)!);
+					expect(model.cost).toMatchObject(promo);
+					expect(inputRateAt(model, now)).toBeCloseTo(promo.input, 10);
+					expect(inputRateAt(model, promoEnds - 1)).toBeCloseTo(promo.input, 10);
+					expect(inputRateAt(model, promoEnds)).toBeCloseTo(list.input, 10);
+				}
+			}
+		} finally {
+			clock.mockRestore();
+		}
 	});
 });

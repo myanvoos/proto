@@ -161,7 +161,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 128000,
-		"int": 32.5,
+		"int": 32.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

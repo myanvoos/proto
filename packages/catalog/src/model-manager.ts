@@ -82,6 +82,8 @@ export interface ModelResolutionResult<TApi extends Api = Api> {
 	stale: boolean;
 	source: ModelResolutionSource;
 	updatedAt?: number;
+	/** Why the provider's endpoint fetcher threw this call; the models then come from cache, models.dev or bundled data. */
+	fetchError?: string;
 }
 
 export interface ModelManager<TApi extends Api = Api> {
@@ -272,9 +274,10 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 		};
 	}
 
-	const [fetchedModelsDevModels, fetchedDynamicModels] = shouldFetchFromNetwork
-		? await Promise.all([fetchModelsDev(options), dynamicFetcher ? fetchDynamicModels(dynamicFetcher) : null])
-		: [null, null];
+	const [fetchedModelsDevModels, dynamicFetch] = shouldFetchFromNetwork
+		? await Promise.all([fetchModelsDev(options), dynamicFetcher ? fetchDynamicModels(dynamicFetcher) : undefined])
+		: [null, undefined];
+	const fetchedDynamicModels = dynamicFetch?.models ?? null;
 	const modelsDevFetchSucceeded = fetchedModelsDevModels !== null;
 	const modelsDevModels = modelsDevAdditiveStaticModelIds
 		? (fetchedModelsDevModels ?? []).filter(model => !modelsDevAdditiveStaticModelIds.has(model.id))
@@ -345,7 +348,9 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 			// state stays visible while the retry backoff applies. With no prior cache and nothing to
 			// preserve (a discovery-only provider's first failed fetch), leave the row absent: an empty
 			// non-authoritative row reads back as fresh and would hide every discovery-only model for
-			// NON_AUTHORITATIVE_RETRY_MS instead of retrying on the next launch.
+			// NON_AUTHORITATIVE_RETRY_MS instead of retrying on the next launch. Likewise keep a prior
+			// row whose header-bearing models cannot be restored offline: rewriting it would drop them
+			// and mark the remainder fresh, while the untouched row keeps forcing a refetch.
 			const latestCache = readModelCache<TApi>(cacheProviderId, ttlMs, now, dbPath);
 			const latestRestoredCache = restoreCachedModelHeaders(
 				latestCache?.models ?? cache?.models ?? [],
@@ -377,7 +382,10 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 			const fallbackSnapshotModels = collapseBuiltModelVariants(
 				retainAuthoritative ? retainModelIds(mergedFallbackModels, latestUsableCacheModels) : mergedFallbackModels,
 			);
-			if (fallbackSnapshotModels.length > 0 || latestCache !== null || cache !== null) {
+			if (
+				latestRestoredCache.unresolvedModelIds.size === 0 &&
+				(fallbackSnapshotModels.length > 0 || latestCache !== null || cache !== null)
+			) {
 				writeModelCache(
 					cacheProviderId,
 					now(),
@@ -409,6 +417,7 @@ export async function resolveProviderModels<TApi extends Api = Api, TModelsDevPa
 			: cacheContributed && cache
 				? { updatedAt: cache.updatedAt }
 				: {}),
+		...(dynamicFetch?.error !== undefined ? { fetchError: dynamicFetch.error } : {}),
 	};
 }
 
@@ -427,17 +436,15 @@ async function fetchModelsDev<TApi extends Api, TModelsDevPayload>(
 	}
 }
 
+/** The endpoint's catalog (`models: null` when it answered none), and why it threw, if it did. */
 async function fetchDynamicModels<TApi extends Api>(
 	fetcher: () => Promise<readonly ModelSpec<TApi>[] | null>,
-): Promise<Model<TApi>[] | null> {
+): Promise<{ models: Model<TApi>[] | null; error?: string }> {
 	try {
 		const models = await fetcher();
-		if (models === null) {
-			return null;
-		}
-		return normalizeModelList<TApi>(models);
-	} catch {
-		return null;
+		return { models: models === null ? null : normalizeModelList<TApi>(models) };
+	} catch (error) {
+		return { models: null, error: error instanceof Error ? error.message : String(error) };
 	}
 }
 
@@ -711,7 +718,8 @@ function isModelLike(value: unknown): value is ModelSpec<Api> {
 	if (typeof v.provider !== "string" || v.provider.length === 0) {
 		return false;
 	}
-	if (typeof v.baseUrl !== "string" || v.baseUrl.length === 0) {
+	// Providers such as Azure resolve the deployment endpoint at request time.
+	if (typeof v.baseUrl !== "string") {
 		return false;
 	}
 	if (typeof v.reasoning !== "boolean") {

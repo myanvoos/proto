@@ -1,5 +1,6 @@
 import { loadProviderModels } from "./models-lazy";
 import { GENERATED_PROVIDERS } from "./models-providers";
+import { dueEffectiveRate } from "./pricing";
 import type {
 	Api,
 	EffectiveTokenCost,
@@ -69,16 +70,8 @@ export function getBundledModels(provider: GeneratedProvider): Model<Api>[] {
 }
 
 function resolveTokenCost(cost: ModelCost, promptInputTokens: number, timestamp: number | undefined): TokenCost {
-	let rates: ModelCost | EffectiveTokenCost = cost;
-	let effectiveFrom = -Infinity;
-	if (timestamp !== undefined && cost.timeBased?.effectiveRates) {
-		for (const candidate of cost.timeBased.effectiveRates) {
-			if (candidate.effectiveFrom <= timestamp && candidate.effectiveFrom > effectiveFrom) {
-				rates = candidate;
-				effectiveFrom = candidate.effectiveFrom;
-			}
-		}
-	}
+	const rates: ModelCost | EffectiveTokenCost =
+		(timestamp === undefined ? undefined : dueEffectiveRate(cost.timeBased, timestamp)) ?? cost;
 	const longContext = rates.longContext;
 	if (!longContext) return rates;
 	const reachesThreshold =
@@ -103,10 +96,19 @@ function timeBasedMultiplier(schedule: TimeBasedCost | undefined, timestamp: num
 	return isPeakPricingPeriod(schedule, timestamp) ? 1 : schedule.offPeakMultiplier;
 }
 
+/**
+ * Whether a schedule carries a recurring peak/off-peak tariff. A schedule with
+ * no peak windows at a 1x off-peak multiplier only carries dated rate cards
+ * (`effective-rates`): its price changes on a date, never by time of day.
+ */
+export function hasRecurringTariff(schedule: TimeBasedCost): boolean {
+	return schedule.peakWindows.length > 0 || schedule.offPeakMultiplier !== 1;
+}
+
 /** The recurring UTC tariff period at `timestamp` (Unix ms, default now), independent of its multiplier. */
 export function getTimeBasedPricingPeriod(cost: ModelCost, timestamp?: number): "peak" | "off-peak" | undefined {
 	const schedule = cost.timeBased;
-	if (!schedule) return undefined;
+	if (!schedule || !hasRecurringTariff(schedule)) return undefined;
 	return isPeakPricingPeriod(schedule, timestamp ?? Date.now()) ? "peak" : "off-peak";
 }
 

@@ -571,7 +571,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 18.7,
+		"int": 18.9,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
@@ -634,7 +634,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 524288,
-		"int": 28.9,
+		"int": 29.1,
 		"thinking": {
 			"mode": "anthropic-adaptive",
 			"efforts": [
