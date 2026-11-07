@@ -12,6 +12,10 @@
 ### Added
 
 - Gate standard Responses WebSockets to the official OpenAI Responses endpoint, with model and request opt-in both required.
+### Added
+
+- Added the `supportsMessageThreads` Anthropic compat axis, enabled for Claude 4.5 and newer on the first-party provider.
+- Added the `toolNamePrefix` Responses compat axis for hosts that reject certain declared tool names; Muse Code sets it to `_`.
 
 ## [19.2.1] - 2026-11-03
 

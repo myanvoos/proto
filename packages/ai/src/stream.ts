@@ -1589,6 +1589,7 @@ function mapOptionsForApi<TApi extends Api>(
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 		codexSseMaxAttempts: options?.codexSseMaxAttempts,
 		providerSessionState: options?.providerSessionState,
+		statefulResponses: options?.statefulResponses,
 		maxInFlightRequests: options?.maxInFlightRequests,
 		waitForTerminalDrain:
 			options?.waitForTerminalDrain || resolveProviderInFlightLimit(model.provider, options) !== undefined,

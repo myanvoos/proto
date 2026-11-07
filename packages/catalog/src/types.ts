@@ -291,6 +291,15 @@ export interface AnthropicCompat {
 
 	supportsServerCompaction?: boolean;
 
+	/**
+	 * Whether the model supports message threads (`message-threads-2026-08-12`):
+	 * later turns continue a server-held conversation and send only new
+	 * messages. Enabled on Claude 4.5+ for the first-party provider; the
+	 * transport still requires the official endpoint unless the caller opts in.
+	 * Default: false.
+	 */
+	supportsMessageThreads?: boolean;
+
 	firstPartyProvider?: boolean;
 
 	supportsForcedToolChoice?: boolean;
@@ -524,6 +533,14 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	statefulResponses?: boolean;
 	/** `configuration_update` input items may change reasoning effort mid-conversation (GPT-6 Astra only; others 400). */
 	supportsConfigurationUpdate: boolean;
+	/**
+	 * Prefix the `openai-responses` handler puts on every function-tool name it
+	 * declares or replays, and strips from returned calls through the request's
+	 * wire-name table. Rule-owned: hosts that reject requests declaring certain
+	 * exact tool names (Muse Code). Unset sends names unchanged. Other
+	 * Responses-family handlers do not read it.
+	 */
+	toolNamePrefix?: string;
 	streamIdleTimeoutMs?: number;
 	vercelGatewayRouting?: OpenAICompat["vercelGatewayRouting"];
 

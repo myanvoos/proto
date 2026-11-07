@@ -33,6 +33,16 @@
 ### Fixed
 
 - Keep a WebSocket generation from being replayed as HTTP/SSE after it was sent, and bound stale-anchor and connect failures per logical session.
+### Added
+
+- Continue Anthropic conversations as server-held message threads, so long sessions upload their history once and later turns send only new messages.
+- Adopt the Devin CLI's saved Windsurf seat key as a stored `devin` account with the `devin-cli` login; API-key logins now honor a provider's `store-as` target.
+- Sign in with a Windsurf Enterprise seat through the `devin-windsurf` login, which exchanges the code for the seat's raw API key and stores it as a `devin` account.
+
+### Fixed
+
+- Keep prompt-cache reads across long Anthropic thread turns, and cap retained thread chains per endpoint and model.
+- Send Muse Code function tools under a `_` prefix so subscription sessions no longer fail with `403 client_attestation_denied`; calls return under their own names and 64-character names stay valid.
 
 ## [19.2.1] - 2026-11-03
 

@@ -3116,15 +3116,17 @@ export class AuthStorage {
 			if (!result) {
 				return undefined;
 			}
+			// `store-as` routes API-key logins too, not only OAuth credentials.
+			const targetProvider = def.storeCredentialsAs ?? provider;
 			const newCredential: ApiKeyCredential = { type: "api_key", key: result, source: "login" };
 			const stored = this.#store.upsertAuthCredentialRemote
-				? await this.#store.upsertAuthCredentialRemote(provider, newCredential)
-				: this.#store.upsertAuthCredentialForProvider(provider, newCredential);
+				? await this.#store.upsertAuthCredentialRemote(targetProvider, newCredential)
+				: this.#store.upsertAuthCredentialForProvider(targetProvider, newCredential);
 			this.#setStoredCredentials(
-				provider,
+				targetProvider,
 				stored.map(entry => ({ id: entry.id, credential: entry.credential })),
 			);
-			this.#resetProviderAssignments(provider);
+			this.#resetProviderAssignments(targetProvider);
 			return { type: "api_key" };
 		}
 

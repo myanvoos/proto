@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Adopt the Devin CLI's saved credentials as a `devin` account with the `devin-cli` login, so chat, discovery and usage no longer require `DEVIN_API_KEY`.
+- Sign in to a Windsurf Enterprise seat with the `devin-windsurf` login, which stores the exchanged seat key as a `devin` account.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

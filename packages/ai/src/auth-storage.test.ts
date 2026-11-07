@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import {
@@ -9,6 +9,7 @@ import {
 	SqliteAuthCredentialStore,
 } from "./auth-storage";
 import { ProviderHttpError } from "./error";
+import * as devinCliModule from "./registry/oauth/devin-cli";
 import type { UsageProvider, UsageReport } from "./usage";
 import { openaiCodexUsageProvider } from "./usage/openai-codex";
 
@@ -591,6 +592,25 @@ describe("AuthStorage Codex plan gating", () => {
 				"access-promax",
 			);
 		} finally {
+			authStorage.close();
+		}
+	});
+});
+
+describe("AuthStorage API-key login store-as", () => {
+	it("stores an API-key login under the rule's store-as provider, not the auth id", async () => {
+		const store = new SqliteAuthCredentialStore(new Database(":memory:"));
+		const authStorage = new AuthStorage(store, { usageProviderResolver: () => undefined });
+		const spy = spyOn(devinCliModule, "loginDevinCliHook").mockResolvedValue("sk-ws-01-adopted");
+		try {
+			await authStorage.login("devin-cli", { onAuth: () => {}, onPrompt: async () => "" });
+
+			expect(store.listAuthCredentials("devin").map(entry => entry.credential)).toEqual([
+				{ type: "api_key", key: "sk-ws-01-adopted", source: "login" },
+			]);
+			expect(store.listAuthCredentials("devin-cli")).toHaveLength(0);
+		} finally {
+			spy.mockRestore();
 			authStorage.close();
 		}
 	});

@@ -633,6 +633,13 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
 		supportsToolChoice: !isMetaModelApi,
 		supportsForcedToolChoice: spec.provider !== "opencode-go" && spec.provider !== "opencode-zen",
+		// Muse Code subscription keys answer 403 `client_attestation_denied` when the
+		// request declares a tool with certain exact, case-sensitive names (`bash`,
+		// `shell`, `web_search`, `web_fetch`, `apply_patch`, `read_file`,
+		// `update_plan`; measured 2026-10-31, not exhaustive). Only declared names
+		// count, so prefixing every function tool with `_` clears the check. Meta
+		// pay-as-you-go keys are not attested and keep plain names.
+		toolNamePrefix: spec.provider === "muse-code" ? "_" : undefined,
 		supportsNamedToolChoice: STRING_ONLY_NAMED_TOOL_CHOICE_PROVIDERS[spec.provider] !== true,
 		reasoningContentField: "reasoning_content",
 		requiresReasoningContentForToolCalls:
@@ -718,6 +725,7 @@ function pickResponsesOnly(compat: ResolvedOpenAIResponsesCompat): ResponsesOnly
 		supportsReasoningSummary: compat.supportsReasoningSummary,
 		statefulResponses: compat.statefulResponses,
 		supportsConfigurationUpdate: compat.supportsConfigurationUpdate,
+		toolNamePrefix: compat.toolNamePrefix,
 		isVercelGatewayHost: compat.isVercelGatewayHost,
 	} satisfies ResponsesOnlyCompat;
 }
