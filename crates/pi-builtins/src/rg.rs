@@ -37,7 +37,7 @@ use ignore::{
 	args_override_self = true
 )]
 pub(crate) struct Rg {
-	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
+	#[arg(short = 'e', long = "regexp", value_name = "PATTERN", allow_hyphen_values = true)]
 	patterns: Vec<String>,
 
 	#[arg(short = 'f', long = "file", value_name = "PATTERNFILE")]
@@ -1855,4 +1855,19 @@ use crate::host::util;
 
 pub(crate) fn rg_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Rg, SE>()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use super::Rg;
+	use crate::host::run_util;
+
+	/// `-e` exists so a pattern may start with `-` (ripgrep); clap read
+	/// `-e --canary` as an unknown `--canary` flag and exited 2.
+	#[test]
+	fn regexp_operand_may_start_with_a_dash() {
+		let (code, capture) = run_util::<Rg>(&["-e", "--canary", "-"], "x --canary\ny\n", "/");
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(capture.out(), "x --canary\n");
+	}
 }
