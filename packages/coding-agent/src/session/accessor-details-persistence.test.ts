@@ -32,6 +32,7 @@ describe("tool result details with throwing accessors", () => {
 		const entry = {
 			type: "message" as const,
 			id: "entry-1",
+			parentId: null,
 			timestamp: "2026-01-01T00:00:00.000Z",
 			message: {
 				role: "toolResult" as const,
@@ -47,6 +48,7 @@ describe("tool result details with throwing accessors", () => {
 		const persisted = prepareEntryForPersistence(entry, {} as BlobStore);
 
 		// The JSON-visible fields survive; the throwing accessor is not consulted.
+		if (persisted.type !== "message") throw new Error("Expected a message entry");
 		expect(persisted.message).toMatchObject({ role: "toolResult", toolCallId: "call-1" });
 		expect((persisted.message as { details?: unknown }).details).toEqual({
 			web: [{ url: "https://example.com" }],
