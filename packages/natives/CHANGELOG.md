@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Report how many files need formatting in minimized `rustfmt --check` output instead of counting each diff location as a file and claiming they were reformatted.
+- List binary files, pure renames and mode-only changes in minimized `git diff`, `git show` and `diff -r` output, showing binaries as `Bin`.
+- Count only indented entries as untracked in minimized `git status` and `git stash pop` output, and keep a stash pop's `Dropped` confirmation.
+- Make a backgrounded builtin or shell function's FIFO redirection in the shell, so its output is not discarded.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
