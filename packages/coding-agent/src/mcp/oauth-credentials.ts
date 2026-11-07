@@ -30,7 +30,7 @@ export function mcpOAuthCredentialIdsForServerUrl(serverUrl: string | undefined)
 	return ids;
 }
 
-function hasMcpAuthorizationHeader(config: MCPServerConfig): boolean {
+export function hasMcpAuthorizationHeader(config: MCPServerConfig): boolean {
 	if (config.type !== "http" && config.type !== "sse") return false;
 	return Object.keys(config.headers ?? {}).some(header => header.toLowerCase() === "authorization");
 }
