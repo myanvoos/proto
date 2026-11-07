@@ -4,13 +4,18 @@ use std::{
 	fs,
 	io::{self, BufRead, BufReader, Read, Write},
 	path::Path,
+	sync::Arc,
 };
 
 use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use icu_collator::CollatorBorrowed;
 use uucore::{display::Quotable, line_ending::LineEnding};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use crate::{
+	host::{Host, Utility, format_usage, matches_parser, util},
+	locale::shell_collator,
+};
 
 mod options {
 	pub const COLUMN_1: &str = "1";
@@ -40,6 +45,25 @@ impl FileNumber {
 	}
 }
 
+/// The order `sort` writes lines in for the shell's `LC_COLLATE`: its
+/// collation with bytes breaking ties, or bytes alone. Line endings are left
+/// out of the comparison, as GNU's are.
+struct LineOrder {
+	collator: Option<Arc<CollatorBorrowed<'static>>>,
+	ending:   u8,
+}
+
+impl LineOrder {
+	fn cmp(&self, a: &[u8], b: &[u8]) -> Ordering {
+		let a = a.strip_suffix(&[self.ending]).unwrap_or(a);
+		let b = b.strip_suffix(&[self.ending]).unwrap_or(b);
+		match &self.collator {
+			Some(collator) => collator.compare_utf8(a, b).then_with(|| a.cmp(b)),
+			None => a.cmp(b),
+		}
+	}
+}
+
 struct OrderChecker {
 	last_line:   Vec<u8>,
 	file_num:    FileNumber,
@@ -52,12 +76,12 @@ impl OrderChecker {
 		Self { last_line: Vec::new(), file_num, check_order, has_error: false }
 	}
 
-	fn verify_order(&mut self, line: &[u8], stderr: &mut impl Write) -> bool {
+	fn verify_order(&mut self, line: &[u8], order: &LineOrder, stderr: &mut impl Write) -> bool {
 		if self.last_line.is_empty() {
 			self.last_line = line.to_vec();
 			return true;
 		}
-		let ordered = line >= self.last_line.as_slice();
+		let ordered = order.cmp(line, &self.last_line).is_ge();
 		if !ordered && !self.has_error {
 			let _ = writeln!(stderr, "comm: file {} is not in sorted order", self.file_num.as_str());
 			self.has_error = true;
@@ -141,6 +165,7 @@ fn compare(
 	name2: &OsStr,
 	delim: &str,
 	opts: &ArgMatches,
+	order: &LineOrder,
 	identical: bool,
 	stdout: &mut impl Write,
 	stderr: &mut impl Write,
@@ -163,11 +188,11 @@ fn compare(
 		let ord = match (na, nb) {
 			(0, _) => Ordering::Greater,
 			(_, 0) => Ordering::Less,
-			_ => ra.cmp(&rb),
+			_ => order.cmp(&ra, &rb),
 		};
 		match ord {
 			Ordering::Less => {
-				if should_check && !c1.verify_order(&ra, stderr) {
+				if should_check && !c1.verify_order(&ra, order, stderr) {
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_1) {
@@ -180,7 +205,7 @@ fn compare(
 				n1 += 1;
 			},
 			Ordering::Greater => {
-				if should_check && !c2.verify_order(&rb, stderr) {
+				if should_check && !c2.verify_order(&rb, order, stderr) {
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_2) {
@@ -192,7 +217,7 @@ fn compare(
 				n2 += 1;
 			},
 			Ordering::Equal => {
-				if should_check && (!c1.verify_order(&ra, stderr) || !c2.verify_order(&rb, stderr)) {
+				if should_check && (!c1.verify_order(&ra, order, stderr) || !c2.verify_order(&rb, order, stderr)) {
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_3) {
@@ -287,6 +312,7 @@ impl Utility for Comm {
 			files_identical(&path1, &path2).unwrap_or(false)
 		};
 		let ending = LineEnding::from_zero_flag(self.matches.get_flag(options::ZERO_TERMINATED));
+		let order = LineOrder { collator: shell_collator(host), ending: ending.into() };
 
 		let mut stdout = host.stdout_writer();
 		let opened: Result<_, (&OsStr, io::Error)> = if name1 == "-" {
@@ -328,6 +354,7 @@ impl Utility for Comm {
 			name2,
 			delim,
 			&self.matches,
+			&order,
 			identical,
 			&mut stdout,
 			&mut host.stderr,
@@ -420,4 +447,68 @@ fn app() -> Command {
 
 pub(crate) fn comm_builtin<SE: ShellExtensions>() -> Registration<SE> {
 	util::<Comm, SE>()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+	use std::{ffi::OsStr, io::Cursor, sync::Arc};
+
+	use icu_collator::{
+		CollatorBorrowed,
+		options::{AlternateHandling, CollatorOptions, Strength},
+	};
+	use icu_locale_core::Locale;
+	use uucore::line_ending::LineEnding;
+
+	use super::{LineOrder, LineReader, app, compare};
+
+	fn en_us_collator() -> Arc<CollatorBorrowed<'static>> {
+		let mut options = CollatorOptions::default();
+		options.alternate_handling = Some(AlternateHandling::Shifted);
+		options.strength = Some(Strength::Quaternary);
+		let locale = Locale::try_from_str("en-US").expect("locale");
+		Arc::new(CollatorBorrowed::try_new(locale.into(), options).expect("collator"))
+	}
+
+	/// Failure mode: `comm` merged by bytes while `sort` ordered by the shell's
+	/// collation, so under a UTF-8 locale `comm -12` on two `sort` outputs
+	/// warned "not in sorted order" and silently dropped common lines.
+	#[test]
+	fn merges_lines_in_the_shell_collation() {
+		let matches = app().try_get_matches_from(["comm", "-12", "a", "b"]).unwrap();
+		let merge = |order: LineOrder| {
+			let mut a = LineReader::new(
+				Box::new(Cursor::new(b"a\nB\nPASS3-r140\nPASS3-r14-moe\n")),
+				LineEnding::Newline,
+			);
+			let mut b = LineReader::new(
+				Box::new(Cursor::new(b"B\nPASS3-r14-moe\nzzz\n")),
+				LineEnding::Newline,
+			);
+			let (mut out, mut err) = (Vec::new(), Vec::new());
+			let ordered = compare(
+				&mut a,
+				&mut b,
+				OsStr::new("a"),
+				OsStr::new("b"),
+				"\t",
+				&matches,
+				&order,
+				false,
+				&mut out,
+				&mut err,
+			)
+			.expect("merge");
+			(ordered, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+		};
+
+		// en_US order: case and punctuation sort after letters and digits.
+		let (ordered, out, err) = merge(LineOrder { collator: Some(en_us_collator()), ending: b'\n' });
+		assert!(ordered, "{err}");
+		assert_eq!(out, "B\nPASS3-r14-moe\n");
+
+		// The same input under byte order is not sorted, which is the bug.
+		let (ordered, ..) = merge(LineOrder { collator: None, ending: b'\n' });
+		assert!(!ordered);
+	}
 }

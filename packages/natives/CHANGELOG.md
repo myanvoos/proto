@@ -5,6 +5,7 @@
 ### Fixed
 
 - Collate and read numbers in sort with the shell's locale per call instead of the host process locale, so `LC_ALL=C sort` and `sort -u` keep lines that differ only in punctuation.
+- Merge with comm in the same collation as sort, so `sort | comm` agrees under a UTF-8 locale.
 
 ## [20.1.2] - 2026-11-04
 
