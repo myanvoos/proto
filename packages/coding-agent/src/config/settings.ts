@@ -634,6 +634,15 @@ export class Settings {
 		}
 	}
 
+	/**
+	 * Value plus provenance for change notifications: a hook that reads `isConfigured` (the
+	 * `tui.motion` preset yields to an explicit knob) must fire when the user makes a setting
+	 * explicit at its default value, or clears it, even though the effective value is unchanged.
+	 */
+	#hookState(path: SettingPath): { value: unknown; configured: boolean } {
+		return { value: this.get(path), configured: this.isConfigured(path) };
+	}
+
 	#savesCancelled = false;
 
 	cancelPendingSaves(): void {
@@ -713,9 +722,9 @@ export class Settings {
 			const previousSignaledValues = {
 				modelRoles: this.get("modelRoles"),
 			};
-			const previousHookValues = new Map<SettingPath, unknown>();
+			const previousHookValues = new Map<SettingPath, { value: unknown; configured: boolean }>();
 			for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
-				previousHookValues.set(key, this.get(key));
+				previousHookValues.set(key, this.#hookState(key));
 			}
 
 			this.#configIssues = [];
@@ -768,8 +777,8 @@ export class Settings {
 			}
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
-				if (!Bun.deepEquals(next, previous)) {
-					SETTING_HOOKS[key]?.(next, previous, this);
+				if (this.isConfigured(key) !== previous.configured || !Bun.deepEquals(next, previous.value)) {
+					SETTING_HOOKS[key]?.(next, previous.value, this);
 				}
 			}
 			return;
@@ -2010,9 +2019,9 @@ export class Settings {
 		const modifiedModelRoleMutations = new Map(this.#modifiedGlobalModelRoleMutations);
 		const globalRolesAtStart = this.#modelRolesFromLayer(this.#global);
 		const previousModelRoles = this.get("modelRoles");
-		const previousHookValues = new Map<SettingPath, unknown>();
+		const previousHookValues = new Map<SettingPath, { value: unknown; configured: boolean }>();
 		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
-			previousHookValues.set(key, this.get(key));
+			previousHookValues.set(key, this.#hookState(key));
 		}
 		this.#modified.clear();
 		this.#modifiedGlobalModelRoles.clear();
@@ -2147,8 +2156,8 @@ export class Settings {
 		}
 		for (const [key, previous] of previousHookValues) {
 			const next = this.get(key);
-			if (!Bun.deepEquals(next, previous)) {
-				SETTING_HOOKS[key]?.(next, previous, this);
+			if (this.isConfigured(key) !== previous.configured || !Bun.deepEquals(next, previous.value)) {
+				SETTING_HOOKS[key]?.(next, previous.value, this);
 			}
 		}
 	}
