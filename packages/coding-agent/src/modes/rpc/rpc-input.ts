@@ -89,7 +89,7 @@ const RPC_COMMAND_FIELDS: Readonly<Record<string, Readonly<Record<string, RpcFie
 	compact: { customInstructions: "string?" },
 	set_auto_compaction: { enabled: "boolean" },
 	set_auto_retry: { enabled: "boolean" },
-	bash: { command: "string" },
+	bash: { command: "string", excludeFromContext: "boolean?" },
 	switch_session: { sessionPath: "string" },
 	branch: { entryId: "string" },
 	set_session_name: { name: "string" },

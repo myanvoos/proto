@@ -50,7 +50,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
 	| { id?: string; type: "abort_retry" }
-	| { id?: string; type: "bash"; command: string }
+	| { id?: string; type: "bash"; command: string; excludeFromContext?: boolean }
 	| { id?: string; type: "abort_bash" }
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "switch_session"; sessionPath: string }
@@ -84,6 +84,8 @@ export interface RpcAbortAndRestoreQueueResult {
 
 export interface RpcSessionState {
 	model?: Model;
+	/** `bash` accepts `excludeFromContext`; require exactly `true` before sending excluded commands. */
+	supportsBashExcludeFromContext?: boolean;
 	thinkingLevel: ThinkingLevel | undefined;
 	isStreaming: boolean;
 	isCompacting: boolean;

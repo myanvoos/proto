@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- RPC clients can run bash commands without adding the execution to model context, matching terminal `!!` behavior ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

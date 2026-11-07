@@ -227,8 +227,27 @@ Important edge behavior from runtime:
 
 ### Bash
 
-- `{ id?, type: "bash", command: string }`
+- `{ id?, type: "bash", command: string, excludeFromContext?: boolean }`
 - `{ id?, type: "abort_bash" }`
+
+Omitting `excludeFromContext` or setting it to `false` shares the command and
+output with the model (terminal `!`). Setting it to `true` excludes the execution
+from model context (terminal `!!`); the actual output is still returned in the
+ordinary `bash` response and retained in the session transcript. This is not
+secret storage: transcript readers and extensions can still see it.
+A provided non-boolean value is rejected before the command executes.
+
+Before sending `excludeFromContext: true`, clients MUST query `get_state` and
+require `supportsBashExcludeFromContext === true`. Older runtimes omit this
+capability and silently ignore unknown command fields; do not execute an excluded
+command on them or fall back to sharing its output.
+The TypeScript client enforces this check in
+`bash(command, { excludeFromContext: true })`; omitted/false options do not
+require a capability request.
+
+```json
+{ "id": "private-run", "type": "bash", "command": "printf private", "excludeFromContext": true }
+```
 
 `bash` is dispatched concurrently: the RPC server continues reading commands
 while the shell command runs, so `abort_bash` (or any other command) sent
@@ -324,6 +343,7 @@ is re-armed.
   "thinkingLevel": "off|minimal|low|medium|high|xhigh|max",
   "isStreaming": false,
   "isCompacting": false,
+  "supportsBashExcludeFromContext": true,
   "steeringMode": "all|one-at-a-time",
   "followUpMode": "all|one-at-a-time",
   "interruptMode": "immediate|wait",
