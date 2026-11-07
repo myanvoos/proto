@@ -1,4 +1,11 @@
-import type { EffectiveTokenCost, LongContextTokenCost, PeakPricingWindow, TimeBasedCost, TokenCost } from "./types";
+import type {
+	EffectiveTokenCost,
+	LongContextTokenCost,
+	ModelCost,
+	PeakPricingWindow,
+	TimeBasedCost,
+	TokenCost,
+} from "./types";
 import { isRecord } from "./utils";
 
 function nonnegative(value: unknown): value is number {
@@ -66,4 +73,53 @@ export function isTimeBasedCost(value: unknown): value is TimeBasedCost {
 	if (value.effectiveRates === undefined) return true;
 	if (!Array.isArray(value.effectiveRates) || !value.effectiveRates.every(isEffectiveRate)) return false;
 	return new Set(value.effectiveRates.map(rate => rate.effectiveFrom)).size === value.effectiveRates.length;
+}
+
+/**
+ * The latest `effectiveRates` card of a materialized schedule due at
+ * `timestamp`, or undefined before the first one (or without a schedule).
+ */
+export function dueEffectiveRate(
+	schedule: TimeBasedCost | undefined,
+	timestamp: number,
+): EffectiveTokenCost | undefined {
+	let due: EffectiveTokenCost | undefined;
+	for (const candidate of schedule?.effectiveRates ?? []) {
+		if (candidate.effectiveFrom <= timestamp && (due === undefined || candidate.effectiveFrom > due.effectiveFrom)) {
+			due = candidate;
+		}
+	}
+	return due;
+}
+
+/**
+ * Earliest instant a rate card can name (the `Date` range minimum). A leading
+ * card from here holds the price in force before the first dated change.
+ */
+export const EARLIEST_EFFECTIVE_FROM = -8_640_000_000_000_000;
+
+/** A schedule of dated rate cards alone: no peak windows, no off-peak discount. */
+export const NO_RECURRING_TARIFF: TimeBasedCost = { offPeakMultiplier: 1, peakWindows: [] };
+
+/** A `cost-patch`/`cost-fallback` dated card: the legs it overwrites from `effectiveFrom` (Unix ms). */
+export interface DatedCostCard extends Partial<TokenCost> {
+	effectiveFrom: number;
+}
+
+/**
+ * A flat card plus its dated overrides as a request-time `ModelCost`: the
+ * card due at `now` in the scalar legs, and every period (a leading card for
+ * the base price, then each dated card over the previous one) in a
+ * `timeBased` schedule without a recurring tariff. The plain card when no
+ * dated card exists.
+ */
+export function datedCost(base: TokenCost, cards: readonly DatedCostCard[], now = Date.now()): ModelCost {
+	if (cards.length === 0) return base;
+	const effectiveRates: EffectiveTokenCost[] = [{ effectiveFrom: EARLIEST_EFFECTIVE_FROM, ...base }];
+	for (const card of cards) effectiveRates.push({ ...effectiveRates.at(-1)!, ...card });
+	const timeBased = { ...NO_RECURRING_TARIFF, effectiveRates };
+	const due = dueEffectiveRate(timeBased, now);
+	if (due === undefined) return base;
+	const { effectiveFrom: _effectiveFrom, ...rates } = due;
+	return { ...rates, timeBased };
 }
