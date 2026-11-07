@@ -148,4 +148,17 @@ describe("retry.waitForUsageReset", () => {
 		expect(result.calls).toBe(1);
 		expect(result.last.stopReason).toBe("error");
 	});
+
+	it("fails fast on an out-of-credit balance even when retry.maxDelayMs covers the quota guess", async () => {
+		// The 30-minute QUOTA_EXHAUSTED heuristic fits under this cap, so a billing
+		// cap that only checked the cap would sleep a window that never reopens.
+		const message =
+			"402 the organization is out of credit, add more to continue (type=insufficient_quota param=insufficient_quota)";
+		const result = await run(message, true, 1, { "retry.maxDelayMs": 2_000_000 });
+
+		expect(result.sleeps).toEqual([]);
+		expect(result.calls).toBe(1);
+		expect(result.last.stopReason).toBe("error");
+		expect(result.last.errorMessage).toContain("out of credit");
+	});
 });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Surface an out-of-credit provider balance immediately instead of sleeping through a quota wait that never reopens.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
