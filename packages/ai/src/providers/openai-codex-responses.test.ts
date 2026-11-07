@@ -405,6 +405,72 @@ describe("Codex WebSocket append state", () => {
 			closeProviderSessionState(providerSessionState);
 		}
 	});
+	it("carries the server-held prefix when onPayload drops the chain", async () => {
+		const sentRequests: Array<Record<string, unknown>> = [];
+
+		class ChainDropWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				this.scheduleOpen();
+			}
+
+			override send(data: string): void {
+				const request = JSON.parse(data) as Record<string, unknown>;
+				sentRequests.push(request);
+				this.emitCodexResponse({
+					messageId: `msg_${sentRequests.length}`,
+					responseId: `resp_${sentRequests.length}`,
+					text: sentRequests.length === 1 ? "First answer" : "Second answer",
+					includeCreated: true,
+				});
+			}
+		}
+
+		installMockWebSocket((url, options) => new ChainDropWebSocket(url, options));
+		const model = createCodexTestModel();
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const firstContext: Context = {
+			systemPrompt: ["You are a helpful assistant."],
+			messages: [{ role: "user", content: "First question", timestamp: Date.now() }],
+		};
+		const options = {
+			apiKey: createCodexTestToken(),
+			sessionId: "ws-onpayload-chain-drop",
+			providerSessionState,
+			onPayload: (payload: unknown) => {
+				const body = payload as Record<string, unknown>;
+				delete body.previous_response_id;
+				return body;
+			},
+		};
+
+		try {
+			const firstResponse = await streamOpenAICodexResponses(model, firstContext, options).result();
+			await streamOpenAICodexResponses(
+				model,
+				{
+					systemPrompt: firstContext.systemPrompt,
+					messages: [
+						...firstContext.messages,
+						firstResponse,
+						{ role: "user", content: "Second question", timestamp: Date.now() + 1 },
+					],
+				},
+				options,
+			).result();
+
+			// The hook removed the anchor, so the frame must replay what the server
+			// would otherwise still hold instead of sending a bare delta.
+			expect(sentRequests).toHaveLength(2);
+			expect(sentRequests[1]?.previous_response_id).toBeUndefined();
+			const replay = JSON.stringify(sentRequests[1]?.input);
+			expect(replay).toContain("First question");
+			expect(replay).toContain("First answer");
+			expect(replay).toContain("Second question");
+		} finally {
+			closeProviderSessionState(providerSessionState);
+		}
+	});
 });
 
 describe("Codex service tiers", () => {

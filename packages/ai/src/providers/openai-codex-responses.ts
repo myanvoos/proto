@@ -77,6 +77,7 @@ import { getHeadersFromError, getRetryAfterMsFromHeaders, type HeadersLike } fro
 import { adaptSchemaForStrict, NO_STRICT, sanitizeSchemaForOpenAIResponses, toolWireSchema } from "../utils/schema";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { parseToolCallArguments, replayableToolCallArguments } from "../utils/tool-call-arguments";
+import { isOpenAIResponsesProgressEvent } from "../utils/websocket";
 import { compactGrammarDefinition } from "./grammar";
 import {
 	type CodexLiteShapedBody,
@@ -134,7 +135,6 @@ import {
 	finalizeToolCallArgumentsDone,
 	getOpenAIPromptCacheKey,
 	hasExecutableIncompleteResponsesToolCalls,
-	isOpenAIResponsesProgressEvent,
 	mapOpenAIResponsesStopReason,
 	normalizeOpenAIPromptCacheKey,
 	populateResponsesUsageFromResponse,
@@ -1712,7 +1712,7 @@ async function openCodexWebSocketTransport(
 	if (requestContext.turnState.value) {
 		websocketClientMetadata[X_CODEX_TURN_STATE_HEADER] = requestContext.turnState.value;
 	}
-	let websocketRequest = {
+	let websocketRequest: RequestBody = {
 		type: "response.create",
 		...chainedBody,
 		client_metadata: websocketClientMetadata,
@@ -1720,6 +1720,17 @@ async function openCodexWebSocketTransport(
 	const replacementWebsocketRequest = await options?.onPayload?.(websocketRequest, model);
 	if (replacementWebsocketRequest !== undefined) {
 		websocketRequest = replacementWebsocketRequest as typeof websocketRequest;
+	}
+	// The hook dropped the chain: the server no longer holds the chained prefix,
+	// so the frame must carry it. An untouched delta becomes the full transcript;
+	// a rewritten one keeps the hook's edits after that prefix.
+	if (chainedBody.previous_response_id && !websocketRequest.previous_response_id) {
+		const fullInput = requestContext.transformedBody.input ?? [];
+		const delta = chainedBody.input ?? [];
+		const prefix = fullInput.slice(0, Math.max(0, fullInput.length - delta.length));
+		websocketRequest.input = Bun.deepEquals(websocketRequest.input, chainedBody.input)
+			? fullInput
+			: [...prefix, ...(websocketRequest.input ?? [])];
 	}
 	recordCodexTurnRequestDiagnostics(websocketState, websocketRequest, "websocket", canAppendBeforeRequest);
 	const websocketHeaders = createCodexHeaders(
