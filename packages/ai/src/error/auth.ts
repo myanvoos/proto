@@ -1,4 +1,4 @@
-import { attach, create, Flag } from "./flags";
+import { attach, create, Flag } from "./flags-core";
 
 export class MissingApiKeyError extends Error {
 	readonly provider: string | undefined;

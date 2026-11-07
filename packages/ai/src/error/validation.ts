@@ -1,4 +1,4 @@
-import { attach, create, Flag } from "./flags";
+import { attach, create, Flag } from "./flags-core";
 
 export class ValidationError extends Error {
 	constructor(message: string, options?: { cause?: unknown }) {

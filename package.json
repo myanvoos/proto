@@ -90,7 +90,6 @@
       "@typescript/native-preview": "7.0.0-dev.20260707.2",
       "chalk": "6.0.1",
       "diff": "9.0.0",
-      "lru-cache": "11.5.3",
       "puppeteer-core": "25.16.0",
       "typebox": "1.4.3"
     }

@@ -5,15 +5,13 @@ import { AnthropicApiError, AnthropicStreamEnvelopeError, ProviderHttpError } fr
 import {
 	classify,
 	classifyMessage,
-	create,
-	Flag,
-	is,
 	isCacheControlUnsupported,
 	isContextOverflow,
 	isGitHubCopilotPolicyDenial,
 	isUsageLimit,
 	retriable,
 } from "./flags";
+import { create, Flag, is } from "./flags-core";
 import {
 	calculateRateLimitBackoffMs,
 	isUsageLimitOutcome,
