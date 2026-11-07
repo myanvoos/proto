@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Cleanup registrations accept a `deadlineMs` that holds process exit open for a pending save, up to that callback's own deadline.
+
+### Fixed
+
+- `untilAborted` no longer leaves a promise it rejected for an already-aborted signal unobserved, so its later rejection cannot crash the process as unhandled.
+
 ## [20.1.2] - 2026-11-04
 
 ### Added
