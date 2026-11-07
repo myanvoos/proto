@@ -1867,6 +1867,22 @@ function rememberPrefixBindingFailure(
 	return true;
 }
 
+/**
+ * Warn once for the signed thinking blocks the API dropped from one request
+ * after the conversation prefix changed: the count and first path at warn,
+ * every path at debug. One prefix change can drop hundreds of blocks in a
+ * single request, which would otherwise flood the log one line per block.
+ */
+export function logDroppedThinking(provider: string, model: string, paths: Array<string | undefined>): void {
+	if (paths.length === 0) return;
+	logger.warn(`${provider}: dropped thinking block after conversation prefix changed`, {
+		model,
+		count: paths.length,
+		path: paths[0],
+	});
+	if (paths.length > 1) logger.debug(`${provider}: dropped thinking block paths`, { model, paths });
+}
+
 function applyReportedInputTransformations(
 	output: AssistantMessage,
 	params: MessageCreateParamsStreaming,
@@ -1908,15 +1924,7 @@ function applyReportedInputTransformations(
 		}
 		dropped.push(path);
 	}
-	if (dropped.length > 0) {
-		logger.warn("anthropic: dropped thinking block after conversation prefix changed", {
-			model: output.model,
-			count: dropped.length,
-			path: dropped[0],
-		});
-		if (dropped.length > 1)
-			logger.debug("anthropic: dropped thinking block paths", { model: output.model, paths: dropped });
-	}
+	logDroppedThinking("anthropic", output.model, dropped);
 	if (repeated > 0)
 		logger.debug("anthropic: API re-dropped previously reported thinking blocks", {
 			model: output.model,

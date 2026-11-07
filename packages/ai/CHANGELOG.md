@@ -5,6 +5,7 @@
 ### Fixed
 
 - Replay demoted DeepSeek thinking as `reasoning_content` instead of an empty field the API rejects.
+- Log one warning per request instead of one per dropped thinking block on Anthropic and Bedrock.
 
 ## [19.2.1] - 2026-11-03
 
