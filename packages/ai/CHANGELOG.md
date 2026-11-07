@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Replay demoted DeepSeek thinking as `reasoning_content` instead of an empty field the API rejects.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
