@@ -1,5 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { Effort, THINKING_EFFORTS } from "../effort";
+import { datedCost } from "../pricing";
 import type { DevinCompat, FetchImpl, ModelCost, ModelSpec } from "../types";
 import { discoveryFetch } from "../utils";
 import { collapseEffortVariants, DEVIN_VARIANT_COLLAPSE_TABLE, type EffortVariantFamily } from "../variant-collapse";
@@ -107,18 +108,53 @@ function devinModelCost(config: ClientModelConfig): ModelCost {
 	return cost;
 }
 
-const SWE_2_PROMO_COST: ModelCost = { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 };
-const SWE_2_LIST_COST: ModelCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 };
-const SWE_2_LIST_PRICE_FROM = Date.parse("2027-01-01T00:00:00Z");
-const SWE_1_7_LIST_COST: ModelCost = { input: 0.5, output: 2.5, cacheRead: 0.2, cacheWrite: 0.5 };
-const GLM_5_2_LIST_COST: ModelCost = { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 };
+// Enterprise (ACUs) fallback prices: https://docs.devin.ai/desktop/models (as of 2026-11-05).
+// Plan-included models on lower tiers report no cost dimensions (PRO shows $0 for SWE-2, SWE-1.7
+// and GLM-5.2 High). Seed the fallback only when upstream reported no token price at all, so
+// accounts whose discovery carries real rates keep them. Dated cards ride along as a schedule so
+// rows built during a promo still bill list once it ends.
+const SWE_2_PROMO_COST: ModelCost = { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0 };
+const SWE_2_LIST_COST: ModelCost = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 };
+// SWE-2 promo ends at 2027-01-01 08:00 UTC (midnight Pacific after 2026-12-31).
+const SWE_2_LIST_PRICE_FROM = Date.parse("2027-01-01T08:00:00Z");
+// SWE-2 Fast (wire uids `swe-2-<effort>-lightning`): GetCliModelConfigs reports $1 input /
+// $0.10 cached input / $5 output (2026-11-06), twice SWE-2's promo rate. No end date or list
+// price is published for it.
+const SWE_2_FAST_COST: ModelCost = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 0 };
+// SWE-2 Flash: enterprise promo is 25% off until 2026-11-18 18:00 UTC.
+const SWE_2_FLASH_PROMO_COST: ModelCost = { input: 0.075, output: 0.375, cacheRead: 0.0075, cacheWrite: 0.09375 };
+const SWE_2_FLASH_LIST_COST: ModelCost = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 };
+const SWE_2_FLASH_LIST_PRICE_FROM = Date.parse("2026-11-18T18:00:00Z");
+const SWE_1_7_LIST_COST: ModelCost = { input: 0.5, output: 2.5, cacheRead: 0.2, cacheWrite: 0 };
+const GLM_5_2_LIST_COST: ModelCost = { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 };
 
-// Plan-included models on lower tiers report no cost dimensions (PRO shows $0 for SWE-2,
-// SWE-1.7 and GLM-5.2 High). Seed the enterprise list price only when upstream reported no
-// token price at all, so accounts whose discovery carries real rates keep them. SWE-2's 75%-off
-// promo ends 2026-12-31; list pricing applies from 2027-01-01.
+// A family's logical id plus its raw effort uids, which stay standalone when a row arrives
+// without `modelFamilyMetadata`.
+const SWE_2_IDS: ReadonlySet<string> = new Set(["swe-2", "swe-2-medium", "swe-2-high", "swe-2-max"]);
+const SWE_2_FAST_IDS: ReadonlySet<string> = new Set([
+	"swe-2-fast",
+	"swe-2-medium-lightning",
+	"swe-2-high-lightning",
+	"swe-2-max-lightning",
+]);
+const SWE_2_FLASH_IDS: ReadonlySet<string> = new Set([
+	"swe-2-flash",
+	"swe-2-flash-medium",
+	"swe-2-flash-high",
+	"swe-2-flash-max",
+]);
+
 function devinFallbackCost(id: string, now: number): ModelCost | undefined {
-	if (id.startsWith("swe-2")) return now >= SWE_2_LIST_PRICE_FROM ? SWE_2_LIST_COST : SWE_2_PROMO_COST;
+	if (SWE_2_IDS.has(id))
+		return datedCost(SWE_2_PROMO_COST, [{ effectiveFrom: SWE_2_LIST_PRICE_FROM, ...SWE_2_LIST_COST }], now);
+	if (SWE_2_FAST_IDS.has(id)) return SWE_2_FAST_COST;
+	if (SWE_2_FLASH_IDS.has(id)) {
+		return datedCost(
+			SWE_2_FLASH_PROMO_COST,
+			[{ effectiveFrom: SWE_2_FLASH_LIST_PRICE_FROM, ...SWE_2_FLASH_LIST_COST }],
+			now,
+		);
+	}
 	if (id === "swe-1-7" || id === "swe-1-7-medium") return SWE_1_7_LIST_COST;
 	if (id === "glm-5-2") return GLM_5_2_LIST_COST;
 	return undefined;

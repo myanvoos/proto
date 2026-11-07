@@ -171,7 +171,10 @@ export function applyModelPolicy<TApi extends Api>(source: ModelSpec<TApi>): Mod
 	}
 	if (model.provider === "devin") {
 		const gptCache = openai && semverGte(openai.version, "5.6") && openai.version.major < 7;
-		model.cost.cacheWrite = claude || gptCache ? model.cost.input * 1.25 : id === "adaptive" ? model.cost.input : 0;
+		// Only the Claude/GPT cards bill cache writes at 1.25x input. Other rows keep the rate their
+		// fallback card published (SWE-2 Flash has one); discovery reports none, so it stays 0.
+		if (claude || gptCache) model.cost.cacheWrite = model.cost.input * 1.25;
+		else if (id === "adaptive") model.cost.cacheWrite = model.cost.input;
 		const gptTier =
 			openai &&
 			!["mini", "nano"].includes(openai.variant) &&
