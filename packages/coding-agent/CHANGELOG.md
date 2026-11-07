@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed resumed OpenAI Responses sessions forgetting earlier reasoning on the first request; a retry after a stale Responses item error now rebuilds history instead of resending the refused items.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
