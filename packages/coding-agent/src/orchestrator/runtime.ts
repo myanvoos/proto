@@ -31,7 +31,7 @@ import { appendSessionMetadataWithState } from "../session/state-manifest";
 import { getBundledAgent } from "../task/agents";
 import { discoverAgents, getAgent } from "../task/discovery";
 import { ExecutionAdmission, ensureExecutionTopology, executionIdentity } from "../task/execution-admission";
-import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess } from "../task/executor";
+import { type ExecutorOptions, runSubagentFollowUpTurn, runSubprocess, softRequestBudgetFor } from "../task/executor";
 import { generateWorkerName } from "../task/name-generator";
 import { describeUnknownAgent, resolveSpawnPreflight } from "../task/spawn-policy";
 import type { StructuredSubagentSchemaMode, StructuredSubagentSchemaSource } from "../task/structured-subagent";
@@ -2399,9 +2399,10 @@ export class OrchestratorRuntime {
 		// and a succeeded one must not be re-applied (it would reset provider conversation state).
 		const pendingModelOverride = record.pendingModelOverride;
 		record.pendingModelOverride = undefined;
+		const agent = this.#workerAgent(record);
 		return runSubagentFollowUpTurn({
 			id: record.id,
-			agent: this.#workerAgent(record),
+			agent,
 			message,
 			description: `worker ${record.label}`,
 			modelRole: record.modelRole,
@@ -2409,6 +2410,7 @@ export class OrchestratorRuntime {
 			outputSchema: record.outputSchema,
 			outputSchemaMode: record.outputSchemaMode,
 			outputSchemaSource: record.outputSchemaSource,
+			...softRequestBudgetFor(agent.name, session.settings),
 			signal,
 			onProgress,
 			eventBus: session.eventBus,

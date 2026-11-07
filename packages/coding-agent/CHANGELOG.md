@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

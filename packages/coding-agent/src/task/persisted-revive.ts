@@ -22,6 +22,7 @@ import {
 	createSubagentSettings,
 	followMCPTools,
 	replayRevivedAgentStart,
+	softRequestBudgetFor,
 	subagentRetryFallbackRole,
 } from "./executor";
 import type { AgentDefinition } from "./types";
@@ -205,6 +206,7 @@ export function createPersistedSubagentReviverFactory(
 				agent: wakeAgent,
 				eventBus: ctx.eventBus,
 				sessionFile,
+				...softRequestBudgetFor(ref.label, ctx.settings),
 				outputSchema: init.outputSchema,
 				outputSchemaMode: init.outputSchemaMode,
 				artifactsDir: path.dirname(sessionFile),
