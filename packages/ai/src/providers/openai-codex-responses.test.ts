@@ -10,6 +10,7 @@ import {
 	buildTransformedCodexRequestBody,
 	createCodexProviderStreamError,
 	getOpenAICodexTransportDetails,
+	getOpenAICodexWebSocketDebugStats,
 	openCodexCompactionEventStream,
 	streamOpenAICodexResponses,
 } from "./openai-codex-responses";
@@ -401,6 +402,145 @@ describe("Codex WebSocket append state", () => {
 					providerSessionState,
 				}).websocketConnected,
 			).toBe(true);
+		} finally {
+			closeProviderSessionState(providerSessionState);
+		}
+	});
+});
+
+describe("Codex WebSocket reconnect replay", () => {
+	it("replays the full transcript instead of a delta when the socket reconnects", async () => {
+		const sockets: MockWebSocket[] = [];
+		const sentRequests: Array<Record<string, unknown>> = [];
+		const fetchMock = vi.fn(async () => {
+			throw new Error("SSE fallback should not be called");
+		});
+
+		class ReconnectWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				sockets.push(this);
+				this.scheduleOpen();
+			}
+
+			override send(data: string): void {
+				sentRequests.push(JSON.parse(data) as Record<string, unknown>);
+				const index = sentRequests.length;
+				this.emitCodexResponse({
+					messageId: `msg_${index}`,
+					responseId: `resp_${index}`,
+					text: `Answer ${index}`,
+					terminalType: "response.completed",
+					includeCreated: true,
+				});
+			}
+		}
+
+		installMockWebSocket((url, options) => new ReconnectWebSocket(url, options));
+		const model = createCodexTestModel();
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const options = {
+			fetch: fetchMock as FetchImpl,
+			apiKey: createCodexTestToken(),
+			sessionId: "ws-reconnect-closed",
+			providerSessionState,
+		};
+		const context: Context = {
+			messages: [{ role: "user", content: "Remember the original question", timestamp: Date.now() }],
+		};
+
+		try {
+			const first = await streamOpenAICodexResponses(model, context, options).result();
+			expect(first.stopReason).toBe("stop");
+			context.messages.push(first, { role: "user", content: "Continue", timestamp: Date.now() + 1 });
+			// A closed socket must not replay a delta built against the old connection.
+			sockets[0]!.close();
+
+			const observedPayloads: Array<Record<string, unknown>> = [];
+			const second = await streamOpenAICodexResponses(model, context, {
+				...options,
+				onPayload: payload => {
+					observedPayloads.push(structuredClone(payload as Record<string, unknown>));
+					return undefined;
+				},
+			}).result();
+			expect(second.stopReason).toBe("stop");
+			expect(sockets).toHaveLength(2);
+			expect(observedPayloads[0]?.previous_response_id).toBeUndefined();
+			expect(sentRequests[1]?.previous_response_id).toBeUndefined();
+			const replayedInput = JSON.stringify(sentRequests[1]?.input);
+			expect(replayedInput).toContain("Remember the original question");
+			expect(replayedInput).toContain("Continue");
+
+			const statsAfterReconnect = getOpenAICodexWebSocketDebugStats(model, options);
+			expect(statsAfterReconnect?.fullContextRequests).toBe(2);
+			expect(statsAfterReconnect?.deltaRequests).toBe(0);
+			expect(statsAfterReconnect?.lastTurn?.request.canAppendBeforeRequest).toBe(false);
+
+			// The next turn on the fresh socket chains again.
+			context.messages.push(second, { role: "user", content: "Follow up", timestamp: Date.now() + 2 });
+			const third = await streamOpenAICodexResponses(model, context, options).result();
+			expect(third.stopReason).toBe("stop");
+			expect(sockets).toHaveLength(2);
+			expect(sentRequests[2]?.previous_response_id).toBe("resp_2");
+			const deltaInput = JSON.stringify(sentRequests[2]?.input);
+			expect(deltaInput).toContain("Follow up");
+			expect(deltaInput).not.toContain("Remember the original question");
+		} finally {
+			closeProviderSessionState(providerSessionState);
+		}
+	});
+
+	it("replays full input when onPayload deletes previous_response_id on a chained turn", async () => {
+		const sentRequests: Array<Record<string, unknown>> = [];
+
+		class HookDeleteContinuationWebSocket extends MockWebSocket {
+			constructor(url: string, options?: WsOptions) {
+				super(url, options);
+				this.scheduleOpen();
+			}
+
+			override send(data: string): void {
+				sentRequests.push(JSON.parse(data) as Record<string, unknown>);
+				const index = sentRequests.length;
+				this.emitCodexResponse({
+					messageId: `msg_${index}`,
+					responseId: `resp_${index}`,
+					text: `Answer ${index}`,
+					terminalType: "response.completed",
+					includeCreated: true,
+				});
+			}
+		}
+
+		installMockWebSocket((url, options) => new HookDeleteContinuationWebSocket(url, options));
+		const model = createCodexTestModel();
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const options = {
+			apiKey: createCodexTestToken(),
+			sessionId: "ws-hook-delete-continuation",
+			providerSessionState,
+		};
+		const context: Context = {
+			messages: [{ role: "user", content: "Turn one question", timestamp: Date.now() }],
+		};
+
+		try {
+			const first = await streamOpenAICodexResponses(model, context, options).result();
+			context.messages.push(first, { role: "user", content: "Turn two question", timestamp: Date.now() + 1 });
+			const second = await streamOpenAICodexResponses(model, context, {
+				...options,
+				onPayload: payload => {
+					const next = { ...(payload as Record<string, unknown>) };
+					delete next.previous_response_id;
+					return next;
+				},
+			}).result();
+			expect(second.stopReason).toBe("stop");
+			expect(sentRequests[1]?.previous_response_id).toBeUndefined();
+			const secondInput = JSON.stringify(sentRequests[1]?.input);
+			expect(secondInput).toContain("Turn one question");
+			expect(secondInput).toContain("Turn two question");
 		} finally {
 			closeProviderSessionState(providerSessionState);
 		}
