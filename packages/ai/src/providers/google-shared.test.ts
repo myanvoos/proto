@@ -86,6 +86,28 @@ describe("Google shared streaming", () => {
 		expect(result.content).toEqual([{ type: "text", text: "Hello" }]);
 		expect(result.usage).toMatchObject({ input: 3, output: 2, totalTokens: 5 });
 	});
+
+	it("ends MALFORMED_RESPONSE as a retryable error stop, unlike a content verdict", async () => {
+		const finishTurn = async (finishReason: string) => {
+			const body = sseChunk({
+				candidates: [{ content: { parts: [{ text: "partial" }] }, finishReason }],
+				usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 3, totalTokenCount: 10 },
+			});
+			return streamGoogle(model, context, { apiKey: "test-key", fetch: fetchForBody(body) }).result();
+		};
+
+		// The Gemini API sends MALFORMED_RESPONSE although the SDK enum lacks it; a retry can succeed.
+		const malformed = await finishTurn("MALFORMED_RESPONSE");
+		expect(malformed.stopReason).toBe("error");
+		expect(malformed.errorMessage).toContain("MALFORMED_RESPONSE");
+		expect(malformed.usage).toMatchObject({ input: 7, output: 3, totalTokens: 10 });
+		expect(AIError.is(malformed.errorId, AIError.Flag.Transient)).toBe(true);
+
+		// A safety verdict is final: retrying the same request cannot change it.
+		const blocked = await finishTurn("SAFETY");
+		expect(blocked.stopReason).toBe("error");
+		expect(AIError.is(blocked.errorId, AIError.Flag.Transient)).toBe(false);
+	});
 });
 
 describe("mapGoogleUsage", () => {

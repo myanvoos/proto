@@ -807,6 +807,8 @@ type OpenAICodexPlanClass = "free" | "paid" | "pro" | "unknown";
 const GPT_56_PAID_CODEX_MODEL_PATTERN = /^gpt-5\.6-(?:sol|luna)(?:-pro)?$/;
 const OPENAI_CODEX_PRO_PLAN_TOKENS: Record<string, true> = {
 	pro: true,
+	// ChatGPT reports Pro Max as the single token `promax`, which does not split into `pro`.
+	promax: true,
 };
 const OPENAI_CODEX_PAID_PLAN_TOKENS: Record<string, true> = {
 	plus: true,

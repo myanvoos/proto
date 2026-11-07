@@ -1,7 +1,7 @@
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { extractHttpStatusFromError, logger } from "@oh-my-pi/pi-utils";
-import type { ApiKeyResolver } from "../auth-retry";
+import { type ApiKeyResolver, NO_AUTH_SENTINEL } from "../auth-retry";
 import type { AuthStorage } from "../auth-storage";
 import * as AIError from "../error";
 import { classifyGatewayError } from "../error/gateway";
@@ -10,6 +10,7 @@ import * as anthropicMessages from "../providers/anthropic-messages-server";
 import * as openaiChat from "../providers/openai-chat-server";
 import * as openaiResponses from "../providers/openai-responses-server";
 import * as piNative from "../providers/pi-native-server";
+import { getProviderDefinition } from "../registry";
 import { completeSimple, streamSimple } from "../stream";
 import type { Api, AssistantMessageEventStream, Context, Model, SimpleStreamOptions, Usage } from "../types";
 import type { ClientUsageIdentity } from "../usage";
@@ -258,6 +259,8 @@ function buildGatewayApiKeyResolver(
 ): ApiKeyResolver {
 	let lastKey = initialKey;
 	return async ({ lastChance, error, signal, previousKey }) => {
+		// A keyless request has no credential to refresh or rotate: replaying the same sentinel cannot help.
+		if (initialKey === NO_AUTH_SENTINEL) return error === undefined ? initialKey : undefined;
 		const sig = signal ?? requestSignal;
 		if (error === undefined) {
 			lastKey = initialKey;
@@ -419,11 +422,15 @@ async function handleFormatEndpoint(
 	}
 	if (controller.signal.aborted) return clientClosedResponse(route);
 	if (!apiKey) {
-		return route.module.formatError(
-			401,
-			"authentication_error",
-			`No credential available for provider ${model.provider}`,
-		);
+		// A keyless provider (e.g. an on-device model) has nothing to authenticate with.
+		if (!getProviderDefinition(model.provider)?.allowsMissingApiKey) {
+			return route.module.formatError(
+				401,
+				"authentication_error",
+				`No credential available for provider ${model.provider}`,
+			);
+		}
+		apiKey = NO_AUTH_SENTINEL;
 	}
 
 	const streamOpts = buildStreamOptions(parsed, model, controller.signal);
@@ -602,11 +609,15 @@ async function handlePiNative(
 	}
 	if (controller.signal.aborted) return aborted();
 	if (!apiKey) {
-		return piNative.formatError(
-			401,
-			"authentication_error",
-			`No credential available for provider ${model.provider}`,
-		);
+		// A keyless provider (e.g. an on-device model) has nothing to authenticate with.
+		if (!getProviderDefinition(model.provider)?.allowsMissingApiKey) {
+			return piNative.formatError(
+				401,
+				"authentication_error",
+				`No credential available for provider ${model.provider}`,
+			);
+		}
+		apiKey = NO_AUTH_SENTINEL;
 	}
 
 	const lease = sessionStates.acquire({

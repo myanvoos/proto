@@ -259,3 +259,46 @@ it("keeps disabled accounts out of gateway usage and never probes their credenti
 	expect(body.status).toBe(200);
 	expect(checked.mock.calls[0]?.[0]?.excludeProviders?.has("disabled")).toBe(true);
 });
+
+describe("auth-gateway keyless providers", () => {
+	it("serves a provider whose catalog policy allows a missing key and still rejects the others", async () => {
+		// `bedrock-mantle` is the registry's keyless provider (it authenticates through AWS credentials).
+		const keyless = createMockModel({
+			id: "on-device",
+			provider: "bedrock-mantle",
+			handler: () => ({ content: ["ok"] }),
+		});
+		const required = createMockModel({ id: "missing-key", provider: "credential-required" });
+		await handle.close();
+		handle = startAuthGateway({
+			storage,
+			bind: "127.0.0.1:0",
+			bearerTokens: [TOKEN],
+			resolveModel: id =>
+				id === `${keyless.provider}/${keyless.id}` || id === keyless.id
+					? keyless
+					: id === `${required.provider}/${required.id}` || id === required.id
+						? required
+						: undefined,
+		});
+
+		const served = await post("/v1/chat/completions", {
+			model: `${keyless.provider}/${keyless.id}`,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		expect(served.status).toBe(200);
+		expect(await served.json()).toMatchObject({
+			choices: [expect.objectContaining({ message: expect.objectContaining({ content: "ok" }) })],
+		});
+		// The transport must not send the keyless sentinel as a credential.
+		expect(keyless.calls[0]?.options?.apiKey).toBe("N/A");
+
+		const rejected = await post("/v1/chat/completions", {
+			model: `${required.provider}/${required.id}`,
+			messages: [{ role: "user", content: "hi" }],
+		});
+		expect(rejected.status).toBe(401);
+		expect(await rejected.json()).toMatchObject({ error: { type: "authentication_error" } });
+		expect(required.calls).toHaveLength(0);
+	});
+});

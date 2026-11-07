@@ -22,6 +22,9 @@
 - Align Antigravity requests with the 2.26.0 client: withhold the interleaved-thinking beta from Claude 5.x and pin routed tier SKUs to their advertised thinking strength instead of the caller's effort.
 - Resolve Ollama assistant-thinking replay from catalog compatibility, so Ollama Cloud models can opt in or out through model `compat` instead of a hardcoded provider check.
 - Withhold the extended-cache TTL beta when `ANTHROPIC_BASE_URL` reroutes a first-party Anthropic model to Vertex rawPredict.
+- ChatGPT Pro Max (`promax`) now counts as Pro for Codex account routing, so a blocked Pro account no longer wins over an open Pro Max account
+- Fixed `auth-gateway` rejecting providers whose catalog policy allows a missing API key (for example AWS-authenticated Bedrock Mantle); keyless requests no longer attempt credential rotation
+- Fixed Gemini and Vertex `MALFORMED_RESPONSE` finishes showing as "Unhandled stop reason" and dropping that turn's token usage; they now surface as a retryable error stop
 
 ## [19.2.1] - 2026-11-03
 

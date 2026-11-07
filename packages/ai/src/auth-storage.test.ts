@@ -10,6 +10,7 @@ import {
 } from "./auth-storage";
 import { ProviderHttpError } from "./error";
 import type { UsageProvider, UsageReport } from "./usage";
+import { openaiCodexUsageProvider } from "./usage/openai-codex";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -531,6 +532,64 @@ describe("AuthStorage automatic credential disable", () => {
 					...identity,
 				},
 			]);
+		} finally {
+			authStorage.close();
+		}
+	});
+});
+
+describe("AuthStorage Codex plan gating", () => {
+	it("treats a promax plan as Pro so a Pro Max account serves Pro-only models", async () => {
+		const codexReport = async (planType: string, usedPercent: number): Promise<UsageReport> => {
+			const exhausted = usedPercent >= 100;
+			const report = await openaiCodexUsageProvider.fetchUsage(
+				{ provider: "openai-codex", credential: { type: "oauth", accessToken: "usage-probe" } },
+				{
+					fetch: async () =>
+						Response.json({
+							plan_type: planType,
+							rate_limit: {
+								allowed: !exhausted,
+								limit_reached: exhausted,
+								primary_window: { used_percent: usedPercent },
+								secondary_window: { used_percent: usedPercent },
+							},
+						}),
+				},
+			);
+			if (!report) throw new Error("expected a Codex usage report");
+			return report;
+		};
+		const reports = new Map<string, UsageReport>([
+			["access-pro", await codexReport("pro", 100)],
+			["access-promax", await codexReport("promax", 10)],
+		]);
+		const usageProvider: UsageProvider = {
+			id: "openai-codex",
+			async fetchUsage(params) {
+				const access = params.credential.accessToken;
+				return access === undefined ? null : (reports.get(access) ?? null);
+			},
+			supports: params => params.provider === "openai-codex",
+		};
+		const store = new SqliteAuthCredentialStore(new Database(":memory:"));
+		const authStorage = new AuthStorage(store, {
+			usageProviderResolver: provider => (provider === "openai-codex" ? usageProvider : undefined),
+		});
+		const account = (name: string) => ({
+			type: "oauth" as const,
+			access: `access-${name}`,
+			refresh: `refresh-${name}`,
+			expires: Date.now() + HOUR_MS,
+			accountId: `acct-${name}`,
+		});
+		try {
+			await authStorage.set("openai-codex", [account("pro"), account("promax")]);
+			// `gpt-5.6` gates on a paid plan: an unclassified `promax` was filtered out as unknown,
+			// leaving the exhausted Pro account as the only candidate.
+			expect(await authStorage.getApiKey("openai-codex", "promax-paid", { modelId: "gpt-5.6" })).toBe(
+				"access-promax",
+			);
 		} finally {
 			authStorage.close();
 		}
