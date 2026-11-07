@@ -1820,6 +1820,7 @@ function mapOptionsForApi<TApi extends Api>(
 				textVerbosity: options?.textVerbosity,
 				promptCache: options?.promptCache,
 				statefulResponses: options?.statefulResponses,
+				preferWebsockets: options?.preferWebsockets,
 			});
 
 		case "azure-openai-responses":

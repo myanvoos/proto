@@ -9,6 +9,9 @@
 
 - Cap Antigravity Claude 4.x output tokens at 64K, including discovered per-SKU caps the transport sends verbatim.
 - Own Ollama thinking replay compatibility in the catalog: Ollama Cloud strips assistant thinking history except the verified GLM-5.2 wire ids, and a model `compat` override can flip either way.
+### Added
+
+- Gate standard Responses WebSockets to the official OpenAI Responses endpoint, with model and request opt-in both required.
 
 ## [19.2.1] - 2026-11-03
 

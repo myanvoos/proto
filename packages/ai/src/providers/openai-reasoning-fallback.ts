@@ -1,5 +1,5 @@
-import { extractHttpStatusFromError } from "@oh-my-pi/pi-utils";
 import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
+import { isOpenAIRequestValidationError, OpenAIResponsesRequestRejection } from "./openai-request-error";
 
 export const STRIP_TEMPLATE_KWARG_REASONING_EFFORT = Symbol("strip-template-kwarg-reasoning-effort");
 
@@ -140,7 +140,9 @@ export function applyOpenAIReasoningEffortFallback(params: unknown, fallback: Op
 function capturedStringField(
 	captured: CapturedHttpErrorResponse | undefined,
 	field: "code" | "message" | "param" | "type",
+	requestError?: unknown,
 ) {
+	if (requestError instanceof OpenAIResponsesRequestRejection) return requestError[field];
 	const body = isRecord(captured?.bodyJson) ? captured.bodyJson : undefined;
 	const error = isRecord(body?.error) ? body.error : undefined;
 	if (typeof error?.[field] === "string") return error[field];
@@ -150,10 +152,10 @@ function capturedStringField(
 function collectMessageParts(error: unknown, captured: CapturedHttpErrorResponse | undefined): string {
 	const parts = [
 		error instanceof Error ? error.message : undefined,
-		capturedStringField(captured, "message"),
-		capturedStringField(captured, "param"),
-		capturedStringField(captured, "code"),
-		capturedStringField(captured, "type"),
+		capturedStringField(captured, "message", error),
+		capturedStringField(captured, "param", error),
+		capturedStringField(captured, "code", error),
+		capturedStringField(captured, "type", error),
 		captured?.bodyText,
 	].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
 	return parts.join("\n");
@@ -166,9 +168,9 @@ const REASONING_EFFORT_FIELD_PATTERN =
 	/reasoning[_. ]?effort|reasoning value|(?:valid|supported|allowed) (?:levels?|values?)/i;
 
 function mentionsReasoningEffort(error: unknown, captured: CapturedHttpErrorResponse | undefined): boolean {
-	const param = capturedStringField(captured, "param");
-	const code = capturedStringField(captured, "code");
-	const type = capturedStringField(captured, "type");
+	const param = capturedStringField(captured, "param", error);
+	const code = capturedStringField(captured, "code", error);
+	const type = capturedStringField(captured, "type", error);
 	const message = collectMessageParts(error, captured);
 	return (
 		REASONING_EFFORT_FIELD_PATTERN.test(param ?? "") ||
@@ -210,9 +212,10 @@ function parseEffortRejectionSignal(
 	message: string,
 	captured: CapturedHttpErrorResponse | undefined,
 	currentEffort: string,
+	error?: unknown,
 ): EffortRejectionSignal {
 	const namesFieldInMessage = EFFORT_FIELD_PATTERN.test(message);
-	const param = capturedStringField(captured, "param") ?? "";
+	const param = capturedStringField(captured, "param", error) ?? "";
 	const quoted = `["'\`]${escapeRegExp(currentEffort)}["'\`]`;
 	return {
 		field:
@@ -235,12 +238,11 @@ function isInvalidReasoningEffortError(
 	captured: CapturedHttpErrorResponse | undefined,
 	currentEffort: string,
 ): boolean {
-	const status = extractHttpStatusFromError(error) ?? captured?.status;
-	if (status !== 400 && status !== 422) return false;
+	if (!isOpenAIRequestValidationError(error, captured)) return false;
 	if (!mentionsReasoningEffort(error, captured)) return false;
 	const message = collectMessageParts(error, captured);
 	if (/reasoning[_ ]content/i.test(message) && !REASONING_EFFORT_FIELD_PATTERN.test(message)) return false;
-	const signal = parseEffortRejectionSignal(message, captured, currentEffort);
+	const signal = parseEffortRejectionSignal(message, captured, currentEffort, error);
 	// An explicit foreign `param` (e.g. `tool_choice: "none"` with its own values
 	// list) defeats the heuristic; a fielded verdict always qualifies; fieldless
 	// values-lists are shared with sibling tier fields (text verbosity), so they
@@ -340,8 +342,7 @@ function resolveStripTemplateKwargFallback(
 	if (!isRecord(params)) return undefined;
 	const effort = readTemplateKwargReasoningEffort(params);
 	if (effort === undefined) return undefined;
-	const status = extractHttpStatusFromError(error) ?? captured?.status;
-	if (status !== 400 && status !== 422) return undefined;
+	if (!isOpenAIRequestValidationError(error, captured)) return undefined;
 	const message = collectMessageParts(error, captured);
 	if (!TEMPLATE_KWARG_EFFORT_PATTERN.test(message) || !FIELD_REJECTION_PATTERN.test(message)) return undefined;
 

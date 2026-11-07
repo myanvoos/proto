@@ -42,7 +42,8 @@ interface StreamRetryOptions {
 }
 
 export interface ReplaySafeStreamRetryPolicy {
-	retryEmptyCompletion?: boolean;
+	/** A function defers to per-attempt transport state (e.g. never replay a sent WebSocket turn). */
+	retryEmptyCompletion?: boolean | (() => boolean);
 	retryProviderErrors?: boolean;
 	maxProviderErrorRetries?: number;
 }
@@ -103,7 +104,9 @@ export function withReplaySafeStreamRetry<M, O extends StreamRetryOptions>(
 
 			const completedMessage = terminal?.type === "done" ? terminal.message : undefined;
 			const retryEmpty =
-				policy.retryEmptyCompletion === true &&
+				(typeof policy.retryEmptyCompletion === "function"
+					? policy.retryEmptyCompletion()
+					: policy.retryEmptyCompletion === true) &&
 				options?.acceptEmptyResponse !== true &&
 				!committed &&
 				completedMessage !== undefined &&

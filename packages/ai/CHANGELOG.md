@@ -25,6 +25,14 @@
 - ChatGPT Pro Max (`promax`) now counts as Pro for Codex account routing, so a blocked Pro account no longer wins over an open Pro Max account
 - Fixed `auth-gateway` rejecting providers whose catalog policy allows a missing API key (for example AWS-authenticated Bedrock Mantle); keyless requests no longer attempt credential rotation
 - Fixed Gemini and Vertex `MALFORMED_RESPONSE` finishes showing as "Unhandled stop reason" and dropping that turn's token usage; they now surface as a retryable error stop
+### Added
+
+- Opt into catalog-gated WebSockets for standard OpenAI Responses with `preferWebsockets`; socket-local continuation reuses `previous_response_id` anchors without forcing stored responses.
+- Preserve the Codex server-held prefix when an `onPayload` hook drops the chain.
+
+### Fixed
+
+- Keep a WebSocket generation from being replayed as HTTP/SSE after it was sent, and bound stale-anchor and connect failures per logical session.
 
 ## [19.2.1] - 2026-11-03
 
