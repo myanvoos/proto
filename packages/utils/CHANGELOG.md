@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Abort signals now cancel command output reads that a surviving descendant keeps open after the root process exits.
+
 ## [20.1.2] - 2026-11-04
 
 ### Added
