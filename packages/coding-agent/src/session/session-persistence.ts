@@ -1,5 +1,5 @@
 import { isAnthropicServerToolHistoryBlock } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
-import { countNewlines, materializeString } from "@oh-my-pi/pi-utils";
+import { countNewlines, materializeString, stringifyJson } from "@oh-my-pi/pi-utils";
 import {
 	type BlobStore,
 	externalizeImageDataSync,
@@ -43,15 +43,22 @@ function truncateString(value: string, maxLength: number): string {
 	return truncated;
 }
 
+/**
+ * Read a property without tripping a throwing accessor. Tool `details` can keep
+ * library objects whose non-enumerable getters throw (firecrawl-js `SearchData.data`),
+ * and `in` plus a plain read reaches them while JSON never does.
+ */
+export function probeProperty(value: object, key: string): unknown {
+	try {
+		return key in value ? (value as Record<string, unknown>)[key] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function isImageBlock(value: unknown): value is { type: "image"; data: string; mimeType?: string } {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"type" in value &&
-		(value as { type?: string }).type === "image" &&
-		"data" in value &&
-		typeof (value as { data?: string }).data === "string"
-	);
+	if (typeof value !== "object" || value === null) return false;
+	return probeProperty(value, "type") === "image" && typeof probeProperty(value, "data") === "string";
 }
 
 function isImageMimeType(value: unknown): value is string {
@@ -59,13 +66,9 @@ function isImageMimeType(value: unknown): value is string {
 }
 
 export function isImageDataPayload(value: unknown): value is { data: string; mimeType?: string } {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"data" in value &&
-		typeof (value as { data?: string }).data === "string" &&
-		(isImageBlock(value) || ("mimeType" in value && isImageMimeType((value as { mimeType?: unknown }).mimeType)))
-	);
+	if (typeof value !== "object" || value === null) return false;
+	if (typeof probeProperty(value, "data") !== "string") return false;
+	return isImageBlock(value) || isImageMimeType(probeProperty(value, "mimeType"));
 }
 
 function shouldExternalizeImagePayload(
@@ -340,5 +343,30 @@ export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStor
 		return { ...entry, data: preserveReplaySubtree(entry.data, blobStore) };
 	const stripped = stripReplayedReasoningSignatures(entry);
 	if (!needsPersistenceTraversal(stripped)) return stripped;
-	return truncateForPersistence(stripped, blobStore) as FileEntry;
+	try {
+		return truncateForPersistence(stripped, blobStore) as FileEntry;
+	} catch (error) {
+		// The walk probes fields such as `data` and `type` with `in` and plain
+		// reads, so it also reaches non-enumerable and inherited accessors that
+		// the JSONL line never holds. Tool `details` can keep a library object
+		// whose getter throws (firecrawl-js `SearchData.data`). Left unhandled,
+		// that latches a disk failure, and every later rewrite of the session
+		// meets the same entry, so nothing persists for the rest of the process.
+		// Retry once on the plain JSON of the entry: it holds the fields the
+		// line would serialize, and no accessors.
+		let json: string | undefined;
+		try {
+			json = stringifyJson(stripped);
+		} catch {
+			throw error;
+		}
+		if (json === undefined) throw error;
+		try {
+			return truncateForPersistence(JSON.parse(json), blobStore) as FileEntry;
+		} catch {
+			// A cause the clone does not remove (blob I/O) fails again: keep the
+			// first error so the logged cause stays stable.
+			throw error;
+		}
+	}
 }
