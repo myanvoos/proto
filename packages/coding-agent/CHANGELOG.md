@@ -5,6 +5,7 @@
 ### Fixed
 
 - Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
+- Count tool schemas as the request actually sends them, so context usage matches description-pruned requests and owned dialects.
 
 ## [20.1.2] - 2026-11-04
 

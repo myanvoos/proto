@@ -545,7 +545,7 @@ export class Agent {
 	): Promise<Context> {
 		const model = this.#state.model;
 		if (!model) throw new Error("No active model on agent");
-		const ownedDialect = this.#dialect ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
+		const ownedDialect = this.#ownedDialect();
 		const messages = normalizeMessagesForProvider(llmMessages, model);
 		const tools = ownedDialect
 			? []
@@ -706,6 +706,20 @@ export class Agent {
 
 	setPruneToolDescriptions(prune: boolean): void {
 		this.#pruneToolDescriptions = prune;
+	}
+
+	/**
+	 * Whether requests to `model` actually ship description-stripped tool specs.
+	 * Owned dialects render full definitions in-band, so they never prune; the
+	 * loop applies the same rule (`pruneToolDescriptions && !ownedDialect`).
+	 * Context accounting reads this instead of the raw setting.
+	 */
+	prunesToolDescriptions(model: Model | undefined): boolean {
+		return this.#pruneToolDescriptions && model !== undefined && !this.#ownedDialect();
+	}
+
+	#ownedDialect(): Dialect | undefined {
+		return this.#dialect ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
 	}
 
 	setTools(t: AgentTool<any>[]) {

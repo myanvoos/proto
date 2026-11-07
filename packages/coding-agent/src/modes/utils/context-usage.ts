@@ -3,6 +3,7 @@ import type { CompactionSettings } from "@oh-my-pi/pi-agent-core/compaction";
 import { effectiveReserveTokens, resolveThresholdTokens } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Tool as AiTool, Model } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
+import { stripSchemaDescriptions } from "@oh-my-pi/pi-ai/utils/schema/wire";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../../extensibility/skills";
 import type { AgentSession } from "../../session/agent-session";
@@ -45,6 +46,8 @@ export interface NonMessageTokenSource {
 		readonly state?: {
 			readonly tools?: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
 		};
+		/** Effective prune decision for the request to `model` (see `Agent.prunesToolDescriptions`). */
+		prunesToolDescriptions?(model: Model | undefined): boolean;
 	};
 	readonly skills?: readonly Skill[];
 
@@ -74,21 +77,29 @@ function estimateSkillsTokens(skills: readonly Skill[], tokenizer: Tokenizer): n
 	return tokenizer.countTokens(fragments);
 }
 
+export interface EstimateToolSchemaOptions {
+	/** Whether the request ships description-stripped tool specs (`normalizeTools` prune mode). */
+	pruneDescriptions?: boolean;
+}
+
 export function estimateToolSchemaTokens(
 	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
 	tokenizer: Tokenizer,
+	options?: EstimateToolSchemaOptions,
 ): number {
+	const pruneDescriptions = options?.pruneDescriptions === true;
 	const fragments: string[] = [];
 	for (const tool of tools) {
 		if (typeof tool.name === "string") fragments.push(tool.name);
-		if (typeof tool.description === "string") fragments.push(tool.description);
+		if (!pruneDescriptions && typeof tool.description === "string") fragments.push(tool.description);
 		try {
 			const wireTool: AiTool = {
 				name: tool.name,
-				description: tool.description,
+				description: pruneDescriptions ? "" : tool.description,
 				parameters: tool.parameters as AiTool["parameters"],
 			};
-			const wireJson = JSON.stringify(toolWireSchema(wireTool) ?? {});
+			const schema = toolWireSchema(wireTool) ?? {};
+			const wireJson = JSON.stringify(pruneDescriptions ? stripSchemaDescriptions(schema) : schema);
 			if (typeof wireJson === "string") fragments.push(wireJson);
 		} catch {}
 	}
@@ -100,12 +111,14 @@ export function estimateContextToolSchemaTokens(
 	tools: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>,
 	tokenizer: Tokenizer,
 	model: Model | undefined,
+	options?: EstimateToolSchemaOptions,
 ): number {
-	return model?.toolSchemasInContext === false ? 0 : estimateToolSchemaTokens(tools, tokenizer);
+	return model?.toolSchemasInContext === false ? 0 : estimateToolSchemaTokens(tools, tokenizer, options);
 }
 
 interface NonMessageTokenCache {
 	toolSchemasInContext: boolean;
+	pruneDescriptions: boolean;
 	systemPromptRef: readonly string[];
 	toolsRef: ReadonlyArray<Pick<Tool, "name" | "description" | "parameters">>;
 	skillsRef: readonly Skill[];
@@ -134,6 +147,7 @@ function nonMessageTokenCacheEntry(session: NonMessageTokenSource, tokenizer: To
 	const toolsRef = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const skillsRef = session.skills ?? EMPTY_SKILLS;
 	const toolSchemasInContext = session.model?.toolSchemasInContext !== false;
+	const pruneDescriptions = session.agent?.prunesToolDescriptions?.(session.model) === true;
 	let entry = cachedSession[NON_MESSAGE_TOKEN_CACHE];
 	if (
 		entry &&
@@ -141,7 +155,8 @@ function nonMessageTokenCacheEntry(session: NonMessageTokenSource, tokenizer: To
 		entry.toolsRef === toolsRef &&
 		entry.skillsRef === skillsRef &&
 		entry.tokenizerRef === tokenizer &&
-		entry.toolSchemasInContext === toolSchemasInContext
+		entry.toolSchemasInContext === toolSchemasInContext &&
+		entry.pruneDescriptions === pruneDescriptions
 	) {
 		return entry;
 	}
@@ -151,6 +166,7 @@ function nonMessageTokenCacheEntry(session: NonMessageTokenSource, tokenizer: To
 		skillsRef,
 		tokenizerRef: tokenizer,
 		toolSchemasInContext,
+		pruneDescriptions,
 		tokens: undefined,
 		breakdown: undefined,
 	};
@@ -165,7 +181,9 @@ export function computeNonMessageTokens(session: NonMessageTokenSource, tokenize
 	const tools = session.agent?.state?.tools ?? EMPTY_TOOLS;
 	const tokens =
 		tokenizer.countTokens(Array.from(systemPromptParts, part => part ?? "")) +
-		estimateContextToolSchemaTokens(tools, tokenizer, session.model);
+		estimateContextToolSchemaTokens(tools, tokenizer, session.model, {
+			pruneDescriptions: entry.pruneDescriptions,
+		});
 	entry.tokens = tokens;
 	return tokens;
 }
@@ -186,7 +204,9 @@ export function computeNonMessageBreakdown(
 		renderedSkills(session.skills ?? EMPTY_SKILLS, tools, session.getMountedXdevToolNames?.()),
 		tokenizer,
 	);
-	const toolsTokens = estimateContextToolSchemaTokens(tools, tokenizer, session.model);
+	const toolsTokens = estimateContextToolSchemaTokens(tools, tokenizer, session.model, {
+		pruneDescriptions: entry.pruneDescriptions,
+	});
 	const systemPromptParts = session.systemPrompt ?? EMPTY_STRING_PARTS;
 	const systemContextTokens = tokenizer.countTokens(Array.from(systemPromptParts.slice(1), part => part ?? ""));
 	const systemPromptTokens = Math.max(0, tokenizer.countTokens(systemPromptParts[0] ?? "") - skillsTokens);
