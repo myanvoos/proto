@@ -6,68 +6,7 @@
 
 - Adopt the Devin CLI's saved credentials as a `devin` account with the `devin-cli` login, so chat, discovery and usage no longer require `DEVIN_API_KEY`.
 - Sign in to a Windsurf Enterprise seat with the `devin-windsurf` login, which stores the exchanged seat key as a `devin` account.
-### Fixed
 
-- Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
-- Count tool schemas as the request actually sends them, so context usage matches description-pruned requests and owned dialects.
-### Fixed
-
-- Keep rapid follow-up submissions in order when an extension input hook is slow.
-- Keep saving a session whose tool result details hold a throwing accessor instead of latching a disk failure.
-- Surface an out-of-credit provider balance immediately instead of sleeping through a quota wait that never reopens.
-### Fixed
-
-- A session whose request carries no titleable text of its own — an attached `@brief.md`, a greeting — is now named once from the assistant's reading of it, instead of staying untitled until the next titleable message
-- Tool results whose `details` hold an object with a throwing getter no longer stop the session from saving for the rest of the process
-- `/quit` and `/exit` no longer wait several seconds for an unresponsive OTLP telemetry collector
-### Fixed
-
-- Fixed MCP OAuth login and token refresh failing with a JSON parse error against token endpoints that reply form-encoded unless JSON is requested, such as GitHub's.
-- Fixed MCP OAuth tokens targeting the authorization server's own default audience instead of the MCP server's canonical resource URI.
-- Fixed ACP sessions refusing to load when a client-declared MCP server failed to connect; the session now loads and reports the server failure instead.
-- MCP tool failures after a lost connection now say the request may already have run instead of implying it never reached the server.
-### Fixed
-
-- Paste from the system clipboard when the terminal's paste listing has no supported text or image type, such as macOS TIFF-only screenshots; primary-selection pastes and remote sessions still report the unsupported listing.
-- Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours.
-- Fixed `/mcp reauth` not taking effect for a server whose definition carries its own `Authorization` header, and refresh the project entry when a user config shadows the same name.
-- Fixed resumed OpenAI Responses sessions forgetting earlier reasoning on the first request; a retry after a stale Responses item error now rebuilds history instead of resending the refused items.
-- Show whether the next message reads the prompt cache in a `cache` status-line segment, with a Prompt Cache section in `/session`.
-- Keep prompt-cache entries warm by replaying the last request shortly before they expire (`providers.cacheWarming`), with warm-refresh spend counted in session usage.
-
-### Fixed
-
-- Keep the prompt-cache marker accurate across warm refreshes, `/clear`, rewinds and reopened sessions.
-- Flag cache misses that re-send most of the conversation even when the shared system prompt block stayed warm.
-### Fixed
-
-- A provider restart mid-message discards the tool previews it abandoned, so the transcript no longer freezes behind a card that can never receive a result.
-- JSON query truncation notices name the 50KB read budget instead of the bytes the current page happened to show.
-- Cancelling a Python eval cell as it starts now stops it before its code runs, instead of running the cell and discarding the result.
-- Hide skills from the model's skill listing with `skills.manualSkills` patterns while keeping them invocable by name.
-
-### Fixed
-
-- Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
-- Revived subagents now resolve their per-agent soft request budget by the agent definition name (such as `scout`) instead of the generated task label.
-- Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact.
-- Extensions can call `pi.getShortcutConflict(chord)` to learn whether a key chord is free or held by proto, a keybinding (an `app.*` action or an editing key) or another extension.
-
-### Fixed
-
-- A skill from an opted-out provider no longer hides the same-named skill from an active source in the extension dashboard.
-- Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling.
-- When extensions register one shortcut in different spellings (`alt+ctrl+x` and `ctrl+alt+x`, or `?` and `shift+?`), only the last one loaded is bound instead of the first silently winning.
-- macOS browser launches keep renderers at normal scheduling priority, so CDP calls and traces into background tabs no longer wait out Chromium's 10-second ack timeout.
-
-### Fixed
-
-- A process-local headless Chrome now exits when the process that launched it is killed, instead of outliving it with its temporary profile.
-- A caller's own `--remote-debugging-port` on a process-local headless launch is kept, and a stale `DevToolsActivePort` left in a reused profile is ignored.
-- Browser `open({ viewport })` now sizes the page the first time it opens a relay tab, an `app.cdp_url` or `app.path` browser, or a visible (`headed`) Chromium; without `scale` those pages keep their own device scale.
-- An open whose navigation Chrome detaches the debugger from now keeps the tab it reattached to and reports the recovery instead of closing it.
-- SEC EDGAR filing and filing-document URLs open the requested document instead of the company profile.
-- The computer tool prompt now says a screenshot's saved path holds the capped frame, so agents call `zoom` instead of cropping that file.
 ### Changed
 
 - Subagents can no longer broadcast: `fleet` `message` with `to: "all"` is refused unless the caller is the main agent, which messages the one agent that can answer instead.
@@ -77,20 +16,51 @@
 - `jobs` `wait` with nothing new returns a still-running snapshot after 5s instead of blocking on `irc.timeoutMs`, with the window climbing 5s → 10s → 30s → 1m → 5m across back-to-back waits (5s again after news or a minute away); from the 10s rung it tells the agent to get on with work that does not need the result.
 - Added Keenable as a web search engine (`web/keenable`). It uses `KEENABLE_API_KEY` or a stored `keenable` credential when present; an explicit selection without a key uses Keenable's keyless public endpoint
 - RPC `bash` accepts `excludeFromContext: true` to keep a run out of model context like terminal `!!`; runtimes advertise support with `supportsBashExcludeFromContext` in the `ready` frame ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
+
 ### Fixed
 
+- Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
+- Count tool schemas as the request actually sends them, so context usage matches description-pruned requests and owned dialects.
+- Keep rapid follow-up submissions in order when an extension input hook is slow.
+- Keep saving a session whose tool result details hold a throwing accessor instead of latching a disk failure.
+- Surface an out-of-credit provider balance immediately instead of sleeping through a quota wait that never reopens.
+- A session whose request carries no titleable text of its own — an attached `@brief.md`, a greeting — is now named once from the assistant's reading of it, instead of staying untitled until the next titleable message
+- `/quit` and `/exit` no longer wait several seconds for an unresponsive OTLP telemetry collector
+- Fixed MCP OAuth login and token refresh failing with a JSON parse error against token endpoints that reply form-encoded unless JSON is requested, such as GitHub's.
+- Fixed MCP OAuth tokens targeting the authorization server's own default audience instead of the MCP server's canonical resource URI.
+- Fixed ACP sessions refusing to load when a client-declared MCP server failed to connect; the session now loads and reports the server failure instead.
+- MCP tool failures after a lost connection now say the request may already have run instead of implying it never reached the server.
+- Paste from the system clipboard when the terminal's paste listing has no supported text or image type, such as macOS TIFF-only screenshots; primary-selection pastes and remote sessions still report the unsupported listing.
+- Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours.
+- Fixed `/mcp reauth` not taking effect for a server whose definition carries its own `Authorization` header, and refresh the project entry when a user config shadows the same name.
+- Fixed resumed OpenAI Responses sessions forgetting earlier reasoning on the first request; a retry after a stale Responses item error now rebuilds history instead of resending the refused items.
+- Show whether the next message reads the prompt cache in a `cache` status-line segment, with a Prompt Cache section in `/session`.
+- Keep prompt-cache entries warm by replaying the last request shortly before they expire (`providers.cacheWarming`), with warm-refresh spend counted in session usage.
+- Keep the prompt-cache marker accurate across warm refreshes, `/clear`, rewinds and reopened sessions.
+- Flag cache misses that re-send most of the conversation even when the shared system prompt block stayed warm.
+- A provider restart mid-message discards the tool previews it abandoned, so the transcript no longer freezes behind a card that can never receive a result.
+- JSON query truncation notices name the 50KB read budget instead of the bytes the current page happened to show.
+- Cancelling a Python eval cell as it starts now stops it before its code runs, instead of running the cell and discarding the result.
+- Hide skills from the model's skill listing with `skills.manualSkills` patterns while keeping them invocable by name.
+- Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
+- Revived subagents now resolve their per-agent soft request budget by the agent definition name (such as `scout`) instead of the generated task label.
+- Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact.
+- Extensions can call `pi.getShortcutConflict(chord)` to learn whether a key chord is free or held by proto, a keybinding (an `app.*` action or an editing key) or another extension.
+- A skill from an opted-out provider no longer hides the same-named skill from an active source in the extension dashboard.
+- Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling.
+- When extensions register one shortcut in different spellings (`alt+ctrl+x` and `ctrl+alt+x`, or `?` and `shift+?`), only the last one loaded is bound instead of the first silently winning.
+- macOS browser launches keep renderers at normal scheduling priority, so CDP calls and traces into background tabs no longer wait out Chromium's 10-second ack timeout.
+- A process-local headless Chrome now exits when the process that launched it is killed, instead of outliving it with its temporary profile.
+- A caller's own `--remote-debugging-port` on a process-local headless launch is kept, and a stale `DevToolsActivePort` left in a reused profile is ignored.
+- Browser `open({ viewport })` now sizes the page the first time it opens a relay tab, an `app.cdp_url` or `app.path` browser, or a visible (`headed`) Chromium; without `scale` those pages keep their own device scale.
+- An open whose navigation Chrome detaches the debugger from now keeps the tab it reattached to and reports the recovery instead of closing it.
+- SEC EDGAR filing and filing-document URLs open the requested document instead of the company profile.
+- The computer tool prompt now says a screenshot's saved path holds the capped frame, so agents call `zoom` instead of cropping that file.
 - Stop printing a `--resume <id>` hint for a session whose first remote-storage write has not been confirmed yet; the exit could abort that write and leave an id that cannot be loaded.
 - Control animation cadence and cost with `--spinner-interval`/`PI_SPINNER_INTERVAL`, `--max-fps`/`PI_MAX_FPS`, `--motion`/`PI_MOTION` (`tui.motion`), and `--shimmer`/`PI_SHIMMER`; the environment wins over the flag, which wins over the setting.
-
-### Fixed
-
 - A read summary that names URLs links each of them so the terminal can open it.
 - The editor's magic-keyword sweep stops when decorative motion is off, including a live switch.
-### Fixed
-
 - Fixed `ast_grep` and `ast_edit` ignoring files whose extension is not lowercase (`.R`, `.PY`, …) unless `lang` was given; `.C`/`.H` resolve to C++.
-### Fixed
-
 - Keep an extension provider with `authHeader: true` and its cached `fetchDynamicModels` catalog when a forced refresh fails, instead of showing no models until the next successful refresh.
 - Report a provider discovery failure from a throwing dynamic fetcher in the discovery state and log while still serving cached or bundled models.
 
