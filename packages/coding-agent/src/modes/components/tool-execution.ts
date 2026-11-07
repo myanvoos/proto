@@ -12,6 +12,14 @@ import {
 	Text,
 	type TUI,
 } from "@oh-my-pi/pi-tui";
+import { minFrameIntervalMs, onMaxFpsChange } from "@oh-my-pi/pi-tui/frame-rate";
+import {
+	onSpinnerIntervalChange,
+	sharedSpinnerFrame,
+	spinnerAnimated,
+	spinnerInterval,
+	spinnerTickDelay,
+} from "@oh-my-pi/pi-tui/spinner-clock";
 import { isRecord, logger, sanitizeText, sanitizeTextDeep } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
 import type { Theme } from "../../modes/theme/theme";
@@ -217,25 +225,47 @@ interface ToolCardImage {
 	sizeKey: string;
 }
 
-export const SPINNER_RENDER_INTERVAL_MS = 80;
-
-export const SPINNER_GLYPH_ADVANCE_MS = 80;
-
-export function sharedSpinnerFrame(frameCount: number, now: number = performance.now()): number {
-	return frameCount > 0 ? Math.floor(now / SPINNER_GLYPH_ADVANCE_MS) % frameCount : 0;
-}
-
 const liveSpinnerBlocks = new Set<ToolExecutionComponent>();
 let sharedSpinnerTimer: NodeJS.Timeout | undefined;
 
+/** Arm the shared spinner ticker if it is not already running and spinners animate. */
 function ensureSharedSpinnerTicker(): void {
-	if (sharedSpinnerTimer) return;
-	sharedSpinnerTimer = setInterval(() => {
-		const frame = sharedSpinnerFrame(theme.spinnerFrames.length);
-
-		for (const block of liveSpinnerBlocks) block.tickSpinner(frame);
-	}, SPINNER_RENDER_INTERVAL_MS);
+	if (sharedSpinnerTimer || !spinnerAnimated()) return;
+	armSharedSpinnerTicker();
 }
+
+/**
+ * One tick per period on the shared clock's boundaries (never faster than a frame can land under
+ * the `tui.maxFps` ceiling), so this ticker and every other spinner owner fire in the same turn and
+ * repaint in the same frame.
+ */
+function armSharedSpinnerTicker(): void {
+	const intervalMs = Math.max(spinnerInterval(), minFrameIntervalMs());
+	sharedSpinnerTimer = setTimeout(() => {
+		sharedSpinnerTimer = undefined;
+		const frame = sharedSpinnerFrame(theme.spinnerFrames.length);
+		// Removing the current block mid-iteration is safe on a Set.
+		for (const block of liveSpinnerBlocks) block.tickSpinner(frame);
+		if (liveSpinnerBlocks.size > 0 && spinnerAnimated()) armSharedSpinnerTicker();
+	}, spinnerTickDelay(intervalMs));
+}
+
+// A live cadence or ceiling change re-arms the ticker at the new period; a static interval pins every
+// live block on frame 0 and leaves no timer running.
+function rearmSharedSpinnerTicker(): void {
+	if (sharedSpinnerTimer) {
+		clearTimeout(sharedSpinnerTimer);
+		sharedSpinnerTimer = undefined;
+	}
+	if (liveSpinnerBlocks.size === 0) return;
+	if (spinnerAnimated()) {
+		ensureSharedSpinnerTicker();
+		return;
+	}
+	for (const block of liveSpinnerBlocks) block.tickSpinner(0);
+}
+onSpinnerIntervalChange(rearmSharedSpinnerTicker);
+onMaxFpsChange(rearmSharedSpinnerTicker);
 
 function registerSpinnerBlock(block: ToolExecutionComponent): void {
 	liveSpinnerBlocks.add(block);
@@ -245,7 +275,7 @@ function registerSpinnerBlock(block: ToolExecutionComponent): void {
 function unregisterSpinnerBlock(block: ToolExecutionComponent): void {
 	if (!liveSpinnerBlocks.delete(block)) return;
 	if (liveSpinnerBlocks.size === 0 && sharedSpinnerTimer) {
-		clearInterval(sharedSpinnerTimer);
+		clearTimeout(sharedSpinnerTimer);
 		sharedSpinnerTimer = undefined;
 	}
 }
@@ -253,7 +283,7 @@ function unregisterSpinnerBlock(block: ToolExecutionComponent): void {
 export function stopSharedSpinnerTicker(): void {
 	liveSpinnerBlocks.clear();
 	if (sharedSpinnerTimer) {
-		clearInterval(sharedSpinnerTimer);
+		clearTimeout(sharedSpinnerTimer);
 		sharedSpinnerTimer = undefined;
 	}
 }

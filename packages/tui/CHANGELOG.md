@@ -5,6 +5,14 @@
 ### Fixed
 
 - Terminal report acknowledgements that arrive during a paste no longer appear as text in the editor, including reports split across reads.
+### Added
+
+- Spinners across the working row, live tool cards, and the terminal title share one cadence, and the TUI repaints no faster than a configurable ceiling while keystroke echo stays at 30 fps.
+- A decorative-motion switch stills the editor's magic-keyword sweep for reduced-motion or quiet panes.
+
+### Fixed
+
+- Changing the spinner cadence or frame ceiling now applies to armed timers immediately, and every spinner ticks on the shared clock's boundaries so N spinners cost one frame.
 
 ## [20.1.2] - 2026-11-04
 

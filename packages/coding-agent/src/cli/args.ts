@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { $env, BINARY_NAME } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
+import type { MotionMode, MotionShimmer } from "../config/motion-presets";
 import type { ServiceTierOpenAISettingValue } from "../config/service-tier";
 import { CLI_THINKING_LEVELS, parseCliThinkingLevel, type ThinkingLevel } from "../thinking";
 import { BUILTIN_TOOL_NAMES, normalizeToolNames } from "../tools/builtin-names";
@@ -71,6 +72,14 @@ export interface Args {
 	noRules?: boolean;
 	noContextFiles?: boolean;
 	noTitle?: boolean;
+	/** `--spinner-interval <ms>`: ephemeral `tui.spinnerInterval` override for every spinner (0 = static). */
+	spinnerInterval?: number;
+	/** `--max-fps <n>`: ephemeral `tui.maxFps` override — the ceiling on how often the TUI repaints. */
+	maxFps?: number;
+	/** `--motion <full|reduced|none>`: ephemeral `tui.motion` override — one switch over every animation. */
+	motion?: MotionMode;
+	/** `--shimmer <classic|kitt|disabled>`: ephemeral `display.shimmer` override. */
+	shimmer?: MotionShimmer;
 	messages: string[];
 	fileArgs: string[];
 

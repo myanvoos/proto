@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { EventLoopKeepalive, type ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { parseMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
+import { parseSpinnerInterval } from "@oh-my-pi/pi-tui/spinner-clock";
 import {
 	$env,
 	BINARY_NAME,
@@ -50,6 +52,7 @@ import {
 	type ScopedModel,
 } from "./config/model-resolver";
 import { ModelsConfigFile } from "./config/models-config";
+import { parseMotionMode } from "./config/motion-presets";
 import { resolveConfigValue } from "./config/resolve-config-value";
 import { serviceTierSettingToTier } from "./config/service-tier";
 import { getDefault, type SettingPath, Settings, type SettingValue, settings } from "./config/settings";
@@ -1634,6 +1637,39 @@ export async function runRootCommand(
 
 		if (parsedArgs.externalThinking) {
 			settingsInstance.override("externalThinking", true);
+		}
+
+		// Animation knobs: the environment takes precedence over the per-run flag, which takes
+		// precedence over the persisted setting (applied as an override, so `isConfigured` sees it and
+		// the `tui.motion` preset yields to an explicit knob).
+		const envSpinnerInterval = $env.PI_SPINNER_INTERVAL;
+		if (envSpinnerInterval !== undefined && envSpinnerInterval !== "") {
+			settingsInstance.override("tui.spinnerInterval", parseSpinnerInterval(envSpinnerInterval));
+		} else if (parsedArgs.spinnerInterval !== undefined) {
+			settingsInstance.override("tui.spinnerInterval", parsedArgs.spinnerInterval);
+		}
+		const envMaxFps = $env.PI_MAX_FPS;
+		if (envMaxFps !== undefined && envMaxFps !== "") {
+			settingsInstance.override("tui.maxFps", parseMaxFps(envMaxFps));
+		} else if (parsedArgs.maxFps !== undefined) {
+			settingsInstance.override("tui.maxFps", parsedArgs.maxFps);
+		}
+		const envMotion = $env.PI_MOTION;
+		if (envMotion !== undefined && envMotion !== "") {
+			settingsInstance.override("tui.motion", parseMotionMode(envMotion));
+		} else if (parsedArgs.motion !== undefined) {
+			settingsInstance.override("tui.motion", parsedArgs.motion);
+		}
+		const envShimmer = $env.PI_SHIMMER;
+		if (envShimmer !== undefined && envShimmer !== "") {
+			if (envShimmer !== "classic" && envShimmer !== "kitt" && envShimmer !== "disabled") {
+				throw new CliUsageError(
+					`PI_SHIMMER: expected classic, kitt, or disabled, got ${JSON.stringify(envShimmer)}`,
+				);
+			}
+			settingsInstance.override("display.shimmer", envShimmer);
+		} else if (parsedArgs.shimmer !== undefined) {
+			settingsInstance.override("display.shimmer", parsedArgs.shimmer);
 		}
 
 		await logger.time(

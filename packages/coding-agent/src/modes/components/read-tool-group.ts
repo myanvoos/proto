@@ -8,7 +8,13 @@ import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
 import { isRawSelector, parseSel } from "../../tools/read-selector";
 import { PREVIEW_LIMITS, sanitizeSingleLine, shortenPath } from "../../tools/render-utils";
-import { fileHyperlink, renderCodeCell, renderMarkdownCell, tryResolveInternalUrlSync } from "../../tui";
+import {
+	fileHyperlink,
+	renderCodeCell,
+	renderMarkdownCell,
+	tryResolveInternalUrlSync,
+	urlHyperlinkAlways,
+} from "../../tui";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
 import { ToolResultImagesComponent } from "./tool-result-images";
@@ -813,6 +819,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		if (filePath && options.linkPath) {
 			const linkOptions = options.line !== undefined ? { line: options.line } : undefined;
 			pathDisplay = fileHyperlink(options.linkPath, pathDisplay, linkOptions);
+		} else if (filePath && URL_LIKE_RE.test(baseValue)) {
+			// A URL is one target with no file link: link the whole visible value, or a summary
+			// naming URLs (e.g. "Read 2 files" over two links) leaves them as dead text.
+			pathDisplay = urlHyperlinkAlways(baseValue, pathDisplay);
 		}
 		if (selectorSuffix) {
 			pathDisplay += theme.fg("accent", selectorSuffix);

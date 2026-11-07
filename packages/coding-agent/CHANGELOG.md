@@ -80,6 +80,12 @@
 ### Fixed
 
 - Stop printing a `--resume <id>` hint for a session whose first remote-storage write has not been confirmed yet; the exit could abort that write and leave an id that cannot be loaded.
+- Control animation cadence and cost with `--spinner-interval`/`PI_SPINNER_INTERVAL`, `--max-fps`/`PI_MAX_FPS`, `--motion`/`PI_MOTION` (`tui.motion`), and `--shimmer`/`PI_SHIMMER`; the environment wins over the flag, which wins over the setting.
+
+### Fixed
+
+- A read summary that names URLs links each of them so the terminal can open it.
+- The editor's magic-keyword sweep stops when decorative motion is off, including a live switch.
 
 ## [20.1.2] - 2026-11-04
 

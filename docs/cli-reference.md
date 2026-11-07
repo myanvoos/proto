@@ -121,6 +121,10 @@ See [providers](./providers.md) and [models](./models.md) for model resolution.
 | `--no-pty` | Disable PTY-based interactive bash execution. |
 | `--advisor` | Enable the advisor runtime (passively reviews each turn and injects notes). See [advisor / watchdog](./advisor-watchdog.md). |
 | `--max-time <duration>` | Stop the session after this duration (e.g. `600`, `10m`, `1h`). |
+| `--spinner-interval <ms>` | Milliseconds between spinner frames — working row, tool cards, terminal title (default `80`; `0` shows static glyphs). Overrides `tui.spinnerInterval`; `PI_SPINNER_INTERVAL` takes precedence. |
+| `--max-fps <n>` | Ceiling on how often the TUI repaints (1-120; default `30`). Overrides `tui.maxFps`; `PI_MAX_FPS` takes precedence. |
+| `--motion <mode>` | One switch over every animation: `full`, `reduced`, `none`. Overrides `tui.motion`; `PI_MOTION` takes precedence. |
+| `--shimmer <mode>` | Working-message shimmer style: `classic`, `kitt`, `disabled`. Overrides `display.shimmer`; `PI_SHIMMER` takes precedence. |
 
 #### Extensions, hooks, skills, and rules
 

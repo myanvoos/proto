@@ -10,6 +10,13 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
 import { writeThroughActiveTerminal } from "@oh-my-pi/pi-tui";
+import {
+	onSpinnerIntervalChange,
+	sharedSpinnerFrame,
+	spinnerAnimated,
+	spinnerInterval,
+	spinnerTickDelay,
+} from "@oh-my-pi/pi-tui/spinner-clock";
 import { isTerminalHeadless, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 
@@ -426,7 +433,9 @@ export function setExtensionTerminalTitle(title: string): void {
 type TerminalTitleState = "idle" | "working" | "attention";
 
 const TITLE_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const TITLE_SPINNER_INTERVAL_MS = 80;
+
+/** A static spinner (`tui.spinnerInterval` 0) pins the working separator instead of animating. */
+const TITLE_STATIC_SEPARATOR = ":";
 
 const TITLE_IDLE_SEPARATOR = ">";
 
@@ -457,11 +466,14 @@ export function buildTerminalTitleWithState(
 	state: TerminalTitleState,
 	frame: number,
 	enabled: boolean,
+	staticSpinner = false,
 ): string {
 	if (!enabled) return label ? `${DEFAULT_TERMINAL_TITLE}: ${label}` : DEFAULT_TERMINAL_TITLE;
 	const separator =
 		state === "working"
-			? TITLE_SPINNER_FRAMES[frame % TITLE_SPINNER_FRAMES.length]
+			? staticSpinner
+				? TITLE_STATIC_SEPARATOR
+				: TITLE_SPINNER_FRAMES[frame % TITLE_SPINNER_FRAMES.length]
 			: state === "attention"
 				? TITLE_ATTENTION_SEPARATOR
 				: TITLE_IDLE_SEPARATOR;
@@ -476,24 +488,62 @@ function emitTerminalTitle(): void {
 			terminalTitleRuntime.state,
 			terminalTitleRuntime.frame,
 			terminalTitleRuntime.enabled,
+			!spinnerAnimated(),
 		);
 	setTerminalTitle(next);
 }
 
+let titleSpinnerUnsubscribe: (() => void) | undefined;
+
 function stopTerminalTitleSpinner(): void {
-	clearInterval(terminalTitleRuntime.timer);
+	clearTimeout(terminalTitleRuntime.timer);
 	terminalTitleRuntime.timer = undefined;
+	titleSpinnerUnsubscribe?.();
+	titleSpinnerUnsubscribe = undefined;
+}
+
+/**
+ * One frame per period on the shared spinner clock's boundaries, so the title and every TUI spinner
+ * advance in the same turn. A static spinner stops the timer and pins the `:` separator.
+ */
+function armTerminalTitleSpinner(): void {
+	const periodMs = spinnerInterval();
+	terminalTitleRuntime.timer = setTimeout(() => {
+		terminalTitleRuntime.timer = undefined;
+		if (terminalTitleRuntime.disposed || !spinnerAnimated()) {
+			emitTerminalTitle();
+			return;
+		}
+		terminalTitleRuntime.frame = sharedSpinnerFrame(TITLE_SPINNER_FRAMES.length);
+		// An extension override is frame-independent; re-emitting it each tick is wasted work.
+		if (terminalTitleRuntime.extensionOverride === undefined) emitTerminalTitle();
+		if (terminalTitleRuntime.state === "working" && terminalTitleRuntime.enabled) armTerminalTitleSpinner();
+	}, spinnerTickDelay(periodMs));
+	// Never keep the event loop alive for a cosmetic animation.
+	terminalTitleRuntime.timer.unref?.();
 }
 
 function startTerminalTitleSpinner(): void {
 	if (terminalTitleRuntime.disposed || terminalTitleRuntime.timer || !process.stdout.isTTY) return;
-	terminalTitleRuntime.timer = setInterval(() => {
-		terminalTitleRuntime.frame = (terminalTitleRuntime.frame + 1) % TITLE_SPINNER_FRAMES.length;
-		// An extension override is frame-independent; re-emitting it each tick is wasted work.
-		if (terminalTitleRuntime.extensionOverride === undefined) emitTerminalTitle();
-	}, TITLE_SPINNER_INTERVAL_MS);
+	titleSpinnerUnsubscribe ??= onSpinnerIntervalChange(rearmTerminalTitleSpinner);
+	if (!spinnerAnimated()) {
+		emitTerminalTitle();
+		return;
+	}
+	armTerminalTitleSpinner();
+}
 
-	terminalTitleRuntime.timer.unref?.();
+/** A live `tui.spinnerInterval` change re-arms the title spinner at the new cadence (or stills it). */
+function rearmTerminalTitleSpinner(): void {
+	if (terminalTitleRuntime.disposed) return;
+	clearTimeout(terminalTitleRuntime.timer);
+	terminalTitleRuntime.timer = undefined;
+	// Keep the subscription: this runs from the listener set, and unsubscribing/re-subscribing while
+	// it iterates would visit this listener again.
+	if (terminalTitleRuntime.state === "working" && terminalTitleRuntime.enabled && spinnerAnimated()) {
+		armTerminalTitleSpinner();
+	}
+	emitTerminalTitle();
 }
 
 export function setTerminalTitleState(state: TerminalTitleState): void {

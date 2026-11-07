@@ -96,6 +96,25 @@ test("grouped delimited read rows hyperlink to the per-target paths the read rep
 	}
 });
 
+test("a read summary that names a URL links the whole URL", async () => {
+	(await Settings.init({ inMemory: true })).override("tui.hyperlinks", "always");
+	const component = new ReadToolGroupComponent();
+	const url = "https://api.example.com/repos/o/r/issues/7517";
+	try {
+		component.updateArgs({ path: url }, "read-url");
+		component.updateResult(
+			{ content: [{ type: "text", text: "needle" }], details: { displayReadTargets: [url] } },
+			false,
+			"read-url",
+		);
+		const rendered = component.render(120).join("\n");
+		// The whole visible URL is the OSC 8 target, so a click anywhere on it opens it.
+		expect(rendered).toContain(`;${url}\x07`);
+	} finally {
+		component.dispose();
+	}
+});
+
 test("grouped Markdown previews render prose and honor raw selectors that arrive after the result", () => {
 	const group = new ReadToolGroupComponent({ showContentPreview: true });
 	group.updateArgs({ path: "/tmp/README.md" }, "markdown");

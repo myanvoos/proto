@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { configureCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
+import { parseMaxFps, setMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
+import { setMotionEffects } from "@oh-my-pi/pi-tui/motion-effects";
+import { parseSpinnerInterval, setSpinnerInterval } from "@oh-my-pi/pi-tui/spinner-clock";
 import { resolveHyperlinkPolicy, setTerminalHyperlinks } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	expandTilde,
@@ -32,6 +35,7 @@ import type { CompactionMethod } from "../session/compaction-method-config";
 import { AUTO_IMAGE_PROVIDER_ORDER, isImageProviderId } from "../tools/image-providers";
 import { isSearchProviderId, SEARCH_PROVIDER_ORDER } from "../web/search/types";
 import { stringifyYamlConfig } from "./config-file";
+import { type ExplicitMotionSettings, type MotionShimmer, resolveMotion } from "./motion-presets";
 import {
 	type ConfigIssue,
 	formatUnknownStatusLineSegments,
@@ -570,7 +574,7 @@ export class Settings {
 
 		const hook = SETTING_HOOKS[path];
 		if (hook) {
-			hook(next, prev);
+			hook(next, prev, this);
 		}
 		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
@@ -595,7 +599,9 @@ export class Settings {
 		const segments = path.split(".");
 		setByPath(this.#overrides, segments, value);
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
+		const next = this.get(path);
+		SETTING_HOOKS[path]?.(next, prev, this);
+		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
 
 	clearOverride(path: SettingPath): void {
@@ -612,7 +618,9 @@ export class Settings {
 		}
 		delete current[segments[segments.length - 1]];
 		this.#rebuildMerged();
-		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
+		const next = this.get(path);
+		SETTING_HOOKS[path]?.(next, prev, this);
+		this.#fireEffectiveSettingChanged(path, next, prev);
 	}
 
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
@@ -620,6 +628,15 @@ export class Settings {
 		if (path === "modelRoles") {
 			modelRolesSignal.fire();
 		}
+	}
+
+	/**
+	 * Value plus provenance for change notifications: a hook that reads `isConfigured` (the
+	 * `tui.motion` preset yields to an explicit knob) must fire when the user makes a setting
+	 * explicit at its default value, or clears it, even though the effective value is unchanged.
+	 */
+	#hookState(path: SettingPath): { value: unknown; configured: boolean } {
+		return { value: this.get(path), configured: this.isConfigured(path) };
 	}
 
 	#savesCancelled = false;
@@ -701,9 +718,9 @@ export class Settings {
 			const previousSignaledValues = {
 				modelRoles: this.get("modelRoles"),
 			};
-			const previousHookValues = new Map<SettingPath, unknown>();
+			const previousHookValues = new Map<SettingPath, { value: unknown; configured: boolean }>();
 			for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
-				previousHookValues.set(key, this.get(key));
+				previousHookValues.set(key, this.#hookState(key));
 			}
 
 			this.#configIssues = [];
@@ -756,8 +773,8 @@ export class Settings {
 			}
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
-				if (!Bun.deepEquals(next, previous)) {
-					SETTING_HOOKS[key]?.(next, previous);
+				if (this.isConfigured(key) !== previous.configured || !Bun.deepEquals(next, previous.value)) {
+					SETTING_HOOKS[key]?.(next, previous.value, this);
 				}
 			}
 			return;
@@ -1998,9 +2015,9 @@ export class Settings {
 		const modifiedModelRoleMutations = new Map(this.#modifiedGlobalModelRoleMutations);
 		const globalRolesAtStart = this.#modelRolesFromLayer(this.#global);
 		const previousModelRoles = this.get("modelRoles");
-		const previousHookValues = new Map<SettingPath, unknown>();
+		const previousHookValues = new Map<SettingPath, { value: unknown; configured: boolean }>();
 		for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
-			previousHookValues.set(key, this.get(key));
+			previousHookValues.set(key, this.#hookState(key));
 		}
 		this.#modified.clear();
 		this.#modifiedGlobalModelRoles.clear();
@@ -2135,8 +2152,8 @@ export class Settings {
 		}
 		for (const [key, previous] of previousHookValues) {
 			const next = this.get(key);
-			if (!Bun.deepEquals(next, previous)) {
-				SETTING_HOOKS[key]?.(next, previous);
+			if (this.isConfigured(key) !== previous.configured || !Bun.deepEquals(next, previous.value)) {
+				SETTING_HOOKS[key]?.(next, previous.value, this);
 			}
 		}
 	}
@@ -2222,7 +2239,7 @@ export class Settings {
 			const hook = SETTING_HOOKS[key];
 			if (hook) {
 				const value = this.get(key);
-				hook(value, value);
+				hook(value, value, this);
 			}
 		}
 	}
@@ -2252,7 +2269,7 @@ export class Settings {
 	}
 }
 
-type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>) => void;
+type SettingHook<P extends SettingPath> = (value: SettingValue<P>, prev: SettingValue<P>, settings: Settings) => void;
 
 class SettingSignal<A extends unknown[] = []> {
 	#listeners = new Set<(...args: A) => void>();
@@ -2277,7 +2294,36 @@ class SettingSignal<A extends unknown[] = []> {
 	}
 }
 
+/**
+ * Resolve the `tui.motion` preset against the knobs the user set explicitly and push the result into
+ * the TUI's live modules: the shared spinner clock, the render ceiling, and the decorative-motion
+ * switch. Shimmer reads the setting (and this preset) lazily where it renders.
+ */
+function applyMotionSettings(instance: Settings): void {
+	const explicit: ExplicitMotionSettings = {};
+	try {
+		if (instance.isConfigured("tui.spinnerInterval")) {
+			explicit.spinnerInterval = parseSpinnerInterval(instance.get("tui.spinnerInterval"));
+		}
+		if (instance.isConfigured("tui.maxFps")) {
+			explicit.maxFps = parseMaxFps(instance.get("tui.maxFps"));
+		}
+		if (instance.isConfigured("display.shimmer")) {
+			explicit.shimmer = instance.get("display.shimmer") as MotionShimmer;
+		}
+		const resolved = resolveMotion(instance.get("tui.motion"), explicit);
+		setSpinnerInterval(resolved.spinnerInterval);
+		setMaxFps(resolved.maxFps);
+		setMotionEffects(resolved.effects);
+	} catch (err) {
+		logger.warn("Settings: tui.motion resolution failed; keeping the previous cadence", { error: String(err) });
+	}
+}
+
 const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
+	"tui.motion": (_value, _prev, instance) => applyMotionSettings(instance),
+	"tui.spinnerInterval": (_value, _prev, instance) => applyMotionSettings(instance),
+	"tui.maxFps": (_value, _prev, instance) => applyMotionSettings(instance),
 	"theme.dark": value => {
 		if (typeof value === "string") {
 			setAutoThemeMapping("dark", value);

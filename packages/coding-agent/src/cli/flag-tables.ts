@@ -1,4 +1,7 @@
+import { parseMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
+import { parseSpinnerInterval } from "@oh-my-pi/pi-tui/spinner-clock";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
+import { parseMotionMode } from "../config/motion-presets";
 import { isServiceTierOpenAISettingValue, SERVICE_TIER_OPENAI_VALUES } from "../config/service-tier";
 import type { ThinkingLevel } from "../thinking";
 import type { Args } from "./args";
@@ -86,6 +89,33 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 	},
 	"--max-time": (result, value) => {
 		result.maxTime = parseMaxTimeSeconds(value);
+	},
+	"--spinner-interval": (result, value) => {
+		try {
+			result.spinnerInterval = parseSpinnerInterval(value);
+		} catch (error) {
+			throw new CliUsageError(`--spinner-interval: ${(error as Error).message}`);
+		}
+	},
+	"--max-fps": (result, value) => {
+		try {
+			result.maxFps = parseMaxFps(value);
+		} catch (error) {
+			throw new CliUsageError(`--max-fps: ${(error as Error).message}`);
+		}
+	},
+	"--motion": (result, value) => {
+		try {
+			result.motion = parseMotionMode(value);
+		} catch (error) {
+			throw new CliUsageError(`--motion: ${(error as Error).message}`);
+		}
+	},
+	"--shimmer": (result, value) => {
+		if (value !== "classic" && value !== "kitt" && value !== "disabled") {
+			throw new CliUsageError(`--shimmer: expected classic, kitt, or disabled, got ${JSON.stringify(value)}`);
+		}
+		result.shimmer = value;
 	},
 	"--service-tier": (result, value) => {
 		if (!isServiceTierOpenAISettingValue(value)) {
