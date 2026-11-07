@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop printing a `--resume <id>` hint for a session whose first remote-storage write has not been confirmed yet; the exit could abort that write and leave an id that cannot be loaded.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
