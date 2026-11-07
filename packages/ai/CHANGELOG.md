@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed `auth-gateway` rejecting providers whose catalog policy allows a missing API key (for example AWS-authenticated Bedrock Mantle); keyless requests no longer attempt credential rotation
 - Fixed Gemini and Vertex `MALFORMED_RESPONSE` finishes showing as "Unhandled stop reason" and dropping that turn's token usage; they now surface as a retryable error stop
 
 ## [19.2.1] - 2026-11-03
