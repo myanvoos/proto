@@ -16,6 +16,7 @@ import type { SearchParams } from "./base";
 import { SearchProvider } from "./base";
 import {
 	classifyProviderHttpError,
+	normalizeHttpUrl,
 	normalizeSearchText,
 	readProviderErrorText,
 	readProviderResponseText,
@@ -70,16 +71,6 @@ function buildDeepSeekQuery(parsed: StructuredQuery, recency: SearchParams["rece
 	if (after) parts.push(`after:${after}`);
 	if (parsed.before) parts.push(`before:${parsed.before}`);
 	return parts.join(" ");
-}
-
-function normalizeUrl(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	try {
-		const url = new URL(value);
-		return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
-	} catch {
-		return undefined;
-	}
 }
 
 async function callDeepSeekSearch(
@@ -144,7 +135,7 @@ export async function searchDeepSeek(params: SearchParamsWithFetch): Promise<Sea
 	const sources: SearchSource[] = [];
 	for (const result of Array.isArray(data.results) ? data.results : []) {
 		if (typeof result !== "object" || result === null) continue;
-		const url = normalizeUrl(result.url);
+		const url = normalizeHttpUrl(result.url);
 		if (!url) continue;
 		const publishedDate = typeof result.date === "string" && result.date ? result.date : undefined;
 		sources.push({
