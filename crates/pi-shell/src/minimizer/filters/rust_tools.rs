@@ -45,7 +45,11 @@ fn condense_rustfmt(input: &str, exit_code: i32) -> String {
 		files.iter().filter(|f| seen.insert(**f)).collect()
 	};
 	let total = unique.len();
-	let _ = writeln!(out, "{total} files reformatted:");
+	if total == 1 {
+		out.push_str("1 file needs formatting:\n");
+	} else {
+		let _ = writeln!(out, "{total} files need formatting:");
+	}
 	for file in unique.iter().take(3) {
 		out.push_str("  ");
 		out.push_str(file);
@@ -61,11 +65,14 @@ fn collect_diff_files(input: &str) -> Vec<&str> {
 	let mut files = Vec::new();
 	for line in input.lines() {
 		if let Some(rest) = line.strip_prefix("Diff in ") {
-			let path = rest
-				.split(" at line ")
-				.next()
-				.unwrap_or(rest)
-				.trim_end_matches(':');
+			let rest = rest.strip_suffix(':').unwrap_or(rest);
+			let path = match rest.split_once(" at line ") {
+				Some((path, _)) => path,
+				None => rest
+					.rsplit_once(':')
+					.filter(|(_, line)| line.parse::<u32>().is_ok())
+					.map_or(rest, |(path, _)| path),
+			};
 			files.push(path);
 		}
 	}

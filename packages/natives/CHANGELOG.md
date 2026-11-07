@@ -18,6 +18,11 @@
 - Merge with comm in the same collation as sort, so `sort | comm` agrees under a UTF-8 locale.
 - Accept a pattern that starts with `-` after `-e` in grep and ripgrep.
 - Remove a read-only directory with `rm -d` on Windows.
+- Report how many files need formatting in minimized `rustfmt --check` output instead of counting each diff location as a file and claiming they were reformatted.
+- List binary files, pure renames and mode-only changes in minimized `git diff`, `git show` and `diff -r` output, showing binaries as `Bin`.
+- Count only indented entries as untracked in minimized `git status` and `git stash pop` output, and keep a stash pop's `Dropped` confirmation.
+- Make a backgrounded builtin or shell function's FIFO redirection in the shell, so its output is not discarded.
+- Reap exited background jobs while the shell is idle, so a later `wait` still reports their status and no zombies remain.
 
 ## [20.1.2] - 2026-11-04
 

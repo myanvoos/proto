@@ -369,18 +369,7 @@ fn condense_status(input: &str) -> String {
 			in_staged = false;
 			continue;
 		}
-		if parse_long_status_line(trimmed, in_staged, in_untracked, &mut summary) {
-			continue;
-		}
-		if !trimmed.starts_with('(')
-			&& !trimmed.ends_with(':')
-			&& !trimmed.starts_with("use ")
-			&& !trimmed.starts_with("no changes added")
-			&& in_untracked
-		{
-			summary.untracked += 1;
-			push_status_path(&mut summary, "??", trimmed);
-		}
+		parse_long_status_line(trimmed, line, in_staged, in_untracked, &mut summary);
 	}
 
 	if status_has_no_signal(&summary) && state.is_none() {
@@ -468,10 +457,18 @@ fn is_short_status(status: &str) -> bool {
 
 fn parse_long_status_line(
 	line: &str,
+	raw: &str,
 	in_staged: bool,
 	in_untracked: bool,
 	summary: &mut StatusSummary,
-) -> bool {
+) {
+	if in_untracked {
+		if raw.starts_with([' ', '\t']) && !line.starts_with('(') {
+			summary.untracked += 1;
+			push_status_path(summary, "??", line);
+		}
+		return;
+	}
 	for (prefix, label, staged) in [
 		("modified:", "M", in_staged),
 		("deleted:", "D", in_staged),
@@ -494,15 +491,9 @@ fn parse_long_status_line(
 				summary.unstaged += 1;
 			}
 			push_status_path(summary, label, path.trim());
-			return true;
+			return;
 		}
 	}
-	if in_untracked && !line.starts_with('(') && !line.ends_with(':') {
-		summary.untracked += 1;
-		push_status_path(summary, "??", line);
-		return true;
-	}
-	false
 }
 
 fn push_status_path(summary: &mut StatusSummary, label: &str, path: &str) {
@@ -916,6 +907,13 @@ struct DiffFile {
 	added:   usize,
 	removed: usize,
 	hunks:   Vec<DiffHunk>,
+	binary:  bool,
+}
+
+impl DiffFile {
+	const fn is_blank(&self) -> bool {
+		self.added == 0 && self.removed == 0 && self.hunks.is_empty() && !self.binary
+	}
 }
 
 struct DiffHunk {
@@ -937,12 +935,18 @@ pub(crate) fn compact_diff_output(input: &str) -> String {
 
 	let mut out = String::new();
 	for file in files.iter().take(20) {
-		let changed = file.added + file.removed;
 		out.push_str(&file.path);
 		out.push_str(" | ");
-		out.push_str(&changed.to_string());
-		out.push(' ');
-		out.push_str(&diff_bar(file.added, file.removed));
+		if file.binary {
+			out.push_str("Bin");
+		} else {
+			let changed = file.added + file.removed;
+			out.push_str(&changed.to_string());
+			if changed > 0 {
+				out.push(' ');
+				out.push_str(&diff_bar(file.added, file.removed));
+			}
+		}
 		out.push('\n');
 	}
 	if files.len() > 20 {
@@ -960,6 +964,9 @@ pub(crate) fn compact_diff_output(input: &str) -> String {
 		out.push_str("File: ");
 		out.push_str(&file.path);
 		out.push('\n');
+		if file.binary {
+			out.push_str("  Binary files differ\n");
+		}
 		for hunk in file.hunks.iter().take(8) {
 			out.push_str("  ");
 			out.push_str(&hunk.header);
@@ -1033,7 +1040,7 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 			if let Some(file) = current.take() {
 				files.push(file);
 			}
-			current = Some(DiffFile { path, added: 0, removed: 0, hunks: Vec::new() });
+			current = Some(DiffFile { path, added: 0, removed: 0, hunks: Vec::new(), binary: false });
 			pending_old_path = None;
 			continue;
 		}
@@ -1049,9 +1056,7 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 				path
 			};
 			flush_hunk(&mut current, &mut current_hunk);
-			let update_current_path = current
-				.as_ref()
-				.is_some_and(|file| file.added == 0 && file.removed == 0 && file.hunks.is_empty());
+			let update_current_path = current.as_ref().is_some_and(DiffFile::is_blank);
 			if update_current_path {
 				if let Some(file) = current.as_mut() {
 					file.path = path.to_string();
@@ -1063,6 +1068,7 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 					added:   0,
 					removed: 0,
 					hunks:   Vec::new(),
+					binary:  false,
 				});
 			} else {
 				current = Some(DiffFile {
@@ -1070,6 +1076,7 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 					added:   0,
 					removed: 0,
 					hunks:   Vec::new(),
+					binary:  false,
 				});
 			}
 			pending_old_path = None;
@@ -1082,6 +1089,43 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 			continue;
 		}
 		if line.starts_with("+++") || line.starts_with("---") {
+			continue;
+		}
+		if line == "GIT binary patch" {
+			if let Some(file) = current.as_mut() {
+				file.binary = true;
+			}
+			continue;
+		}
+		if let Some(names) = line
+			.strip_prefix("Binary files ")
+			.and_then(|rest| rest.strip_suffix(" differ"))
+		{
+			flush_hunk(&mut current, &mut current_hunk);
+			match current.as_mut() {
+				Some(file) if file.is_blank() => file.binary = true,
+				_ => {
+					if let Some(file) = current.take() {
+						files.push(file);
+					}
+					current = Some(DiffFile {
+						path:    binary_diff_path(names).to_string(),
+						added:   0,
+						removed: 0,
+						hunks:   Vec::new(),
+						binary:  true,
+					});
+				},
+			}
+			continue;
+		}
+		if let Some(path) = line
+			.strip_prefix("rename to ")
+			.or_else(|| line.strip_prefix("copy to "))
+			&& let Some(file) = current.as_mut()
+			&& file.is_blank()
+		{
+			file.path = unquote_path(path).to_string();
 			continue;
 		}
 		let Some(file) = current.as_mut() else {
@@ -1101,17 +1145,45 @@ fn parse_unified_diff(input: &str) -> Vec<DiffFile> {
 		files.push(file);
 	}
 	files
-		.into_iter()
-		.filter(|file| file.added > 0 || file.removed > 0)
-		.collect()
+}
+
+fn binary_diff_path(names: &str) -> &str {
+	let mut splits = names
+		.match_indices(" and ")
+		.map(|(at, sep)| (&names[..at], &names[at + sep.len()..]))
+		.filter(|(old, new)| {
+			*old == "/dev/null"
+				|| *new == "/dev/null"
+				|| old.rsplit('/').next() == new.rsplit('/').next()
+		});
+	match (splits.next(), splits.next()) {
+		(Some((old, "/dev/null")), None) => old.strip_prefix("a/").unwrap_or(old),
+		(Some((_, new)), None) => new.strip_prefix("b/").unwrap_or(new),
+		_ => names,
+	}
 }
 
 fn parse_diff_git_path(line: &str) -> Option<String> {
 	let rest = line.strip_prefix("diff --git ")?;
+	let mid = rest.len() / 2;
+	if rest.as_bytes().get(mid) == Some(&b' ')
+		&& let Some(old) = unquote_path(&rest[..mid]).strip_prefix("a/")
+		&& let Some(new) = unquote_path(&rest[mid + 1..]).strip_prefix("b/")
+		&& old == new
+	{
+		return Some(new.to_string());
+	}
 	let mut parts = rest.split_whitespace();
 	let _old = parts.next()?;
 	let new = parts.next()?;
 	Some(new.strip_prefix("b/").map_or(new, |path| path).to_string())
+}
+
+fn unquote_path(path: &str) -> &str {
+	path
+		.strip_prefix('"')
+		.and_then(|path| path.strip_suffix('"'))
+		.unwrap_or(path)
 }
 
 /// Old and new line counts of a two-way `@@ -a[,b] +c[,d] @@` header; an
@@ -1516,12 +1588,7 @@ fn condense_stash(tokens: &[String], input: &str, exit_code: i32) -> String {
 			};
 		}
 		if sub == "apply" || sub == "pop" || sub == "branch" {
-			let compacted = condense_status(input);
-			return if compacted == input {
-				input.to_string()
-			} else {
-				compacted
-			};
+			return condense_stash_status(input);
 		}
 		if sub == "create" {
 			return input.to_string();
@@ -1538,6 +1605,22 @@ fn condense_stash(tokens: &[String], input: &str, exit_code: i32) -> String {
 	}
 
 	condense_noisy_output(input)
+}
+
+fn condense_stash_status(input: &str) -> String {
+	let (status, dropped) = match input.trim_end().rsplit_once('\n') {
+		Some((status, last)) if last.starts_with("Dropped ") => (status, Some(last)),
+		_ => (input, None),
+	};
+	let mut out = condense_status(status);
+	if let Some(dropped) = dropped {
+		if !out.is_empty() && !out.ends_with('\n') {
+			out.push('\n');
+		}
+		out.push_str(dropped);
+		out.push('\n');
+	}
+	out
 }
 
 fn condense_stash_list(input: &str) -> String {

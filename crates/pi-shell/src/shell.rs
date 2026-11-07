@@ -5,7 +5,10 @@ use std::{
 	io::{self, Read, Write},
 	pin::Pin,
 	str,
-	sync::Arc,
+	sync::{
+		Arc,
+		atomic::{AtomicBool, Ordering},
+	},
 	time::Duration,
 };
 
@@ -464,11 +467,13 @@ pub type ShellExecuteResult = ShellRunResult;
 const SHELL_CLOSE_GRACE: Duration = Duration::from_millis(150);
 
 pub struct Shell {
-	protolens_runtime: ProtolensRuntime,
-	session:           Arc<TokioMutex<Option<ShellSessionCore>>>,
-	abort_state:       ShellAbortState,
-	spawn_registry:    Arc<process::SpawnRegistry>,
-	config:            ShellConfig,
+	protolens_runtime:        ProtolensRuntime,
+	session:                  Arc<TokioMutex<Option<ShellSessionCore>>>,
+	abort_state:              ShellAbortState,
+	spawn_registry:           Arc<process::SpawnRegistry>,
+	config:                   ShellConfig,
+	/// Whether the idle background reaper is already running for this shell.
+	background_reaper_active: Arc<AtomicBool>,
 }
 
 impl Shell {
@@ -494,6 +499,7 @@ impl Shell {
 			abort_state: ShellAbortState::default(),
 			spawn_registry: Arc::new(process::SpawnRegistry::new()),
 			config,
+			background_reaper_active: Arc::new(AtomicBool::new(false)),
 		}
 	}
 
@@ -525,6 +531,7 @@ impl Shell {
 			self.protolens_runtime.clone(),
 			self.abort_state.clone(),
 			self.spawn_registry.clone(),
+			self.background_reaper_active.clone(),
 			self.config.clone(),
 			run_config,
 			on_chunk,
@@ -600,11 +607,52 @@ impl Shell {
 			jobs
 				.jobs
 				.iter()
-				.filter(|job| job.representative_pid().is_some())
+				.filter(|job| job.external_process_count() > 0)
 				.count(),
 		)
 		.unwrap_or(u32::MAX)
 	}
+}
+
+/// Poll only the persistent session's background children, never a process-wide
+/// waitpid: foreground runs and other shells own their own child handles.
+/// Finished jobs keep their statuses so `wait` can consume them on a later run.
+/// The caller holds the session lock, including through this initial poll.
+fn ensure_background_reaper(
+	core: &mut ShellSessionCore,
+	session: &Arc<TokioMutex<Option<ShellSessionCore>>>,
+	active: &Arc<AtomicBool>,
+) {
+	let _ = core.shell.jobs_mut().poll_preserving_completed();
+	if !core.shell.jobs().has_live_external_jobs() || active.swap(true, Ordering::AcqRel) {
+		return;
+	}
+
+	// A weak session reference lets dropping Shell keep its kill-on-drop
+	// behavior; the reaper never extends the session's lifetime across sleeps.
+	let session = Arc::downgrade(session);
+	let active = Arc::clone(active);
+	tokio::spawn(async move {
+		loop {
+			time::sleep(Duration::from_millis(25)).await;
+			let Some(session) = session.upgrade() else {
+				active.store(false, Ordering::Release);
+				break;
+			};
+			let mut guard = session.lock().await;
+			let still_running = guard.as_mut().is_some_and(|core| {
+				let _ = core.shell.jobs_mut().poll_preserving_completed();
+				core.shell.jobs().has_live_external_jobs()
+			});
+			if !still_running {
+				// Clear while holding the session lock: a concurrent run cannot
+				// add jobs and observe `active == true` between the last poll and
+				// this store.
+				active.store(false, Ordering::Release);
+				break;
+			}
+		}
+	});
 }
 
 pub async fn execute_shell(
@@ -656,6 +704,7 @@ async fn run_shell_session(
 	protolens_runtime: ProtolensRuntime,
 	abort_state: ShellAbortState,
 	force_registry: Arc<process::SpawnRegistry>,
+	background_reaper_active: Arc<AtomicBool>,
 	config: ShellConfig,
 	run_config: ShellRunConfig,
 	on_chunk: Option<Sender<String>>,
@@ -679,11 +728,12 @@ async fn run_shell_session(
 		let tokio_cancel = tokio_cancel.clone();
 		let at = ct.emplace_abort_token();
 		let spawn_registry = spawn_registry.clone();
+		let background_reaper_active = background_reaper_active.clone();
 		async move {
 			let mut session_guard = session.lock().await;
 
-			let session = match &mut *session_guard {
-				Some(session) => session,
+			let core = match &mut *session_guard {
+				Some(core) => core,
 				None => session_guard.insert(
 					create_session_for_run(
 						&config,
@@ -695,7 +745,12 @@ async fn run_shell_session(
 				),
 			};
 			abort_state.set(at).await;
-			run_shell_command(session, &run_config, on_chunk, tokio_cancel, spawn_registry).await
+			let result =
+				run_shell_command(core, &run_config, on_chunk, tokio_cancel, spawn_registry).await;
+			if result.is_ok() {
+				ensure_background_reaper(core, &session, &background_reaper_active);
+			}
+			result
 		}
 	});
 
@@ -1684,7 +1739,10 @@ fn shell_termination_targets(
 		if let Some(pgid) = job.process_group_id() {
 			targets.add_pgid(pgid);
 		}
-		if let Some(pid) = job.representative_pid() {
+		// A reaped job keeps its representative PID for `wait`, but that PID may
+		// later be reused by an unrelated process. Use an external child still
+		// held by the job (the first pipeline stage may have exited).
+		if let Some(pid) = job.process_ids().next() {
 			targets.add_pid(pid);
 		}
 	}

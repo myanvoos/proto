@@ -141,3 +141,50 @@ async fn cancellation_keeps_output_open_until_term_cleanup_finishes() {
 	assert!(result.cancelled, "{output}");
 	assert_eq!(std::fs::read_to_string(dir.path().join("cleaned")).unwrap(), "cleaned");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn persistent_shell_reaps_background_child_without_followup_run() {
+	let dir = tempfile::tempdir().unwrap();
+	let shell = Shell::new(None);
+	let (result, output) = run(
+		&shell,
+		dir.path(),
+		"/bin/sh -c 'sleep 1; exit 7' >/dev/null 2>&1 & pid=$!; printf '%s\\n' \"$pid\"",
+		CancelToken::default(),
+	)
+	.await;
+	assert_eq!(result.exit_code, Some(0), "{output}");
+	let pid: i32 = output.trim().parse().expect("background process pid");
+	assert!(pid > 0);
+
+	// No further calls into the shell (including the live-job counter) until the
+	// child has exited, so only the idle reaper can have waited on it.
+	tokio::time::timeout(Duration::from_secs(5), async {
+		loop {
+			// SAFETY: signal 0 only probes this pid's existence.
+			if unsafe { libc::kill(pid, 0) } == -1 {
+				break;
+			}
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+	})
+	.await
+	.expect("background child remained a zombie after exit");
+
+	assert_eq!(shell.live_background_job_count().await, 0);
+	let (waited, output) = run(&shell, dir.path(), "wait \"$pid\"", CancelToken::default()).await;
+	assert_eq!(waited.exit_code, Some(7), "{output}");
+}
+
+#[tokio::test]
+async fn live_background_job_count_ignores_in_shell_jobs() {
+	let dir = tempfile::tempdir().unwrap();
+	let shell = Shell::new(None);
+	let (result, output) = run(&shell, dir.path(), "true &", CancelToken::default()).await;
+	assert_eq!(result.exit_code, Some(0), "{output}");
+	assert_eq!(
+		shell.live_background_job_count().await,
+		0,
+		"an in-shell background job must not pin the session"
+	);
+}
