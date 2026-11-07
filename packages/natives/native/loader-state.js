@@ -608,6 +608,25 @@ export function getNativeAddonPath() {
 	return nativeAddonPath;
 }
 
+/**
+ * Why a symbol the loader exports is absent from the addon it loaded.
+ *
+ * A workspace tree whose `.node` file predates its checkout keeps running by
+ * design (the release check is skipped for a workspace load), so a symbol
+ * added since that build reaches callers as `undefined`. Naming the addon and
+ * both releases is what turns that into "rebuild the tree" instead of a defect
+ * report about whichever file first touched the symbol.
+ */
+export function nativeBindingUnavailableMessage(symbolName) {
+	const addon = nativeAddonPath ? ` ${nativeAddonPath}` : "";
+	return (
+		`Native binding ${symbolName} is unavailable in the @oh-my-pi/pi-natives@${packageJson.version} ` +
+		`addon loaded${addon}. The .node file was built for another release and lacks symbols this ` +
+		"checkout exports; run `bun run build:native` in a source checkout, or reinstall " +
+		"@oh-my-pi/pi-natives."
+	);
+}
+
 export function loadNative() {
 	startupMarker("native:loadNative:start");
 	const ctx = initLoaderContext();

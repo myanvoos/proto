@@ -1,4 +1,4 @@
-import { loadNative } from "./loader-state.js";
+import { loadNative, nativeBindingUnavailableMessage } from "./loader-state.js";
 import { adaptDesktopSession } from "./desktop-adapter.js";
 
 
@@ -23,7 +23,7 @@ function lazyNativeExport(name, adapt, isClass = false) {
 			const bindings = getNativeBindings();
 			binding = adapt ? adapt(bindings) : bindings[name];
 			if (binding === undefined) {
-				throw new Error(`Native binding ${name} is unavailable`);
+				throw new Error(nativeBindingUnavailableMessage(name));
 			}
 			if (isClass && typeof binding === "function" && binding.prototype) {
 				try {
