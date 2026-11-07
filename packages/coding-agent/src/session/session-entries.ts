@@ -399,6 +399,82 @@ function finiteCount(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+/**
+ * A warm prompt-cache refresh is a real, paid provider request that never enters the transcript.
+ * Appending one of these off-transcript usage entries makes its cost part of the session totals and
+ * lets a reopened session date the cache entry a refresh hit left behind.
+ */
+export const CACHE_WARM_USAGE_CUSTOM_TYPE = "cache_warm_usage";
+
+const CACHE_WARM_USAGE_VERSION = 1;
+
+export interface CacheWarmUsageEntryData {
+	version: typeof CACHE_WARM_USAGE_VERSION;
+	/** `cache-warm`, or `cache-warm:extension-override` when an extension forced the refresh. */
+	purpose: string;
+	api: string;
+	provider: string;
+	model: string;
+	usage: Usage;
+	stopReason: string;
+	/**
+	 * Set when the refresh answered for the conversation as it stood: when it was sent (a hit restarts
+	 * the cache lifetime then) and whether it read the cache. Absent on a failed, replaced or outdated one.
+	 */
+	cacheRefresh?: { sentAt: number; hit: boolean };
+}
+
+export function buildCacheWarmUsageEntryData(args: {
+	purpose: string;
+	api: string;
+	provider: string;
+	model: string;
+	usage: Usage;
+	stopReason: string;
+	cacheRefresh?: { sentAt: number; hit: boolean };
+}): CacheWarmUsageEntryData {
+	return {
+		version: CACHE_WARM_USAGE_VERSION,
+		purpose: args.purpose,
+		api: args.api,
+		provider: args.provider,
+		model: args.model,
+		usage: args.usage,
+		stopReason: args.stopReason,
+		...(args.cacheRefresh ? { cacheRefresh: args.cacheRefresh } : {}),
+	};
+}
+
+export function parseCacheWarmUsageEntry(data: unknown): CacheWarmUsageEntryData | undefined {
+	if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+	const record = data as Record<string, unknown>;
+	if (record.version !== CACHE_WARM_USAGE_VERSION) return undefined;
+	if (typeof record.purpose !== "string" || !record.purpose) return undefined;
+	const usage = record.usage;
+	if (typeof usage !== "object" || usage === null || Array.isArray(usage)) return undefined;
+	const parsedUsage = usage as Usage;
+	if (typeof parsedUsage.cost?.total !== "number") return undefined;
+	const refresh = record.cacheRefresh;
+	const cacheRefresh =
+		typeof refresh === "object" &&
+		refresh !== null &&
+		!Array.isArray(refresh) &&
+		typeof (refresh as { sentAt?: unknown }).sentAt === "number" &&
+		typeof (refresh as { hit?: unknown }).hit === "boolean"
+			? { sentAt: (refresh as { sentAt: number }).sentAt, hit: (refresh as { hit: boolean }).hit }
+			: undefined;
+	return {
+		version: CACHE_WARM_USAGE_VERSION,
+		purpose: record.purpose,
+		api: typeof record.api === "string" ? record.api : "",
+		provider: typeof record.provider === "string" ? record.provider : "",
+		model: typeof record.model === "string" ? record.model : "",
+		usage: parsedUsage,
+		stopReason: typeof record.stopReason === "string" ? record.stopReason : "",
+		...(cacheRefresh ? { cacheRefresh } : {}),
+	};
+}
+
 export function parseSubagentUsageEntry(data: unknown): SubagentUsageEntryData | undefined {
 	if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
 	const record = data as Record<string, unknown>;

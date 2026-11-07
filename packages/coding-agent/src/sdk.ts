@@ -155,6 +155,7 @@ import {
 import { AgentSession, type InitialRetryFallbackState, type Prewalk } from "./session/agent-session";
 import { discoverAuthStorage } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
+import { CacheWarmer } from "./session/cache-warmer";
 import { formatCredentialDisabledNotice } from "./session/credential-disabled-notice";
 import { createSessionDateCwdReminderJournal, DateCwdReminderInjector } from "./session/date-cwd-reminder";
 import { createInterruptedToolResults, createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
@@ -2973,6 +2974,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			wrapStreamFnWithProviderConcurrency(settings, createSettingsAwareStreamFn(settings)),
 			blobBroker,
 		);
+		// Prompt-cache warmer for the main agent loop only: replays the last
+		// request through the same primary wrapper just before the entry would
+		// expire, so idle gaps do not force a full-prefix cache re-write.
+		const cacheWarmer: CacheWarmer | undefined =
+			agentKind === "main"
+				? new CacheWarmer({
+						stream: (warmModel, context, streamOptions) =>
+							(options.streamFn ?? settingsAwareStreamFn)(warmModel, context, streamOptions),
+						getPromptTokens: () => session.lastPromptTokens(),
+						getMode: () => settings.get("providers.cacheWarming"),
+					})
+				: undefined;
 		const transformToolCallArguments = (args: Record<string, unknown>): Record<string, unknown> => {
 			let result = args;
 			const maxTimeout = settings.get("tools.maxTimeout");
@@ -3036,10 +3049,21 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					settings.get("externalThinking") &&
 					agent.state.tools.some(tool => tool.name === "think") &&
 					supportsExternalThinking(streamModel);
-				return (options.streamFn ?? settingsAwareStreamFn)(streamModel, context, {
+				const onPayload = streamOptions?.onPayload;
+				const merged: SimpleStreamOptions = {
 					...streamOptions,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
-				});
+					onPayload: (payload, payloadModel, signal) => {
+						session.markPromptCacheDispatched(context);
+						return onPayload?.(payload, payloadModel, signal);
+					},
+				};
+				const stream = (options.streamFn ?? settingsAwareStreamFn)(streamModel, context, merged);
+				// Every request through this streamFn is this session's own main
+				// loop (side-channel, advisor, and maintenance requests use
+				// dedicated wrappers), so it owns the warmer.
+				session.startCacheWarming(streamModel, context, merged);
+				return stream;
 			},
 			cursorExecHandlers,
 			getCursorTools: () => (toolSession.xdev ? listXdevTools(toolSession.xdev) : []),
@@ -3168,6 +3192,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agent,
 			thinkingLevel: effectiveThinkingLevel,
 			thinkingLevelCeiling: options.thinkingLevelCeiling,
+			cacheWarmer,
 			initialRetryFallback,
 			prewalk: options.prewalk,
 			awaitingAssignment: options.awaitingAssignment,

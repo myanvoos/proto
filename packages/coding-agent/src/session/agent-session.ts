@@ -26,6 +26,7 @@ import {
 	type ThinkingLevel,
 	type Tokenizer,
 	type ToolChoiceDirective,
+	wireToolsFingerprint,
 } from "@oh-my-pi/pi-agent-core";
 import {
 	type CompactionPreparation,
@@ -39,6 +40,7 @@ import {
 import type {
 	AssistantMessage,
 	CodexCompactionContext,
+	Context,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -64,6 +66,7 @@ import { type Effort, streamSimple } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { resetOpenAICodexHistoryAfterCompaction } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { promptCacheLifetimeSeconds } from "@oh-my-pi/pi-catalog/compat/prompt-cache-lifetimes";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { MacOSPowerAssertion } from "@oh-my-pi/pi-natives";
@@ -215,6 +218,16 @@ import {
 } from "./async-job-delivery";
 import { BashRunner, type BashRunnerHost } from "./bash-runner";
 import {
+	type CacheRefreshOutcome,
+	type CacheWarmer,
+	type CacheWarmingStatus,
+	observedPromptCacheTier,
+	type PromptCacheChange,
+	type PromptCacheEntry,
+	promptTokensOf,
+	resolvePromptCacheTier,
+} from "./cache-warmer";
+import {
 	checkpointStartedAtFromEntry,
 	completedRewindFromEntry,
 	isSuccessfulCheckpointEntry,
@@ -291,6 +304,7 @@ import {
 import { ModelControls, type ModelControlsHost } from "./model-controls";
 import { buildMonitorEventBatchMessage, MONITOR_EVENT_MESSAGE_TYPE } from "./monitor-event";
 import { isPrewalkPlanNudge, PrewalkCoordinator, type PrewalkCoordinatorHost } from "./prewalk";
+import { type ObservedPromptCacheEntry, type PromptCacheStatus, promptCacheStatus } from "./prompt-cache-status";
 import {
 	isAdvisorCard,
 	isDisplayableQueuedMessage,
@@ -305,7 +319,14 @@ import type { ServingModel } from "./retry-fallback-chains";
 import { type AdvisorStats, SessionAdvisors, type SessionAdvisorsHost } from "./session-advisors";
 import type { SessionContext, TranscriptSessionContextOptions } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
-import type { BranchSummaryEntry, NewSessionOptions, SessionEntry } from "./session-entries";
+import {
+	type BranchSummaryEntry,
+	buildCacheWarmUsageEntryData,
+	CACHE_WARM_USAGE_CUSTOM_TYPE,
+	type NewSessionOptions,
+	parseCacheWarmUsageEntry,
+	type SessionEntry,
+} from "./session-entries";
 import { createSessionLiveHeartbeat, type SessionLiveHeartbeat } from "./session-liveness";
 import {
 	COMPACTION_CHECK_NONE,
@@ -531,6 +552,116 @@ class IncrementalMessageTokenCounter {
 
 class PromptPreflightError extends Error {}
 
+/** Request inputs outside the transcript that are part of the prompt cache key. */
+interface PromptCacheShape {
+	/** `provider/id`. */
+	model: string;
+	modelName: string;
+	thinkingLevel: ThinkingLevel | undefined;
+	tools: string;
+	systemPrompt: number | bigint;
+	retention: string;
+	/** OpenAI `prompt_cache_key` the request routes by; undefined for a provider that sends none. */
+	cacheKey: string | undefined;
+}
+
+/**
+ * Whether `model`'s requests carry the OpenAI prompt-cache key (the provider session id when no key is
+ * pinned), which routes them to their cache: another key reads none of the old entry.
+ */
+function sendsPromptCacheKey(model: Model): boolean {
+	switch (model.api) {
+		case "openai-responses":
+		case "openai-codex-responses":
+		case "azure-openai-responses":
+			return true;
+		case "openai-completions":
+			return model.compat !== undefined && "promptCacheBreakpointTtl" in model.compat;
+		default:
+			return false;
+	}
+}
+
+/** What a branch says about the prompt cache its newest cached reply left. */
+interface BranchPromptCacheObservation {
+	reply: AssistantMessage;
+	/** Send time of the latest warm refresh after the reply that left the entry cached; 0 without one. */
+	warmedAt: number;
+	/** The latest warm refresh after the reply neither read nor wrote the cache. */
+	refreshMissed: boolean;
+	/** A compaction follows the reply. */
+	compacted: boolean;
+	/** Base prompt blocks the reply was produced under; undefined when none are recorded. */
+	promptBlocks: readonly string[] | undefined;
+}
+
+/**
+ * A branch view folded up to `scanned`. The session manager extends its
+ * memoized view in place on append and hands out a new array otherwise, so a
+ * later read of the same array folds only the appended entries.
+ */
+interface BranchPromptCacheScan {
+	branch: readonly SessionEntry[];
+	scanned: number;
+	/** Newest system prompt blocks recorded in the scanned entries. */
+	promptBlocks: readonly string[] | undefined;
+	observation: BranchPromptCacheObservation | undefined;
+}
+
+/** Custom entry recording the base prompt blocks a branch's primary model calls are built from. */
+const SYSTEM_PROMPT_BLOCKS_CUSTOM_TYPE = "system-prompt";
+
+/** Folds `scan.branch`'s unscanned entries into what the newest reply that read or wrote the prompt cache left. */
+function scanBranchPromptCache(scan: BranchPromptCacheScan, sessionManager: SessionManager): void {
+	const { branch } = scan;
+	for (let index = scan.scanned; index < branch.length; index++) {
+		const entry = branch[index]!;
+		if (entry.type === "custom" && entry.customType === SYSTEM_PROMPT_BLOCKS_CUSTOM_TYPE) {
+			const hydrated = sessionManager.getEntry(entry.id);
+			const data = hydrated?.type === "custom" ? hydrated.data : undefined;
+			scan.promptBlocks = Array.isArray(data) && data.every(block => typeof block === "string") ? data : undefined;
+			continue;
+		}
+		const observation = scan.observation;
+		if (entry.type === "compaction") {
+			if (observation) observation.compacted = true;
+			continue;
+		}
+		// `/clear` starts a new transcript: nothing before the boundary is a prefix of the next request.
+		if (entry.type === "reset_boundary") {
+			scan.observation = undefined;
+			continue;
+		}
+		// Failed, replaced and outdated refreshes carry no outcome: they say nothing about this entry.
+		if (entry.type === "custom" && entry.customType === CACHE_WARM_USAGE_CUSTOM_TYPE) {
+			if (!observation) continue;
+			const warmUsage = parseCacheWarmUsageEntry(entry.data);
+			const refresh = warmUsage?.cacheRefresh;
+			if (!refresh || !warmUsage) continue;
+			// A refresh that wrote the prefix again left it cached from its send, as a hit does.
+			const cached = refresh.hit || warmUsage.usage.cacheWrite > 0;
+			observation.warmedAt = cached ? refresh.sentAt : 0;
+			observation.refreshMissed = !cached;
+			continue;
+		}
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		const reply = entry.message;
+		if (reply.stopReason === "error" || reply.usage.cacheRead + reply.usage.cacheWrite <= 0) continue;
+		scan.observation = {
+			reply,
+			warmedAt: 0,
+			refreshMissed: false,
+			compacted: false,
+			promptBlocks: scan.promptBlocks,
+		};
+	}
+	scan.scanned = branch.length;
+}
+
+function samePromptBlocks(left: readonly string[], right: readonly string[]): boolean {
+	return left.length === right.length && left.every((block, index) => block === right[index]);
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -664,6 +795,24 @@ export class AgentSession {
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#inheritedProviderPromptCacheKey: string | undefined;
+	readonly #cacheWarmer: CacheWarmer | undefined;
+	/** Transcript the warmer's armed entry belongs to; another transcript's entry says nothing about this one. */
+	#promptCacheArmSessionId: string | undefined;
+	/** Dispatch hook per armed request context: starts the entry's lifetime when the provider sends it. */
+	readonly #promptCacheDispatch = new WeakMap<Context, () => void>();
+	/** {@link #promptCacheShape} for the inputs it was last built from. */
+	#promptCacheShapeMemo:
+		| {
+				model: Model | undefined;
+				tools: unknown;
+				systemPrompt: readonly string[];
+				intentTracing: boolean;
+				pruneToolDescriptions: boolean;
+				shape: PromptCacheShape;
+		  }
+		| undefined;
+	/** {@link #branchPromptCacheObservation}'s fold of the current branch view. */
+	#branchPromptCacheScan: BranchPromptCacheScan | undefined;
 	#autolearnCaptureAbortController: AbortController | undefined;
 	#autolearnCaptureTask: Promise<void> | undefined;
 	#liveHeartbeat: SessionLiveHeartbeat | undefined;
@@ -1512,6 +1661,17 @@ export class AgentSession {
 		this.#providerSessionId = config.providerSessionId;
 		this.#inheritedProviderPromptCacheKey =
 			config.providerPromptCacheKeySource === "fork" ? this.agent.promptCacheKey : undefined;
+		this.#cacheWarmer = config.cacheWarmer;
+		if (config.cacheWarmer) {
+			const warmer = config.cacheWarmer;
+			warmer.onWarmed = (message, extensionOverride, refresh) =>
+				this.#recordCacheWarmUsage(message, extensionOverride, refresh);
+			warmer.onRefreshStart = refresh => void this.#emitSessionEvent({ type: "cache_warming_start", ...refresh });
+			warmer.onRefreshEnd = refresh => void this.#emitSessionEvent({ type: "cache_warming_end", ...refresh });
+			this.subscribeRunState(state => {
+				if (state === "idle") warmer.onAgentSettled();
+			});
+		}
 
 		this.#registerAsyncDeliverySink();
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
@@ -2487,6 +2647,7 @@ export class AgentSession {
 					this.#advanceDeferredTitle();
 				}
 			}
+			this.#cacheWarmer?.onResponse(event.message);
 		}
 		if (
 			event.type === "message_end" &&
@@ -3767,6 +3928,12 @@ export class AgentSession {
 
 	beginDispose(disposition: "runtime-release" | "tree-close" = "tree-close"): void {
 		this.#isDisposed = true;
+		if (this.#cacheWarmer) {
+			this.#cacheWarmer.onWarmed = undefined;
+			this.#cacheWarmer.onRefreshStart = undefined;
+			this.#cacheWarmer.onRefreshEnd = undefined;
+			this.#cacheWarmer.cancel();
+		}
 		for (const dispose of this.#disposers) {
 			try {
 				dispose();
@@ -4056,6 +4223,8 @@ export class AgentSession {
 		this.#advisors.resetSessionState();
 
 		this.sessionManager.appendResetBoundary();
+		// The reset boundary ends this branch's cached-reply observation: nothing before it is a prefix of the next request.
+		this.#cacheWarmer?.cancel();
 
 		resetCapabilities();
 		await this.refreshBaseSystemPrompt();
@@ -4412,6 +4581,10 @@ export class AgentSession {
 		// A pending async wake means the session is waiting, not idle: the backgrounded job re-wakes the loop and its
 		// result continues the run, which must keep its context. The threshold path still compacts if needed.
 		if (this.#hasPendingAsyncWake()) return;
+		// The compaction request reads the warm prefix itself and then rewrites
+		// history; a warm replay racing a slow summary would be paid for nothing.
+		// A streaming session owns a live run whose warming must survive.
+		if (!this.isStreaming && !this.isCompacting) this.#cacheWarmer?.cancel();
 		await this.#maintenance.runIdleCompaction();
 	}
 
@@ -8167,6 +8340,277 @@ export class AgentSession {
 
 	getContextUsage(options?: { contextWindow?: number }): ContextUsage | undefined {
 		return this.#stats.getContextUsage(options);
+	}
+
+	/**
+	 * Current prompt-cache warming state, for hosts that surface it. Undefined
+	 * when the session has no warmer (side-channels, subagents, older hosts).
+	 */
+	get cacheWarmingStatus(): CacheWarmingStatus | undefined {
+		return this.#cacheWarmer?.status;
+	}
+
+	/**
+	 * Prompt cache entry the latest main-loop request wrote, while the
+	 * conversation still matches it. Undefined when the session has no warmer
+	 * or the model declares no cache lifetime.
+	 */
+	get promptCacheEntry(): PromptCacheEntry | undefined {
+		return this.#cacheWarmer?.cacheEntry;
+	}
+
+	/**
+	 * Arms the prompt-cache warmer for a main-loop request. Called from the
+	 * session streamFn with its raw request options; retention settings are
+	 * resolved here to match the settings-aware stream wrapper.
+	 * {@link markPromptCacheDispatched} starts the armed entry's lifetime once the request is sent.
+	 */
+	startCacheWarming(model: Model, context: Context, options: SimpleStreamOptions): void {
+		const warmer = this.#cacheWarmer;
+		if (!warmer) return;
+		// The warmer keeps its confirmed entry across requests until a response
+		// replaces it; another transcript's entry says nothing about this one.
+		if (this.#promptCacheArmSessionId !== this.sessionManager.getSessionId()) warmer.cancel();
+		// A copy: `/clear` truncates the live array in place, which an alias would follow.
+		const armMessages = this.messages.slice();
+		const armedAt = Date.now();
+		const retentionSetting = this.settings.get("providers.cacheRetention");
+		const warmingOptions = {
+			...options,
+			cacheRetention: options.cacheRetention ?? (retentionSetting === "auto" ? undefined : retentionSetting),
+		};
+		const armShape = this.#promptCacheShape(model);
+		this.#promptCacheArmSessionId = this.sessionManager.getSessionId();
+		const dispatched = warmer.start({ model, context, options: warmingOptions }, () =>
+			this.#promptCacheChange(armShape, armMessages, armedAt),
+		);
+		this.#promptCacheDispatch.set(context, dispatched);
+	}
+
+	/**
+	 * Starts the prompt cache entry's lifetime for the request armed with `context` (see
+	 * {@link CacheWarmer.start}). The session streamFn calls it from `onPayload`, as the provider
+	 * sends the request, past any wait for an in-flight slot.
+	 */
+	markPromptCacheDispatched(context: Context): void {
+		this.#promptCacheDispatch.get(context)?.();
+	}
+
+	/**
+	 * What the next request would send differently from the one armed with
+	 * `arm` and `armMessages`; undefined while it would read the same prefix.
+	 * Replaying the old shape would keep an entry nobody reads.
+	 */
+	#promptCacheChange(
+		arm: PromptCacheShape,
+		armMessages: readonly AgentMessage[],
+		armedAt: number,
+	): PromptCacheChange | undefined {
+		const next = this.#promptCacheShape(this.model);
+		if (next.model !== arm.model) return { kind: "model", from: arm.modelName, to: next.modelName };
+		if (next.thinkingLevel !== arm.thinkingLevel) {
+			return { kind: "thinking", from: arm.thinkingLevel ?? "off", to: next.thinkingLevel ?? "off" };
+		}
+		if (next.tools !== arm.tools) return { kind: "tools" };
+		if (next.systemPrompt !== arm.systemPrompt) return { kind: "system-prompt" };
+		if (next.retention !== arm.retention) return { kind: "retention" };
+		if (next.cacheKey !== arm.cacheKey) return { kind: "cache-key" };
+		// The armed request must still be a prefix of the live messages by
+		// entry identity: appends are fine (tool results mid-run), but a
+		// rewrite, shallow array copy with new objects, compaction, branch,
+		// or session switch invalidates the cache key.
+		const current = this.messages;
+		const kept =
+			current.length >= armMessages.length && armMessages.every((message, index) => current[index] === message);
+		if (kept) return undefined;
+		return { kind: this.#compactedSince(armedAt) ? "compaction" : "history" };
+	}
+
+	/** Whether the branch gained a compaction at or after `sinceMs`. */
+	#compactedSince(sinceMs: number): boolean {
+		const branch = this.sessionManager.getBranchForStats();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index]!;
+			if (Date.parse(entry.timestamp) < sinceMs) return false;
+			if (entry.type === "compaction") return true;
+		}
+		return false;
+	}
+
+	/** The request inputs outside the transcript that are part of the cache key; rebuilt only when one of them is replaced. */
+	#promptCacheShape(model: Model | undefined): PromptCacheShape {
+		const { tools, systemPrompt } = this.agent.state;
+		const thinkingLevel = this.thinkingLevel;
+		const retention = this.settings.get("providers.cacheRetention");
+		const cacheKey =
+			model !== undefined && sendsPromptCacheKey(model)
+				? (this.agent.promptCacheKey ?? this.agent.sessionId)
+				: undefined;
+		const intentTracing = this.agent.intentTracing;
+		const pruneToolDescriptions = this.agent.prunesToolDescriptions(model);
+		const memo = this.#promptCacheShapeMemo;
+		if (
+			memo !== undefined &&
+			memo.model === model &&
+			memo.tools === tools &&
+			memo.systemPrompt === systemPrompt &&
+			memo.intentTracing === intentTracing &&
+			memo.pruneToolDescriptions === pruneToolDescriptions &&
+			memo.shape.thinkingLevel === thinkingLevel &&
+			memo.shape.retention === retention &&
+			memo.shape.cacheKey === cacheKey
+		) {
+			return memo.shape;
+		}
+		const shape: PromptCacheShape = {
+			model: model ? `${model.provider}/${model.id}` : "",
+			modelName: model?.name ?? "no model",
+			thinkingLevel,
+			// The specs as the wire carries them: a refreshed MCP tool keeps its name.
+			tools: wireToolsFingerprint(tools, { intentTracing, pruneToolDescriptions }),
+			systemPrompt: Bun.hash(JSON.stringify(systemPrompt)),
+			retention,
+			cacheKey,
+		};
+		this.#promptCacheShapeMemo = { model, tools, systemPrompt, intentTracing, pruneToolDescriptions, shape };
+		return shape;
+	}
+
+	/**
+	 * What the next request finds in the prompt cache at `nowMs`. Undefined
+	 * without a warmer (side sessions), a reply that used the cache, or a
+	 * declared lifetime for the entry's tier on a provider that expires entries.
+	 * `nextTokens` is the next request's context size when the caller already
+	 * counted it (the status line); otherwise it is counted here.
+	 */
+	getPromptCacheStatus(nowMs = Date.now(), nextTokens?: number): PromptCacheStatus | undefined {
+		const warmer = this.#cacheWarmer;
+		if (!warmer) return undefined;
+		const confirmed =
+			this.#promptCacheArmSessionId === this.sessionManager.getSessionId() ? warmer.confirmedEntry : undefined;
+		const change = confirmed?.change;
+		// A replaced transcript (rewind, branch switch, reload) no longer extends the
+		// armed request; the branch now on screen says what its own replies cached.
+		const live = confirmed !== undefined && change?.kind !== "history";
+		const entry: ObservedPromptCacheEntry | undefined = live
+			? { ...confirmed, change, inferred: false }
+			: this.#inferredPromptCacheEntry();
+		if (!entry) return undefined;
+		return promptCacheStatus(entry, {
+			nowMs,
+			warming: live ? warmer.status : undefined,
+			nextTokens: nextTokens ?? this.getContextUsage()?.tokens ?? 0,
+		});
+	}
+
+	/**
+	 * The entry the branch's newest cached reply left, for a transcript this
+	 * process has not sent yet (a reopened or switched session): touched at the
+	 * reply's send time or a later warm refresh that hit, under the lifetime its
+	 * model declares for the tier the reply wrote. Thinking level, tools and
+	 * credential at the time are unknown; model, compaction and the recorded
+	 * system prompt blocks for that reply are not.
+	 */
+	#inferredPromptCacheEntry(): ObservedPromptCacheEntry | undefined {
+		const observed = this.#branchPromptCacheObservation();
+		if (!observed) return undefined;
+		const { reply } = observed;
+		// A server-side fallback retags the reply with the served model; the cache entry is the requested one's.
+		const fallback = reply.content.find(block => block.type === "fallback");
+		const model = this.#modelRegistry.find(
+			reply.provider,
+			fallback?.type === "fallback" ? fallback.from.model : reply.model,
+		);
+		if (!model) return undefined;
+		const retention = this.settings.get("providers.cacheRetention");
+		const isOAuth = model.api === "anthropic-messages" && this.#modelRegistry.isUsingOAuth(model);
+		const requestedTier = resolvePromptCacheTier(
+			model,
+			{ cacheRetention: retention === "auto" ? undefined : retention },
+			isOAuth,
+		);
+		// A reply that used the cache wrote some tier even when the next request asks for none; a provider
+		// that reports no split (Codex) wrote the default one.
+		const tier =
+			observedPromptCacheTier(reply.usage) ?? requestedTier ?? resolvePromptCacheTier(model, undefined, isOAuth);
+		if (tier === undefined) return undefined;
+		const seconds = promptCacheLifetimeSeconds(model, tier);
+		const current = this.model;
+		let change: ObservedPromptCacheEntry["change"];
+		if (current?.provider !== model.provider || current.id !== model.id) {
+			change = { kind: "model", from: model.name, to: current?.name ?? "no model" };
+		} else if (requestedTier !== tier) {
+			// The next request asks for another tier, or for no caching at all.
+			change = { kind: "retention" };
+		} else if (observed.compacted) {
+			change = { kind: "compaction" };
+		} else if (observed.promptBlocks !== undefined) {
+			const recorded = this.#tools.recordedPromptBlocks();
+			if (recorded !== undefined && !samePromptBlocks(observed.promptBlocks, recorded)) {
+				change = { kind: "system-prompt" };
+			}
+		}
+		return {
+			model,
+			tier,
+			touchedAt: Math.max(reply.timestamp, observed.warmedAt),
+			ttlMs: seconds === undefined ? undefined : seconds * 1000,
+			change,
+			refreshMissed: observed.refreshMissed,
+			promptTokens: promptTokensOf(reply.usage),
+			inferred: true,
+		};
+	}
+
+	/**
+	 * The branch's newest reply that used the prompt cache, with what followed it
+	 * (the latest warm refresh, a compaction) and the system prompt blocks
+	 * recorded before it. Each entry is folded once per branch view.
+	 */
+	#branchPromptCacheObservation(): BranchPromptCacheObservation | undefined {
+		const branch = this.sessionManager.getBranchForStats();
+		let scan = this.#branchPromptCacheScan;
+		if (scan?.branch !== branch) {
+			scan = { branch, scanned: 0, promptBlocks: undefined, observation: undefined };
+			this.#branchPromptCacheScan = scan;
+		}
+		if (scan.scanned < branch.length) scanBranchPromptCache(scan, this.sessionManager);
+		return scan.observation;
+	}
+
+	/** Prompt size (input + cacheRead + cacheWrite) of the most recent real provider response. */
+	lastPromptTokens(): number {
+		const messages = this.messages;
+		for (let index = messages.length - 1; index >= 0; index--) {
+			const message = messages[index];
+			if (message.role === "assistant")
+				return message.usage.input + message.usage.cacheRead + message.usage.cacheWrite;
+		}
+		return 0;
+	}
+
+	/** Persist a completed warm request as off-transcript usage so session totals include its cost. */
+	#recordCacheWarmUsage(
+		message: AssistantMessage,
+		extensionOverride: boolean,
+		refresh: CacheRefreshOutcome | undefined,
+	): void {
+		try {
+			this.sessionManager.appendCustomEntry(
+				CACHE_WARM_USAGE_CUSTOM_TYPE,
+				buildCacheWarmUsageEntryData({
+					purpose: extensionOverride ? "cache-warm:extension-override" : "cache-warm",
+					api: message.api,
+					provider: message.provider,
+					model: message.model,
+					usage: message.usage,
+					stopReason: message.stopReason,
+					...(refresh ? { cacheRefresh: refresh } : {}),
+				}),
+			);
+		} catch (error) {
+			logger.debug("Failed to persist cache-warm usage", { error: String(error) });
+		}
 	}
 
 	get contextUsageRevision(): number {

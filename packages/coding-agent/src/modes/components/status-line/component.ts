@@ -14,6 +14,7 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
+import type { PromptCacheStatus } from "../../../session/prompt-cache-status";
 import { emptyUsageStatistics } from "../../../session/session-entries";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
 import { type ActiveRepoContext, resolveActiveRepoContextSync } from "../../../utils/active-repo-context";
@@ -344,6 +345,9 @@ export class StatusLineComponent implements Component {
 	#pricingTimer: Timer | undefined;
 	#pricingTimerCost: ModelCost | undefined;
 	#pricingTransition: number | undefined;
+	/** One wall-clock wakeup when the warm prompt-cache entry expires, so the chip turns cold without ticking. */
+	#promptCacheTimer: Timer | undefined;
+	#promptCacheExpiry: number | undefined;
 
 	#cachedServingAccount: {
 		key: string;
@@ -542,6 +546,7 @@ export class StatusLineComponent implements Component {
 		this.#onBranchChange = null;
 		this.#clearUsageStartTimer();
 		this.#stopPricingTimer();
+		this.#stopPromptCacheTimer();
 		if (this.#gitWatcher) {
 			this.#gitWatcher.close();
 			this.#gitWatcher = null;
@@ -553,6 +558,37 @@ export class StatusLineComponent implements Component {
 		this.#pricingTimer = undefined;
 		this.#pricingTimerCost = undefined;
 		this.#pricingTransition = undefined;
+	}
+
+	#stopPromptCacheTimer(): void {
+		clearTimeout(this.#promptCacheTimer);
+		this.#promptCacheTimer = undefined;
+		this.#promptCacheExpiry = undefined;
+	}
+
+	/**
+	 * One wakeup at the moment the warm prompt cache the bar shows lapses, so the
+	 * chip turns cold without a ticking repaint. Synced wherever the chip's status
+	 * is computed; a warm refresh moves the expiry and re-arms it on the next build.
+	 */
+	#syncPromptCacheTimer(status: PromptCacheStatus | undefined, now: number): void {
+		const expiry =
+			status?.state === "warm" && status.ttlMs !== undefined ? status.touchedAt + status.ttlMs : undefined;
+		if (this.#disposed || !this.#onBranchChange || expiry === undefined || expiry <= now) {
+			this.#stopPromptCacheTimer();
+			return;
+		}
+		if (this.#promptCacheExpiry === expiry) return;
+		this.#stopPromptCacheTimer();
+		this.#promptCacheExpiry = expiry;
+		const timer = setTimeout(() => {
+			if (this.#disposed || this.#promptCacheTimer !== timer) return;
+			this.#stopPromptCacheTimer();
+			this.invalidate();
+			this.#onBranchChange?.();
+		}, expiry - now);
+		timer.unref();
+		this.#promptCacheTimer = timer;
 	}
 
 	/** Repaint the cost segment's peak/off-peak arrow when the active model's tariff flips. */
@@ -1132,6 +1168,11 @@ export class StatusLineComponent implements Component {
 		const gitBranch = includeGit || includePr ? this.#getCurrentBranch(activeRepoCache.effectiveGitCwd) : null;
 		const gitStatus = includeGit ? this.#getGitStatus(activeRepoCache.effectiveGitCwd) : null;
 		const gitPr = includePr ? this.#lookupPr(activeRepoCache.effectiveGitCwd) : null;
+		const nowMs = Date.now();
+		const promptCache = this.#cacheSegmentVisible()
+			? this.session.getPromptCacheStatus(nowMs, this.getCachedContextBreakdown().usedTokens ?? undefined)
+			: undefined;
+		this.#syncPromptCacheTimer(promptCache, nowMs);
 		return {
 			session: this.session,
 			focusedAgentId: this.#focusedAgentId,
@@ -1160,6 +1201,7 @@ export class StatusLineComponent implements Component {
 			},
 			worktree: activeRepoCache.worktree,
 			account: this.#servingAccount(this.session),
+			promptCache,
 			usage: this.#cachedUsage,
 		};
 	}
@@ -1169,6 +1211,12 @@ export class StatusLineComponent implements Component {
 			this.#effectiveSettings = this.#computeEffectiveSettings();
 		}
 		return this.#effectiveSettings;
+	}
+
+	/** Whether the `cache` chip is configured; computing its status costs a branch scan otherwise. */
+	#cacheSegmentVisible(): boolean {
+		const { leftSegments, rightSegments } = this.#resolveSettings();
+		return leftSegments.includes("cache") || rightSegments.includes("cache");
 	}
 
 	#computeEffectiveSettings(): EffectiveStatusLineSettings {

@@ -5,6 +5,7 @@ import { getTimeBasedPricingPeriod } from "@oh-my-pi/pi-catalog/models";
 import { TERMINAL, truncateStartToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { PRIORITY_TIER_LABEL } from "../../../config/service-tier";
+import type { PromptCacheStatus } from "../../../session/prompt-cache-status";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { sanitizeStatusText } from "../../shared";
 import { withIcon } from "../../theme/icon-label";
@@ -571,6 +572,26 @@ const cacheHitSegment: StatusLineSegment = {
 	},
 };
 
+/**
+ * Chip icon and word: the cache icon while cached, its struck-through variant
+ * in the warning colour once the next message re-sends the prefix.
+ */
+function promptCacheChip(status: PromptCacheStatus): { text: string; color: ThemeColor } {
+	const warm = status.state === "warm";
+	const icon = warm ? theme.icon.cache : theme.icon.cacheMiss;
+	return { text: withIcon(icon, warm ? "cached" : "not cached"), color: warm ? "muted" : "warning" };
+}
+
+const cacheSegment: StatusLineSegment = {
+	id: "cache",
+	render(ctx) {
+		const status = ctx.promptCache;
+		if (!status) return { content: "", visible: false };
+		const chip = promptCacheChip(status);
+		return { content: theme.fg(chip.color, chip.text), visible: true };
+	},
+};
+
 const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
@@ -680,6 +701,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	cache_read: cacheReadSegment,
 	cache_write: cacheWriteSegment,
 	cache_hit: cacheHitSegment,
+	cache: cacheSegment,
 	session_name: sessionNameSegment,
 	usage: usageSegment,
 };

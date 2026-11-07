@@ -155,6 +155,7 @@ export const STATUS_LINE_SEGMENT_IDS = [
 	"cache_read",
 	"cache_write",
 	"cache_hit",
+	"cache",
 	"session_name",
 	"usage",
 ] as const;
@@ -729,7 +730,7 @@ export const SETTINGS_SCHEMA = {
 
 	"statusLine.leftSegments": {
 		type: "array",
-		default: ["model", "account", "mode", "path", "git", "context_pct", "cost"] as StatusLineSegmentId[],
+		default: ["model", "account", "mode", "path", "git", "context_pct", "cache", "cost"] as StatusLineSegmentId[],
 	},
 
 	"statusLine.rightSegments": { type: "array", default: ["session_name"] as StatusLineSegmentId[] },
@@ -3894,6 +3895,33 @@ export const SETTINGS_SCHEMA = {
 					description: "1h TTL where the provider supports it; pricier writes, no keep-alive refresh requests",
 				},
 				{ value: "none", label: "Off", description: "Disable prompt caching and cache-affinity routing" },
+			],
+		},
+	},
+
+	"providers.cacheWarming": {
+		type: "enum",
+		values: ["off", "streaming", "idle"] as const,
+		default: "idle",
+		ui: {
+			tab: "providers",
+			group: "Protocol",
+			label: "Cache Warming",
+			description:
+				"Re-send the last request with a one-token output budget shortly before its prompt-cache entry expires",
+			options: [
+				{ value: "off", label: "Off", description: "Disable cache warming" },
+				{
+					value: "streaming",
+					label: "Streaming",
+					description: "Protect expensive prefixes during long tool executions; stops when the agent settles",
+				},
+				{
+					value: "idle",
+					label: "Idle",
+					description:
+						"Also refresh 5-minute entries between runs while the expected savings stay above the cost floor",
+				},
 			],
 		},
 	},

@@ -52,6 +52,7 @@ import { type BuildSessionContextOptions, buildSessionContext, type SessionConte
 import {
 	type BranchSummaryEntry,
 	buildSubagentUsageEntryData,
+	CACHE_WARM_USAGE_CUSTOM_TYPE,
 	type CompactionEntry,
 	type CredentialPinEntry,
 	CURRENT_SESSION_VERSION,
@@ -64,6 +65,7 @@ import {
 	type ModeChangeEntry,
 	type ModelChangeEntry,
 	type NewSessionOptions,
+	parseCacheWarmUsageEntry,
 	parseSubagentUsageEntry,
 	type ResetBoundaryEntry,
 	resolveSessionLeafId,
@@ -475,6 +477,10 @@ class SessionEntryIndex {
 		if (entry.type === "custom" && entry.customType === SUBAGENT_USAGE_CUSTOM_TYPE) {
 			const subagentUsage = parseSubagentUsageEntry(entry.data);
 			if (subagentUsage) addSubagentUsage(this.#usage, subagentUsage, this.#subagentIds);
+		}
+		if (entry.type === "custom" && entry.customType === CACHE_WARM_USAGE_CUSTOM_TYPE) {
+			const warmUsage = parseCacheWarmUsageEntry(entry.data);
+			if (warmUsage) addUsage(this.#usage, warmUsage.usage);
 		}
 	}
 
@@ -3607,6 +3613,13 @@ export class SessionManager {
 				if (entry.type === "custom" && entry.customType === SUBAGENT_USAGE_CUSTOM_TYPE) {
 					const usage = parseSubagentUsageEntry(entry.data);
 					if (usage) entry.data = { ...usage, cost: 0, premiumRequests: 0 };
+				}
+				if (entry.type === "custom" && entry.customType === CACHE_WARM_USAGE_CUSTOM_TYPE) {
+					const warmUsage = parseCacheWarmUsageEntry(entry.data);
+					if (warmUsage) {
+						resetUsageCost(warmUsage.usage);
+						entry.data = { ...warmUsage, usage: { ...warmUsage.usage, premiumRequests: undefined } };
+					}
 				}
 			}
 		}

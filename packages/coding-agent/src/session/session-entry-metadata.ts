@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { materializeString } from "@oh-my-pi/pi-utils";
 import type { SessionEntry } from "./session-entries";
-import { SUBAGENT_USAGE_CUSTOM_TYPE } from "./session-entries";
+import { CACHE_WARM_USAGE_CUSTOM_TYPE, SUBAGENT_USAGE_CUSTOM_TYPE } from "./session-entries";
 
 const PREVIEW_CHARACTERS = 256;
 
@@ -155,7 +155,10 @@ export function sessionEntryMetadata(entry: SessionEntry): SessionEntry {
 				...base,
 				type: entry.type,
 				customType: entry.customType,
-				data: entry.customType === SUBAGENT_USAGE_CUSTOM_TYPE ? structuredClone(entry.data) : undefined,
+				data:
+					entry.customType === SUBAGENT_USAGE_CUSTOM_TYPE || entry.customType === CACHE_WARM_USAGE_CUSTOM_TYPE
+						? structuredClone(entry.data)
+						: undefined,
 			};
 		case "session_init":
 			return {

@@ -4,6 +4,7 @@ import type { Rule } from "../capability/rule";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import type { Goal, GoalModeState } from "../goals/state";
 import type { ChecklistItem } from "../tools/checklist";
+import type { CacheWarmingRefreshEnd, CacheWarmingRefreshStart } from "./cache-warmer";
 import type { CustomMessage } from "./messages";
 
 export type AgentSessionEvent =
@@ -51,6 +52,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "retry_fallback_applied"; from: string; to: string; role: string; reason?: string }
 	| { type: "retry_fallback_succeeded"; model: string; role: string }
+	| ({ type: "cache_warming_start" } & CacheWarmingRefreshStart)
+	| ({ type: "cache_warming_end" } & CacheWarmingRefreshEnd)
 	| { type: "model_changed" }
 	| { type: "config_warnings_changed" }
 	| { type: "ttsr_triggered"; rules: Rule[] }

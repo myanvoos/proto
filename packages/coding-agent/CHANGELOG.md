@@ -32,6 +32,13 @@
 - Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours.
 - Fixed `/mcp reauth` not taking effect for a server whose definition carries its own `Authorization` header, and refresh the project entry when a user config shadows the same name.
 - Fixed resumed OpenAI Responses sessions forgetting earlier reasoning on the first request; a retry after a stale Responses item error now rebuilds history instead of resending the refused items.
+- Show whether the next message reads the prompt cache in a `cache` status-line segment, with a Prompt Cache section in `/session`.
+- Keep prompt-cache entries warm by replaying the last request shortly before they expire (`providers.cacheWarming`), with warm-refresh spend counted in session usage.
+
+### Fixed
+
+- Keep the prompt-cache marker accurate across warm refreshes, `/clear`, rewinds and reopened sessions.
+- Flag cache misses that re-send most of the conversation even when the shared system prompt block stayed warm.
 
 ## [20.1.2] - 2026-11-04
 

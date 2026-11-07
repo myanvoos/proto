@@ -722,6 +722,14 @@ export class Agent {
 		return this.#dialect ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
 	}
 
+	get intentTracing(): boolean {
+		return this.#intentTracing;
+	}
+
+	set intentTracing(value: boolean) {
+		this.#intentTracing = value;
+	}
+
 	setTools(t: AgentTool<any>[]) {
 		this.#state.tools = t;
 	}
