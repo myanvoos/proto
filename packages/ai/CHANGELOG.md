@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Gemini and Vertex `MALFORMED_RESPONSE` finishes showing as "Unhandled stop reason" and dropping that turn's token usage; they now surface as a retryable error stop
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
