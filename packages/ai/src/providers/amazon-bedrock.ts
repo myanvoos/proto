@@ -39,6 +39,7 @@ import {
 } from "../utils/idle-iterator";
 import { toolWireSchema } from "../utils/schema/wire";
 import { parseToolCallArguments } from "../utils/tool-call-arguments";
+import { logDroppedThinking } from "./anthropic";
 import { parseAnthropicInputTransformations, THINKING_BINDING_CONTROLS_BETA } from "./anthropic-wire";
 import { invalidateAwsCredentialCache, resolveAwsCredentials } from "./aws-credentials";
 import { decodeEventStream } from "./aws-eventstream";
@@ -591,13 +592,13 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 							const transformations = parseAnthropicInputTransformations(responseFields?.input_transformations);
 							if (transformations.length > 0) {
 								output.inputTransformations = transformations;
-								for (const transformation of transformations) {
-									if (transformation.reason !== "prefix_binding_mismatch") continue;
-									logger.warn("bedrock: dropped thinking block after conversation prefix changed", {
-										model: model.id,
-										path: transformation.path,
-									});
-								}
+								logDroppedThinking(
+									"bedrock",
+									model.id,
+									transformations
+										.filter(transformation => transformation.reason === "prefix_binding_mismatch")
+										.map(transformation => transformation.path),
+								);
 							}
 							sawMessageStop = true;
 							output.stopReason =

@@ -17,6 +17,8 @@
 - Replay encrypted reasoning on the first request of a resumed Responses session, except on connection-bound hosts such as GitHub Copilot.
 - Rebuild Responses tool calls cut by the output limit that have no stored native item, before the required-reasoning repair and scoped to the current turn.
 - Treat an in-band Anthropic `error` frame inside an open message as a retryable stream truncation, while deterministic rejections stay terminal.
+- Replay demoted DeepSeek thinking as `reasoning_content` instead of an empty field the API rejects.
+- Log one warning per request instead of one per dropped thinking block on Anthropic and Bedrock.
 
 ## [19.2.1] - 2026-11-03
 
