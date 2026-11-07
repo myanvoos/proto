@@ -189,6 +189,11 @@ interface OpenAIResponsesProviderSessionState
 	extends ProviderSessionState,
 		OpenAIStrictToolsState,
 		OpenAIReasoningEffortFallbackState {
+	/**
+	 * Replay native history items. Starts false only on connection-bound hosts;
+	 * `close()` clears it so the next request rebuilds history from message
+	 * content; the first successful response sets it.
+	 */
 	nativeHistoryReplayWarmed: boolean;
 	closeCount: number;
 
@@ -213,13 +218,15 @@ interface OpenAIResponsesChainState {
 	disabled: boolean;
 }
 
-function createOpenAIResponsesProviderSessionState(): OpenAIResponsesProviderSessionState {
+function createOpenAIResponsesProviderSessionState(
+	model: Model<"openai-responses">,
+): OpenAIResponsesProviderSessionState {
 	const strictToolsState = createOpenAIStrictToolsState();
 	const reasoningEffortFallbackState = createOpenAIReasoningEffortFallbackState();
 	const state: OpenAIResponsesProviderSessionState = {
 		...strictToolsState,
 		...reasoningEffortFallbackState,
-		nativeHistoryReplayWarmed: false,
+		nativeHistoryReplayWarmed: !model.compat.connectionBoundNativeHistory,
 		closeCount: 0,
 		chains: new Map(),
 		effortControls: new Map(),
@@ -251,7 +258,7 @@ function getOpenAIResponsesProviderSessionState(
 	const key = `${OPENAI_RESPONSES_PROVIDER_SESSION_STATE_PREFIX}${model.provider}`;
 	const existing = providerSessionState.get(key) as OpenAIResponsesProviderSessionState | undefined;
 	if (existing) return existing;
-	const created = createOpenAIResponsesProviderSessionState();
+	const created = createOpenAIResponsesProviderSessionState(model);
 	providerSessionState.set(key, created);
 	return created;
 }

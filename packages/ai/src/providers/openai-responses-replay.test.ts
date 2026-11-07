@@ -297,6 +297,79 @@ describe("Responses plaintext reasoning replay", () => {
 	});
 });
 
+describe("Responses native history warm start", () => {
+	function completed(): Response {
+		const events = [
+			{ type: "response.created", response: { id: "resp_ok", status: "in_progress" } },
+			{ type: "response.completed", response: { id: "resp_ok", status: "completed" } },
+		];
+		return new Response(`${events.map(event => `data: ${JSON.stringify(event)}`).join("\n\n")}\n\n`, {
+			headers: { "content-type": "text/event-stream" },
+		});
+	}
+
+	async function captureBodies(
+		model: Model<"openai-responses">,
+		context: Context,
+		providerSessionState: Map<string, ProviderSessionState>,
+	): Promise<Record<string, unknown>[]> {
+		const bodies: Record<string, unknown>[] = [];
+		const fetch = Object.assign(
+			async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+				bodies.push(JSON.parse(typeof init?.body === "string" ? init.body : "{}") as Record<string, unknown>);
+				return completed();
+			},
+			{ preconnect: globalThis.fetch.preconnect },
+		);
+		await streamOpenAIResponses(model, context, { apiKey: "test-key", fetch, providerSessionState }).result();
+		return bodies;
+	}
+
+	function resumedEncryptedReasoningContext(model: Model<"openai-responses">): Context {
+		const prior = assistant(model, [{ type: "text", text: "generic assistant that should be rebuilt" }]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, [
+			{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc_turn_1" },
+			{
+				type: "message",
+				role: "assistant",
+				content: [{ type: "output_text", text: "generic assistant that should be rebuilt" }],
+			},
+		]);
+		return { messages: [prior, { role: "user", content: "follow-up user", timestamp: 2 }] };
+	}
+
+	it("replays encrypted reasoning on the first resumed request unless the host binds items to a connection", async () => {
+		const replayed: Record<string, boolean> = {};
+		for (const model of [
+			responsesModel({ id: "grok-4.7", provider: "xai-oauth", baseUrl: "https://api.x.ai/v1" }),
+			responsesModel({ id: "gpt-5-mini", provider: "openai", baseUrl: "https://api.openai.com/v1" }),
+			responsesModel({ id: "gpt-5.4", provider: "github-copilot", baseUrl: "https://api.githubcopilot.com" }),
+		]) {
+			const bodies = await captureBodies(
+				model,
+				resumedEncryptedReasoningContext(model),
+				new Map<string, ProviderSessionState>(),
+			);
+			replayed[model.provider] = JSON.stringify(bodies[0]?.input).includes("enc_turn_1");
+		}
+
+		expect(replayed).toEqual({ "xai-oauth": true, openai: true, "github-copilot": false });
+	});
+
+	it("rebuilds history after the provider session state closes on a host without connection binding", async () => {
+		const model = responsesModel({ id: "grok-4.7", provider: "xai-oauth", baseUrl: "https://api.x.ai/v1" });
+		const context = resumedEncryptedReasoningContext(model);
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const warm = await captureBodies(model, context, providerSessionState);
+		for (const state of providerSessionState.values()) state.close();
+		const closed = await captureBodies(model, context, providerSessionState);
+
+		expect(JSON.stringify(warm[0]?.input)).toContain("enc_turn_1");
+		expect(JSON.stringify(closed[0]?.input)).not.toContain("enc_turn_1");
+		expect(JSON.stringify(closed[0]?.input)).toContain("generic assistant that should be rebuilt");
+	});
+});
+
 describe("Responses long prompt cache retention", () => {
 	it("uses the 12h cache policy instead of the ignored legacy retention field on breakpoint-capable models", () => {
 		const model = responsesModel({

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Treat GitHub Copilot as connection-bound for native Responses history so resumed sessions rebuild prior turns instead of replaying items minted on an earlier connection.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
