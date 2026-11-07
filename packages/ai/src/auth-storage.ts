@@ -1,8 +1,9 @@
 import { scheduler } from "node:timers/promises";
-import { $env, $envExact, getAgentDbPath, logger, untilAborted } from "@oh-my-pi/pi-utils";
+import { $env, $envExact, getAgentDbPath, logger, postmortem, untilAborted } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { AccountPolicies, type AuthAccountPolicies, type AuthAccountPolicy } from "./auth/account-policy";
 import {
+	isSqliteBusyError,
 	isSqliteCorruptionError,
 	resolveCredentialIdentityKey,
 	SqliteAuthCredentialStore,
@@ -259,6 +260,40 @@ export interface CredentialRefreshLeaseFence {
 	nowMs: number;
 }
 
+/** Owner and expiry of a stored refresh lease row. */
+export interface CredentialRefreshLeaseHolder {
+	owner: string;
+	expiresAtMs: number;
+}
+
+/** The refresh-lease subset of {@link AuthCredentialStore}, required methods only. */
+export interface CredentialRefreshLeaseStore {
+	tryAcquireCredentialRefreshLease(credentialId: number, owner: string, expiresAtMs: number): boolean;
+	getCredentialRefreshLeaseExpiresAt(credentialId: number): number | undefined;
+	releaseCredentialRefreshLease(credentialId: number, owner: string): void;
+	renewCredentialRefreshLease(credentialId: number, owner: string, expiresAtMs: number): boolean;
+	/** The lease row as stored, expired or not; `undefined` when no lease row exists. */
+	getCredentialRefreshLeaseHolder?(credentialId: number): CredentialRefreshLeaseHolder | undefined;
+	/**
+	 * Give a lease this owner took back to the holder it replaced, with that
+	 * holder's own expiry, so the holder can still renew it and save the token
+	 * it may have exchanged. Returns false when `owner` no longer holds it.
+	 */
+	handBackCredentialRefreshLease?(credentialId: number, owner: string, holder: CredentialRefreshLeaseHolder): boolean;
+}
+
+/** Whether the store supports durable refresh leases. */
+export function hasRefreshLeases(
+	store: AuthCredentialStore,
+): store is AuthCredentialStore & CredentialRefreshLeaseStore {
+	return (
+		!!store.tryAcquireCredentialRefreshLease &&
+		!!store.getCredentialRefreshLeaseExpiresAt &&
+		!!store.releaseCredentialRefreshLease &&
+		!!store.renewCredentialRefreshLease
+	);
+}
+
 export interface AuthCredentialStore {
 	close(): void;
 
@@ -312,6 +347,8 @@ export interface AuthCredentialStore {
 	getCredentialRefreshLeaseExpiresAt?(credentialId: number): number | undefined;
 	releaseCredentialRefreshLease?(credentialId: number, owner: string): void;
 	renewCredentialRefreshLease?(credentialId: number, owner: string, expiresAtMs: number): boolean;
+	getCredentialRefreshLeaseHolder?(credentialId: number): CredentialRefreshLeaseHolder | undefined;
+	handBackCredentialRefreshLease?(credentialId: number, owner: string, holder: CredentialRefreshLeaseHolder): boolean;
 
 	recordUsageSnapshots?(entries: UsageHistoryEntry[]): void;
 
@@ -462,8 +499,62 @@ const OAUTH_REFRESH_FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 const OAUTH_REFRESH_SKEW_MS = 60_000;
 const OAUTH_REFRESH_LEASE_TTL_MS = 15_000;
 const OAUTH_REFRESH_LEASE_POLL_MS = 50;
+const OAUTH_REFRESH_LEASE_WAIT_MAX_MS = 250;
 const OAUTH_REFRESH_LEASE_RENEW_MS = 5_000;
+/** How long a caller waits for an OAuth token exchange before giving up. */
 const OAUTH_REFRESH_OPERATION_TIMEOUT_MS = 10_000;
+/**
+ * Hard ceiling on one leased token exchange. Callers stop waiting after the
+ * refresh budget, but the exchange itself runs on so a refresh token the
+ * provider already rotated server-side is still persisted; this bounds how
+ * long a hung exchange can hold the row lease. One minute covers a slow grant
+ * plus post-exchange hooks (whoami/org lookups) several times over, while
+ * peers waiting on the lease still recover within a minute.
+ */
+const OAUTH_REFRESH_EXCHANGE_BACKSTOP_MS = 60_000;
+/**
+ * How long a refresher keeps retrying a busy store to save a token it already
+ * exchanged. The provider has consumed the old refresh token by then, so
+ * giving up loses the login for every process sharing the store.
+ */
+const OAUTH_REFRESH_PERSIST_TIMEOUT_MS = 60_000;
+const OAUTH_REFRESH_PERSIST_RETRY_MAX_MS = 1_000;
+/**
+ * How long after another refresher's lease lapsed that refresher may still be
+ * saving a token it exchanged: its exchange backstop plus its save window.
+ */
+const OAUTH_REFRESH_STALLED_OWNER_MS = OAUTH_REFRESH_EXCHANGE_BACKSTOP_MS + OAUTH_REFRESH_PERSIST_TIMEOUT_MS;
+/**
+ * How long process exit waits for refreshes still in flight: an exchange up to
+ * its backstop, then the save window, plus slack for the last save attempt. A
+ * shorter wait drops a token the provider already rotated, which leaves the
+ * shared store with a spent refresh token.
+ */
+const OAUTH_REFRESH_SHUTDOWN_WAIT_MS = OAUTH_REFRESH_STALLED_OWNER_MS + 5_000;
+
+/** Short non-secret fingerprint so logs can tell which process minted which token. */
+function tokenFingerprint(token: unknown): string {
+	if (typeof token !== "string" || token.length === 0) return "none";
+	return new Bun.CryptoHasher("sha256").update(token).digest("hex").slice(0, 8);
+}
+
+/** Merge provider refresh bytes with the stored OAuth row, preserving subtype metadata for every refresh path. */
+function mergeRefreshedCredential<T extends OAuthCredential>(current: T, refreshed: OAuthCredentials): T {
+	return {
+		...current,
+		access: refreshed.access,
+		refresh: refreshed.refresh,
+		expires: refreshed.expires,
+		accountId: refreshed.accountId ?? current.accountId,
+		email: refreshed.email ?? current.email,
+		projectId: refreshed.projectId ?? current.projectId,
+		enterpriseUrl: refreshed.enterpriseUrl ?? current.enterpriseUrl,
+		apiEndpoint: refreshed.apiEndpoint ?? current.apiEndpoint,
+		orgId: refreshed.orgId ?? current.orgId,
+		orgName: refreshed.orgName ?? current.orgName,
+		authorizedAt: refreshed.authorizedAt ?? current.authorizedAt,
+	};
+}
 
 const MAX_PENDING_DISABLED_EVENTS = 32;
 
@@ -549,10 +640,18 @@ type AuthApiKeyOptions = {
 	forceRefresh?: boolean;
 	recordAffinity?: boolean;
 	refreshReason?: OAuthRefreshReason;
+	/**
+	 * The OAuth access token the provider rejected for this request. A 401
+	 * recovery names it so the refresh can tell a peer's rotation from a dead
+	 * token.
+	 */
+	rejectedAccessToken?: string;
 	/** Request resolvers surface refresh outages; availability probes keep trying other sources. */
 	throwOnTransientOAuthRefreshFailure?: boolean;
 };
 type OAuthResolutionResult = { apiKey: string; credential: OAuthCredential; credentialId?: number };
+
+type LeasedExchangeOutcome<T extends OAuthCredential> = { result: StoredOAuthRefreshResult<T> } | { failure: unknown };
 
 export interface OAuthAccess {
 	accessToken: string;
@@ -627,6 +726,11 @@ export interface StoredOAuthRefreshOptions<T extends OAuthCredential = OAuthCred
 	canRefresh?: (credential: T) => boolean;
 	refreshSkewMs?: number;
 	signal?: AbortSignal;
+	/**
+	 * Access token the provider rejected for this request. A stored row that
+	 * already holds a different access token is adopted instead of exchanged.
+	 */
+	rejectedAccess?: string;
 	keepCredentialOnRefreshFailure?: boolean | ((error: unknown) => boolean);
 	onRefreshFailure?: (error: unknown) => void;
 	refreshTimeoutMs?: number;
@@ -976,6 +1080,8 @@ export class AuthStorage {
 	#persistedSessionCredential = new Map<string, LRUCache<string, SessionCredential>>();
 
 	#oauthBearerFingerprints: Map<string, Map<number, string[]>> = new Map();
+	/** Access token each bearer a resolver served was built from, keyed by bearer fingerprint. */
+	#oauthBearerAccess: Map<string, Map<string, string>> = new Map();
 
 	#credentialBackoff: Map<string, Map<number, number>> = new Map();
 	/** Whether the winning deadline in {@link AuthStorage.#credentialBackoff} came from provider-stated timing. */
@@ -1018,6 +1124,14 @@ export class AuthStorage {
 	#generationListeners: Set<(generation: number) => void> = new Set();
 	#oauthRefreshInFlight: Map<number, Promise<AuthCredentialSnapshotEntry>> = new Map();
 	#oauthCredentialRefreshInFlight: Map<number, Promise<OAuthCredentials>> = new Map();
+	/**
+	 * Refresh tokens rejected after taking over a stalled refresher's lease, per
+	 * credential id: that refresher may still save their successor until `until`.
+	 */
+	#stalledRefreshes = new Map<number, { refresh: string; until: number }>();
+	#pendingRefreshes = new Set<Promise<unknown>>();
+	#cancelRefreshCleanup?: () => void;
+	#shuttingDown = false;
 	#closed = false;
 
 	constructor(store: AuthCredentialStore, options: AuthStorageOptions = {}) {
@@ -1057,10 +1171,28 @@ export class AuthStorage {
 		return new AuthStorage(store, options);
 	}
 
+	/**
+	 * Close the underlying credential store; the instance must not be reused.
+	 * New OAuth refreshes are refused at once; a token exchange already under way
+	 * keeps the store open until it has saved the rotated token.
+	 */
 	close(): void {
 		if (this.#closed) return;
 		this.#closed = true;
-		this.#store.close();
+		this.#shuttingDown = true;
+		if (this.#pendingRefreshes.size === 0) {
+			this.#disarmShutdownDrain();
+			this.#store.close();
+			return;
+		}
+		void this.#drainRefreshes().then(() => {
+			this.#disarmShutdownDrain();
+			try {
+				this.#store.close();
+			} catch (error) {
+				logger.warn("Credential store close after OAuth refresh drain failed", { error: String(error) });
+			}
+		});
 	}
 
 	getGeneration(): number {
@@ -1247,7 +1379,12 @@ export class AuthStorage {
 		this.#bumpGeneration("credentials");
 	}
 
-	#recordOAuthBearerCredentialId(provider: string, bearer: string, credentialId: number | undefined): void {
+	#recordOAuthBearerCredentialId(
+		provider: string,
+		bearer: string,
+		credentialId: number | undefined,
+		access: string,
+	): void {
 		if (credentialId === undefined) return;
 		const fingerprint = fingerprintOAuthBearer(bearer);
 		const byCredentialId = this.#oauthBearerFingerprints.get(provider) ?? new Map<number, string[]>();
@@ -1257,6 +1394,17 @@ export class AuthStorage {
 		if (nextHistory.length > OAUTH_BEARER_FINGERPRINT_HISTORY_LIMIT) nextHistory.shift();
 		byCredentialId.set(credentialId, nextHistory);
 		this.#oauthBearerFingerprints.set(provider, byCredentialId);
+		// Remember the access token this bearer was built from, so a 401 names the
+		// token the failed request actually sent even after a peer rotates the row.
+		const accessByBearer = this.#oauthBearerAccess.get(provider) ?? new Map<string, string>();
+		accessByBearer.delete(fingerprint);
+		accessByBearer.set(fingerprint, access);
+		while (accessByBearer.size > OAUTH_BEARER_FINGERPRINT_HISTORY_LIMIT) {
+			const oldest = accessByBearer.keys().next();
+			if (oldest.done) break;
+			accessByBearer.delete(oldest.value);
+		}
+		this.#oauthBearerAccess.set(provider, accessByBearer);
 	}
 
 	#findOAuthCredentialIdForBearer(provider: string, bearer: string): number | undefined {
@@ -1265,6 +1413,16 @@ export class AuthStorage {
 			if (history.includes(fingerprint)) return credentialId;
 		}
 		return undefined;
+	}
+
+	/**
+	 * The OAuth access token behind a bearer this process served, so a 401
+	 * recovery names the token of the request that failed rather than the last
+	 * resolution a shared resolver made.
+	 */
+	#oauthAccessForBearer(provider: string, bearer: string | undefined): string | undefined {
+		if (bearer === undefined) return undefined;
+		return this.#oauthBearerAccess.get(provider)?.get(fingerprintOAuthBearer(bearer));
 	}
 
 	#resolveOAuthDedupeIdentityKey(provider: string, credential: OAuthCredential): string | null {
@@ -2093,30 +2251,220 @@ export class AuthStorage {
 		return rows;
 	}
 
+	/**
+	 * Refresh one stored OAuth credential under durable row ownership.
+	 *
+	 * Registers the work with the shutdown drain so a rotated token is persisted
+	 * before the process (or its credential store) goes away.
+	 */
 	async refreshStoredOAuthCredential<T extends OAuthCredential = OAuthCredential>(
 		provider: string,
 		options: StoredOAuthRefreshOptions<T>,
 	): Promise<StoredOAuthRefreshResult<T>> {
+		if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped during shutdown");
+		return this.#track(this.#refreshStored(provider, options));
+	}
+
+	/** Keeps shutdown waiting until `pending` settles, so rotated tokens are persisted before exit. */
+	#track<R>(pending: Promise<R>): Promise<R> {
+		// Add before registering: a registration made while exit cleanup runs drains at
+		// once, and must find this work pending or the process exits without it.
+		this.#pendingRefreshes.add(pending);
+		this.#armShutdownDrain();
+		const settled = (): void => {
+			this.#pendingRefreshes.delete(pending);
+			if (this.#pendingRefreshes.size === 0 && !this.#shuttingDown) this.#disarmShutdownDrain();
+		};
+		void pending.then(settled, settled);
+		return pending;
+	}
+
+	/**
+	 * Registers the shutdown drain if it is not registered yet. A registration made
+	 * once exit has begun drains at once, which sets `#shuttingDown`.
+	 */
+	#armShutdownDrain(): void {
+		this.#cancelRefreshCleanup ??= postmortem.register("oauth-refresh", () => this.#drainRefreshes(), {
+			exitOnly: true,
+			deadlineMs: OAUTH_REFRESH_SHUTDOWN_WAIT_MS,
+		});
+	}
+
+	#disarmShutdownDrain(): void {
+		this.#cancelRefreshCleanup?.();
+		this.#cancelRefreshCleanup = undefined;
+	}
+
+	async #drainRefreshes(): Promise<void> {
+		this.#shuttingDown = true;
+		// Work tracked while draining (a lease hand-back a returning caller left behind) is waited for too.
+		while (this.#pendingRefreshes.size > 0) await Promise.allSettled(this.#pendingRefreshes);
+	}
+
+	/**
+	 * Whether the stored row holds a token the caller has not seen rejected, so
+	 * it adopts that token instead of exchanging again. A forced refresh
+	 * compares tokens only (callers pass an `expires: 0` copy), and compares
+	 * against the access token a provider 401 rejected when the caller names
+	 * it: this process may already hold the row a peer rotated, while the token
+	 * that got the 401 is the one before it. Callers name the credential's own
+	 * access token, never the API key built from it, which a provider with a
+	 * structured key format makes a different string.
+	 */
+	#storedIsNewer<T extends OAuthCredential>(current: T, options: StoredOAuthRefreshOptions<T>): boolean {
+		if (options.rejectedAccess !== undefined) return current.access !== options.rejectedAccess;
+		const observed = options.observedCredential;
+		if (!observed) return false;
+		return options.forceRefresh
+			? current.access !== observed.access || current.refresh !== observed.refresh
+			: !authCredentialEquals(current, observed);
+	}
+
+	/**
+	 * Hand a taken-over lease back to the refresher that stalled holding it. A busy
+	 * store is retried within the save window: if this process released the lease
+	 * instead, the next refresher would find no owner and disable a login that
+	 * owner may still save. Returns false when the hand-back never landed; the
+	 * caller then keeps its own lease to expire, which still names a recent owner.
+	 */
+	async #handBackLease(
+		leaseStore: CredentialRefreshLeaseStore,
+		credentialId: number,
+		owner: string,
+		holder: CredentialRefreshLeaseHolder,
+	): Promise<boolean> {
+		const deadline = Date.now() + OAUTH_REFRESH_PERSIST_TIMEOUT_MS;
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return leaseStore.handBackCredentialRefreshLease?.(credentialId, owner, holder) ?? false;
+			} catch (error) {
+				if (!isSqliteBusyError(error)) throw error;
+				if (Date.now() >= deadline) return false;
+			}
+			await Bun.sleep(Math.min(OAUTH_REFRESH_PERSIST_RETRY_MAX_MS, OAUTH_REFRESH_LEASE_POLL_MS * 2 ** attempt));
+		}
+	}
+
+	/**
+	 * Give up a lease this refresher holds without having saved a token. A lease
+	 * taken over from a stalled refresher goes back to it, because that refresher
+	 * may still be saving: releasing it would leave the next refresher no owner,
+	 * and it would disable a login that may live. Any other lease is released.
+	 */
+	async #leaveLease(
+		leaseStore: CredentialRefreshLeaseStore,
+		credentialId: number,
+		owner: string,
+		takenOverFrom: CredentialRefreshLeaseHolder | undefined,
+	): Promise<void> {
+		if (!takenOverFrom) {
+			leaseStore.releaseCredentialRefreshLease(credentialId, owner);
+			return;
+		}
+		try {
+			await this.#handBackLease(leaseStore, credentialId, owner, takenOverFrom);
+		} catch (error) {
+			// The lease then expires still naming this refresher, a recent holder.
+			logger.warn("OAuth refresh could not hand a taken-over lease back", { credentialId, error: String(error) });
+		}
+	}
+
+	/**
+	 * Save a token this process already exchanged. The provider consumed the old
+	 * refresh token, so a busy store is retried (re-arming the lease each time:
+	 * a blocked event loop can outlive its TTL, and an expired lease no peer
+	 * took is still ours) instead of dropping the only valid token. A refused
+	 * save is retried too, within the same 60 s window, while the row still
+	 * holds the spent token: a peer that took over the lapsed lease hands it
+	 * back once the provider rejects that token, but the next peer can hold it
+	 * at the moment this save lands.
+	 */
+	async #persistExchangedCredential(
+		provider: string,
+		credentialId: number,
+		expectedData: string,
+		credential: OAuthCredential,
+		lease: { store: CredentialRefreshLeaseStore; owner: string } | undefined,
+		fingerprints: Record<string, unknown>,
+	): Promise<boolean> {
+		const deadline = Date.now() + OAUTH_REFRESH_PERSIST_TIMEOUT_MS;
+		let refused = false;
+		for (let attempt = 0; ; attempt++) {
+			if (attempt > 0 && Date.now() >= deadline) {
+				if (refused) {
+					logger.warn("OAuth exchanged token not saved before the save deadline", fingerprints);
+					return false;
+				}
+				throw new AIError.ConfigurationError("OAuth exchanged token could not be saved: store stayed busy");
+			}
+			let renewed = true;
+			try {
+				if (lease) {
+					renewed = lease.store.renewCredentialRefreshLease(
+						credentialId,
+						lease.owner,
+						Date.now() + OAUTH_REFRESH_LEASE_TTL_MS,
+					);
+					// An expired lease no peer took is still ours: re-acquire it rather
+					// than fail the fence and drop a token the provider already minted.
+					if (!renewed) {
+						renewed = lease.store.tryAcquireCredentialRefreshLease(
+							credentialId,
+							lease.owner,
+							Date.now() + OAUTH_REFRESH_LEASE_TTL_MS,
+						);
+					}
+				}
+				const saved =
+					this.#store.tryUpdateAuthCredentialIfMatches?.(
+						credentialId,
+						expectedData,
+						credential,
+						lease ? { owner: lease.owner, nowMs: Date.now() } : undefined,
+					) ?? false;
+				if (saved) return true;
+				// A peer that saved first changed the row; otherwise no peer can hold a
+				// usable successor of the spent token, so wait for the lease instead.
+				const stored = this.#store.listAuthCredentials(provider).find(entry => entry.id === credentialId);
+				if (!stored || serializeCredential(provider, stored.credential)?.data !== expectedData) {
+					logger.warn("OAuth exchanged token not saved", { ...fingerprints, leaseHeld: renewed });
+					return false;
+				}
+				if (!refused) {
+					logger.warn("OAuth exchanged token save refused while a peer holds the lease; retrying", {
+						...fingerprints,
+						leaseHeld: renewed,
+					});
+				}
+				refused = true;
+			} catch (error) {
+				if (!isSqliteBusyError(error)) {
+					logger.error("OAuth exchanged token could not be saved", { ...fingerprints, error: String(error) });
+					throw error;
+				}
+				refused = false;
+				logger.warn("OAuth exchanged token save hit a busy store; retrying", { ...fingerprints, attempt });
+			}
+			await Bun.sleep(Math.min(OAUTH_REFRESH_PERSIST_RETRY_MAX_MS, OAUTH_REFRESH_LEASE_POLL_MS * 2 ** attempt));
+		}
+	}
+
+	async #refreshStored<T extends OAuthCredential = OAuthCredential>(
+		provider: string,
+		options: StoredOAuthRefreshOptions<T>,
+	): Promise<StoredOAuthRefreshResult<T>> {
 		const refreshSkewMs = options.refreshSkewMs ?? OAUTH_REFRESH_SKEW_MS;
-		const hasDurableLease =
-			!!this.#store.tryAcquireCredentialRefreshLease &&
-			!!this.#store.getCredentialRefreshLeaseExpiresAt &&
-			!!this.#store.releaseCredentialRefreshLease &&
-			!!this.#store.renewCredentialRefreshLease;
+		const leaseStore = hasRefreshLeases(this.#store) ? this.#store : undefined;
 		const owner = crypto.randomUUID();
 		let leasedCredentialId: number | undefined;
-		const refreshDeadline = Date.now() + (options.refreshTimeoutMs ?? OAUTH_REFRESH_OPERATION_TIMEOUT_MS);
-		const checkRefreshBudget = (): void => {
-			if (options.signal?.aborted) throw new AIError.AbortError("OAuth refresh ownership aborted by caller");
-			if (Date.now() >= refreshDeadline)
-				throw new AIError.OAuthError(`OAuth token refresh timed out for provider: ${provider}`, {
-					kind: "timeout",
-					provider,
-				});
-		};
+		let takenOverFrom: CredentialRefreshLeaseHolder | undefined;
+		const budgetMs = options.refreshTimeoutMs ?? OAUTH_REFRESH_OPERATION_TIMEOUT_MS;
+		// Waiting on a peer's lease counts against the same budget as the exchange.
+		const waitDeadline = Date.now() + budgetMs;
 
-		while (hasDurableLease) {
-			checkRefreshBudget();
+		while (leaseStore) {
+			if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped during shutdown");
+			if (options.signal?.aborted) throw new AIError.AbortError("OAuth refresh ownership aborted by caller");
 			const rows = this.#store.listAuthCredentials(provider);
 			this.#setStoredCredentials(
 				provider,
@@ -2135,12 +2483,11 @@ export class AuthStorage {
 				return { credential: undefined, refreshed: false, removed: false };
 			}
 			const currentIsFresh = Date.now() + refreshSkewMs < current.expires;
-
-			if (
-				options.observedCredential &&
-				!authCredentialEquals(current, options.observedCredential) &&
-				currentIsFresh
-			) {
+			// A peer rotated the credential out from under the caller's observation.
+			// Adopt the stored copy only when it is still usable; a stored copy that
+			// is itself expired must fall through to a refresh rather than be handed
+			// back and fail the downstream `getOAuthApiKey` expiry precondition.
+			if (currentIsFresh && this.#storedIsNewer(current, options)) {
 				return { credential: current, refreshed: false, removed: false };
 			}
 			if (!options.forceRefresh && currentIsFresh) {
@@ -2149,24 +2496,53 @@ export class AuthStorage {
 			if (options.canRefresh && !options.canRefresh(current)) {
 				return { credential: current, refreshed: false, removed: false };
 			}
-			if (this.#store.tryAcquireCredentialRefreshLease?.(row.id, owner, Date.now() + OAUTH_REFRESH_LEASE_TTL_MS)) {
+			// A caller whose budget ran out must not start an exchange it will not wait for.
+			if (Date.now() >= waitDeadline) return this.#budgetExceeded(provider, options, current);
+			// This process already had this refresh token rejected after taking over
+			// a stalled refresher, which may still save its successor: wait for that
+			// save instead of replaying the token at the provider.
+			const stalled = this.#stalledRefreshes.get(row.id);
+			if (stalled) {
+				const stalledMs = stalled.until - Date.now();
+				if (stalled.refresh === current.refresh && stalledMs > 0) {
+					await raceWithSignal(
+						Bun.sleep(Math.min(stalledMs, waitDeadline - Date.now(), OAUTH_REFRESH_LEASE_WAIT_MAX_MS)),
+						options.signal,
+					);
+					continue;
+				}
+				this.#stalledRefreshes.delete(row.id);
+			}
+			// A lease row still naming another owner means that owner stalled or died
+			// holding it. It may have spent the stored refresh token already and still
+			// be retrying the save of its successor, so remember it: a rejection of
+			// that token is then not proof the login is dead.
+			const priorHolder = leaseStore.getCredentialRefreshLeaseHolder?.(row.id);
+			if (leaseStore.tryAcquireCredentialRefreshLease(row.id, owner, Date.now() + OAUTH_REFRESH_LEASE_TTL_MS)) {
 				leasedCredentialId = row.id;
+				if (
+					priorHolder &&
+					priorHolder.owner !== owner &&
+					Date.now() - priorHolder.expiresAtMs < OAUTH_REFRESH_STALLED_OWNER_MS
+				) {
+					takenOverFrom = priorHolder;
+				}
 				break;
 			}
-			const leaseExpiresAt = this.#store.getCredentialRefreshLeaseExpiresAt?.(row.id);
+			const leaseExpiresAt = leaseStore.getCredentialRefreshLeaseExpiresAt(row.id);
 			const waitMs =
 				leaseExpiresAt === undefined
 					? OAUTH_REFRESH_LEASE_POLL_MS
-					: Math.min(Math.max(leaseExpiresAt - Date.now(), OAUTH_REFRESH_LEASE_POLL_MS), 250);
-			await raceWithSignal(
-				Bun.sleep(waitMs),
-				options.signal,
-				() => new AIError.AbortError("OAuth refresh ownership wait aborted by caller"),
-			);
+					: Math.min(
+							Math.max(leaseExpiresAt - Date.now(), OAUTH_REFRESH_LEASE_POLL_MS),
+							OAUTH_REFRESH_LEASE_WAIT_MAX_MS,
+						);
+			const remainingMs = waitDeadline - Date.now();
+			if (remainingMs <= 0) return this.#budgetExceeded(provider, options, current);
+			await raceWithSignal(Bun.sleep(Math.min(waitMs, remainingMs)), options.signal);
 		}
 
 		try {
-			checkRefreshBudget();
 			const rows = this.#store.listAuthCredentials(provider);
 			this.#setStoredCredentials(
 				provider,
@@ -2185,12 +2561,9 @@ export class AuthStorage {
 				return { credential: undefined, refreshed: false, removed: false };
 			}
 			const currentIsFresh = Date.now() + refreshSkewMs < current.expires;
-
-			if (
-				options.observedCredential &&
-				!authCredentialEquals(current, options.observedCredential) &&
-				currentIsFresh
-			) {
+			// Re-check after acquiring the lease: a peer that held it may have just
+			// rotated the row, mirroring the pre-lease guard.
+			if (currentIsFresh && this.#storedIsNewer(current, options)) {
 				return { credential: current, refreshed: false, removed: false };
 			}
 			if (!options.forceRefresh && currentIsFresh) {
@@ -2199,24 +2572,140 @@ export class AuthStorage {
 			if (options.canRefresh && !options.canRefresh(current)) {
 				return { credential: current, refreshed: false, removed: false };
 			}
+			// Arm the drain first: once exit has begun, arming it sets `#shuttingDown`, so a
+			// refresh that starts then stops here instead of spending a token nobody saves.
+			this.#armShutdownDrain();
+			if (this.#shuttingDown || options.signal?.aborted) {
+				throw new AIError.AbortError("OAuth refresh stopped before token exchange");
+			}
 			const serialized = serializeCredential(provider, current);
 			if (!serialized) return { credential: current, refreshed: false, removed: false };
+			// Acquiring the lease can block on SQLite past the deadline; do not start an exchange nobody waits for.
+			if (Date.now() >= waitDeadline) return this.#budgetExceeded(provider, options, current);
 
+			// The budget only stops this caller waiting. The exchange keeps the lease
+			// and persists whatever the provider returns: a provider that rotates the
+			// refresh token on every grant has already invalidated the stored one.
+			const exchange = this.#track(
+				this.#exchangeLeased(
+					provider,
+					options,
+					row,
+					current,
+					serialized.data,
+					leaseStore,
+					leasedCredentialId,
+					owner,
+					takenOverFrom,
+				),
+			);
+			// Lease release now belongs to the exchange.
+			leasedCredentialId = undefined;
+			const budget = Promise.withResolvers<"timeout">();
+			const budgetTimer = setTimeout(() => budget.resolve("timeout"), Math.max(waitDeadline - Date.now(), 0));
+			let outcome: LeasedExchangeOutcome<T> | "timeout";
+			try {
+				outcome = await Promise.race([exchange, budget.promise]);
+			} finally {
+				clearTimeout(budgetTimer);
+			}
+			if (outcome === "timeout") return this.#budgetExceeded(provider, options, current);
+			if ("result" in outcome) return outcome.result;
+			return this.#refreshFailed(options, current, outcome.failure);
+		} finally {
+			if (leasedCredentialId !== undefined && leaseStore) {
+				// A hand-back retries a busy store for the save window; the caller, which is
+				// leaving with its budget spent or its signal aborted, does not wait for it.
+				void this.#track(this.#leaveLease(leaseStore, leasedCredentialId, owner, takenOverFrom));
+			}
+		}
+	}
+
+	/** The caller's budget ran out: report the timeout through the caller's failure policy. */
+	#budgetExceeded<T extends OAuthCredential>(
+		provider: string,
+		options: StoredOAuthRefreshOptions<T>,
+		current: T,
+	): StoredOAuthRefreshResult<T> {
+		const error = new AIError.OAuthError(`OAuth token refresh timed out for provider: ${provider}`, {
+			kind: "timeout",
+			provider,
+		});
+		return this.#refreshFailed(options, current, error);
+	}
+
+	#refreshFailed<T extends OAuthCredential>(
+		options: StoredOAuthRefreshOptions<T>,
+		current: T,
+		error: unknown,
+	): StoredOAuthRefreshResult<T> {
+		options.onRefreshFailure?.(error);
+		const keepCredential =
+			typeof options.keepCredentialOnRefreshFailure === "function"
+				? options.keepCredentialOnRefreshFailure(error)
+				: options.keepCredentialOnRefreshFailure === true;
+		if (keepCredential) {
+			return { credential: current, refreshed: false, removed: false };
+		}
+		throw error;
+	}
+
+	/**
+	 * Runs one token exchange under the row lease and persists the rotated
+	 * credential by CAS, then releases the lease. An exchange error that does not
+	 * disable the login resolves as `failure` so the waiting caller applies its
+	 * failure policy.
+	 */
+	async #exchangeLeased<T extends OAuthCredential>(
+		provider: string,
+		options: StoredOAuthRefreshOptions<T>,
+		row: StoredAuthCredential,
+		current: T,
+		serializedData: string,
+		leaseStore: CredentialRefreshLeaseStore | undefined,
+		leasedCredentialId: number | undefined,
+		owner: string,
+		takenOverFrom: CredentialRefreshLeaseHolder | undefined,
+	): Promise<LeasedExchangeOutcome<T>> {
+		let keepLease = false;
+		let saved = false;
+		try {
 			const leaseRenewalStop = new AbortController();
 			let leaseRenewalError: unknown;
 			const leaseRenewal =
-				leasedCredentialId !== undefined
+				leasedCredentialId !== undefined && leaseStore
 					? (async () => {
+							// Renew every interval; after a busy store, retry almost at once,
+							// since another full interval would outlive the lease.
+							let delayMs = OAUTH_REFRESH_LEASE_RENEW_MS;
 							while (!leaseRenewalStop.signal.aborted) {
-								await scheduler
-									.wait(OAUTH_REFRESH_LEASE_RENEW_MS, { signal: leaseRenewalStop.signal })
-									.catch(() => undefined);
+								// Stopping cancels the wait, so a finished exchange leaves no renewal
+								// timer behind to hold the process open for up to an interval.
+								await scheduler.wait(delayMs, { signal: leaseRenewalStop.signal }).catch(() => undefined);
 								if (leaseRenewalStop.signal.aborted) return;
-								const renewed = this.#store.renewCredentialRefreshLease?.(
-									leasedCredentialId,
-									owner,
-									Date.now() + OAUTH_REFRESH_LEASE_TTL_MS,
-								);
+								let renewed: boolean;
+								try {
+									renewed = leaseStore.renewCredentialRefreshLease(
+										leasedCredentialId,
+										owner,
+										Date.now() + OAUTH_REFRESH_LEASE_TTL_MS,
+									);
+									// An expired lease no peer took is still ours.
+									if (!renewed) {
+										renewed = leaseStore.tryAcquireCredentialRefreshLease(
+											leasedCredentialId,
+											owner,
+											Date.now() + OAUTH_REFRESH_LEASE_TTL_MS,
+										);
+									}
+								} catch (error) {
+									// A busy store only delays this renewal; ownership is lost
+									// only once another owner holds the lease row.
+									if (!isSqliteBusyError(error)) throw error;
+									delayMs = OAUTH_REFRESH_LEASE_POLL_MS;
+									continue;
+								}
+								delayMs = OAUTH_REFRESH_LEASE_RENEW_MS;
 								if (!renewed) {
 									throw new AIError.ConfigurationError("OAuth refresh ownership was lost before persistence");
 								}
@@ -2226,121 +2715,153 @@ export class AuthStorage {
 						})
 					: undefined;
 			const refreshAbort = new AbortController();
-			const refreshTimeout = setTimeout(
+			const backstopReached = Promise.withResolvers<never>();
+			const backstop = setTimeout(
 				() => {
-					refreshAbort.abort(
-						new AIError.OAuthError(`OAuth token refresh timed out for provider: ${provider}`, {
-							kind: "timeout",
-							provider,
-						}),
-					);
+					const error = new AIError.OAuthError(`OAuth token refresh timed out for provider: ${provider}`, {
+						kind: "timeout",
+						provider,
+					});
+					refreshAbort.abort(error);
+					// Stop waiting even when the refresh ignores its signal, so the lease is released.
+					backstopReached.reject(error);
 				},
-				Math.max(1, refreshDeadline - Date.now()),
+				// A fixed ceiling, whatever the caller's budget: a peer that takes over a
+				// lapsed lease, and shutdown, both assume no exchange runs longer.
+				OAUTH_REFRESH_EXCHANGE_BACKSTOP_MS,
 			);
 
 			let refreshed: OAuthCredentials;
 			try {
-				try {
-					refreshed = await options.refresh(current, refreshAbort.signal);
-				} catch (error) {
-					if (options.isDefinitiveFailure?.(error)) {
-						const disabledCause = options.disabledCause?.(error) ?? `oauth refresh failed: ${String(error)}`;
-						const disabled = this.#store.tryDisableAuthCredentialIfMatches(
-							row.id,
-							serialized.data,
-							disabledCause,
-							leasedCredentialId !== undefined ? { owner, nowMs: Date.now() } : undefined,
-						);
-						if (disabled) {
-							this.#setStoredCredentials(
-								provider,
-								this.#store
-									.listAuthCredentials(provider)
-									.filter(entry => entry.id !== row.id)
-									.map(entry => ({ id: entry.id, credential: entry.credential })),
-							);
-							this.#resetProviderAssignments(provider);
-							this.#emitCredentialDisabled(credentialDisabledEvent(provider, row, disabledCause));
-							return { credential: undefined, refreshed: false, removed: true };
-						}
-						this.#setStoredCredentials(
-							provider,
-							this.#store
-								.listAuthCredentials(provider)
-								.map(entry => ({ id: entry.id, credential: entry.credential })),
-						);
-						const latest = this.#getStoredCredentials(provider).find(entry => entry.id === row.id)?.credential;
-						return {
-							credential: latest?.type === "oauth" ? options.credentialFromRow(latest) : undefined,
-							refreshed: false,
-							removed: false,
-						};
-					}
-					options.onRefreshFailure?.(error);
-					const keepCredential =
-						typeof options.keepCredentialOnRefreshFailure === "function"
-							? options.keepCredentialOnRefreshFailure(error)
-							: options.keepCredentialOnRefreshFailure === true;
-					if (keepCredential) {
-						return { credential: current, refreshed: false, removed: false };
-					}
-					throw error;
-				}
-			} finally {
-				leaseRenewalStop.abort();
-				await leaseRenewal;
-				clearTimeout(refreshTimeout);
-			}
-			if (leaseRenewalError) throw leaseRenewalError;
-
-			const merged: T = options.mergeRefreshedCredential
-				? options.mergeRefreshedCredential(current, refreshed)
-				: {
-						...current,
-						access: refreshed.access,
-						refresh: refreshed.refresh,
-						expires: refreshed.expires,
-						accountId: refreshed.accountId ?? current.accountId,
-						email: refreshed.email ?? current.email,
-						projectId: refreshed.projectId ?? current.projectId,
-						enterpriseUrl: refreshed.enterpriseUrl ?? current.enterpriseUrl,
-						apiEndpoint: refreshed.apiEndpoint ?? current.apiEndpoint,
-						orgId: refreshed.orgId ?? current.orgId,
-						orgName: refreshed.orgName ?? current.orgName,
+				refreshed = await Promise.race([options.refresh(current, refreshAbort.signal), backstopReached.promise]);
+			} catch (error) {
+				if (!options.isDefinitiveFailure?.(error)) return { failure: error };
+				if (takenOverFrom && leaseStore && leasedCredentialId !== undefined) {
+					// The owner whose lease lapsed may have spent this token and still be
+					// saving its successor. Give the lease back so it can, and fail this
+					// refresh as transient instead of disabling a login that may live.
+					this.#stalledRefreshes.set(row.id, {
+						refresh: current.refresh,
+						until: takenOverFrom.expiresAtMs + OAUTH_REFRESH_STALLED_OWNER_MS,
+					});
+					// Stop renewing first: a renewal after the hand-back would take it back.
+					leaseRenewalStop.abort();
+					await leaseRenewal;
+					// Never release this lease afterwards: a hand-back that landed left
+					// nothing to release, and one that did not must leave a recent owner.
+					keepLease = true;
+					const handedBack = await this.#handBackLease(leaseStore, leasedCredentialId, owner, takenOverFrom).catch(
+						(error: unknown) => {
+							// The lease then expires still naming this refresher, a recent holder.
+							logger.warn("OAuth refresh could not hand a taken-over lease back", {
+								credentialId: row.id,
+								error: String(error),
+							});
+							return false;
+						},
+					);
+					logger.warn("OAuth refresh token rejected after taking over a stalled refresher; not disabling", {
+						provider,
+						credentialId: row.id,
+						spentRefresh: tokenFingerprint(current.refresh),
+						handedBack,
+					});
+					// A transient failure, so the caller's failure policy applies to it.
+					return {
+						failure: new AIError.OAuthError(
+							`OAuth refresh for ${provider} waits for a stalled refresher that may still save its token`,
+							{ kind: "token-refresh", provider },
+						),
 					};
-			if (this.#store.tryUpdateAuthCredentialIfMatches) {
-				if (
-					!this.#store.tryUpdateAuthCredentialIfMatches(
-						row.id,
-						serialized.data,
-						merged,
-						leasedCredentialId !== undefined ? { owner, nowMs: Date.now() } : undefined,
-					)
-				) {
+				}
+				const disabledCause = options.disabledCause?.(error) ?? `oauth refresh failed: ${String(error)}`;
+				const disabled = this.#store.tryDisableAuthCredentialIfMatches(
+					row.id,
+					serializedData,
+					disabledCause,
+					leasedCredentialId !== undefined ? { owner, nowMs: Date.now() } : undefined,
+				);
+				if (disabled) {
+					// Re-read: siblings may have been removed while the exchange ran.
 					this.#setStoredCredentials(
 						provider,
 						this.#store
 							.listAuthCredentials(provider)
+							.filter(entry => entry.id !== row.id)
 							.map(entry => ({ id: entry.id, credential: entry.credential })),
 					);
-					const latest = this.#getStoredCredentials(provider).find(entry => entry.id === row.id)?.credential;
-					return {
+					this.#resetProviderAssignments(provider);
+					this.#emitCredentialDisabled(credentialDisabledEvent(provider, row, disabledCause));
+					return { result: { credential: undefined, refreshed: false, removed: true } };
+				}
+				await this.reload();
+				const latest = this.#getStoredCredentials(provider).find(entry => entry.id === row.id)?.credential;
+				return {
+					result: {
 						credential: latest?.type === "oauth" ? options.credentialFromRow(latest) : undefined,
 						refreshed: false,
 						removed: false,
+					},
+				};
+			} finally {
+				leaseRenewalStop.abort();
+				await leaseRenewal;
+				clearTimeout(backstop);
+			}
+			const merged: T = options.mergeRefreshedCredential
+				? options.mergeRefreshedCredential(current, refreshed)
+				: mergeRefreshedCredential(current, refreshed);
+			const fingerprints = {
+				provider,
+				credentialId: row.id,
+				spentRefresh: tokenFingerprint(current.refresh),
+				access: tokenFingerprint(merged.access),
+				refresh: tokenFingerprint(merged.refresh),
+				expires: merged.expires,
+			};
+			logger.info("OAuth token exchange succeeded", fingerprints);
+			if (leaseRenewalError) {
+				logger.warn("OAuth refresh lost its lease before saving the exchanged token", fingerprints);
+				// The provider already consumed the old refresh token. The fenced save
+				// below writes only once the lease is ours again and the row is unchanged.
+				if (!this.#store.tryUpdateAuthCredentialIfMatches) throw leaseRenewalError;
+			}
+			if (this.#store.tryUpdateAuthCredentialIfMatches) {
+				if (
+					!(await this.#persistExchangedCredential(
+						provider,
+						row.id,
+						serializedData,
+						merged,
+						leasedCredentialId !== undefined && leaseStore ? { store: leaseStore, owner } : undefined,
+						fingerprints,
+					))
+				) {
+					logger.warn("OAuth refresh lost its compare-and-set; exchanged token not saved", fingerprints);
+					await this.reload();
+					const latest = this.#getStoredCredentials(provider).find(entry => entry.id === row.id)?.credential;
+					return {
+						result: {
+							credential: latest?.type === "oauth" ? options.credentialFromRow(latest) : undefined,
+							refreshed: false,
+							removed: false,
+						},
 					};
 				}
 			} else {
 				this.#store.updateAuthCredential(row.id, merged);
 			}
+			saved = true;
+			// Re-read rather than reuse `rows`: siblings may have been removed while the exchange ran.
 			this.#setStoredCredentials(
 				provider,
 				this.#store.listAuthCredentials(provider).map(entry => ({ id: entry.id, credential: entry.credential })),
 			);
-			return { credential: merged, refreshed: true, removed: false };
+			return { result: { credential: merged, refreshed: true, removed: false } };
 		} finally {
-			if (leasedCredentialId !== undefined) {
-				this.#store.releaseCredentialRefreshLease?.(leasedCredentialId, owner);
+			if (leasedCredentialId !== undefined && leaseStore && !keepLease) {
+				if (saved) leaseStore.releaseCredentialRefreshLease(leasedCredentialId, owner);
+				else await this.#leaveLease(leaseStore, leasedCredentialId, owner, takenOverFrom);
 			}
 		}
 	}
@@ -4538,7 +5059,12 @@ export class AuthStorage {
 					preflightFailures.add(candidate);
 					return;
 				}
-				const syncedPeerCredential = !authCredentialEquals(beforeSync, candidate.selection.credential);
+				// A peer row is a replacement only when its access token is not the one the
+				// provider rejected: a peer may change just the expiry, metadata or refresh token.
+				const rejectedAccess = force ? options?.rejectedAccessToken : undefined;
+				const syncedPeerCredential =
+					!authCredentialEquals(beforeSync, candidate.selection.credential) &&
+					(rejectedAccess === undefined || candidate.selection.credential.access !== rejectedAccess);
 				const hasFreshAccess = Date.now() + OAUTH_REFRESH_SKEW_MS < candidate.selection.credential.expires;
 				if ((!force || syncedPeerCredential) && hasFreshAccess) return;
 				const latestCredential = this.#getCredentialsForProvider(provider)[candidate.selection.index];
@@ -4560,6 +5086,8 @@ export class AuthStorage {
 						refreshTarget,
 						credentialId,
 						options?.signal,
+						force ? options?.refreshReason : undefined,
+						rejectedAccess,
 					);
 					const updated: OAuthCredential = {
 						...candidate.selection.credential,
@@ -4740,16 +5268,30 @@ export class AuthStorage {
 		credentialId: number | undefined,
 		signal?: AbortSignal,
 		reason?: OAuthRefreshReason,
+		rejectedAccess?: string,
 	): Promise<OAuthCredentials> {
+		if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped during shutdown");
 		credential = normalizeOAuthCredentialExpiry(provider, credential);
 		if (credentialId !== undefined) {
 			const existing = this.#oauthCredentialRefreshInFlight.get(credentialId);
-			if (existing)
-				return raceWithSignal(existing, signal, () => new AIError.AbortError("credential refresh aborted"));
+			if (existing) {
+				const joined = await raceWithSignal(
+					existing,
+					signal,
+					() => new AIError.AbortError("credential refresh aborted"),
+				);
+				// A refresh started for another request may adopt the very token this
+				// request was refused with; refresh again instead of returning it.
+				if (rejectedAccess === undefined || joined.access !== rejectedAccess) return joined;
+				return this.#refreshOAuthCredential(provider, credential, credentialId, signal, reason, rejectedAccess);
+			}
 		}
 		if (Date.now() + OAUTH_REFRESH_SKEW_MS < credential.expires) return credential;
+		// A caller that already left must not own a refresh that later callers join:
+		// they would inherit its cancellation instead of a credential.
+		if (signal?.aborted) throw new AIError.AbortError("credential refresh aborted");
 		if (credentialId === undefined) {
-			return this.#refreshOAuthCredentialUnshared(provider, credential, undefined, signal, reason);
+			return this.#refreshOAuthCredentialUnshared(provider, credential, undefined, signal, reason, rejectedAccess);
 		}
 		const promise = this.#refreshOAuthCredentialUnshared(
 			provider,
@@ -4757,10 +5299,12 @@ export class AuthStorage {
 			credentialId,
 			undefined,
 			reason,
+			rejectedAccess,
 		).finally(() => {
 			this.#oauthCredentialRefreshInFlight.delete(credentialId);
 		});
-		this.#oauthCredentialRefreshInFlight.set(credentialId, promise);
+		// Tracked apart from the caller: a refresh its caller abandoned still has to finish before the store closes.
+		this.#oauthCredentialRefreshInFlight.set(credentialId, this.#track(promise));
 		return raceWithSignal(promise, signal, () => new AIError.AbortError("credential refresh aborted"));
 	}
 
@@ -4770,28 +5314,22 @@ export class AuthStorage {
 		credentialId: number | undefined,
 		signal?: AbortSignal,
 		reason?: OAuthRefreshReason,
+		rejectedAccess?: string,
 	): Promise<OAuthCredentials> {
-		const hasDurableLease =
-			!!this.#store.tryAcquireCredentialRefreshLease &&
-			!!this.#store.getCredentialRefreshLeaseExpiresAt &&
-			!!this.#store.releaseCredentialRefreshLease &&
-			!!this.#store.renewCredentialRefreshLease;
-		if (credentialId !== undefined && hasDurableLease) {
+		if (credentialId !== undefined && hasRefreshLeases(this.#store)) {
 			const forceRefresh = credential.expires === 0;
 			const result = await this.refreshStoredOAuthCredential(provider, {
 				credentialId,
-				observedCredential: forceRefresh ? undefined : credential,
+				// A forced refresh still names the tokens it wants replaced: when the
+				// row already holds newer ones, another process refreshed first.
+				observedCredential: credential,
 				credentialFromRow: row => row,
 				forceRefresh,
+				rejectedAccess: reason === "auth-recovery" ? rejectedAccess : undefined,
 				signal,
+				// `refreshStoredOAuthCredential` owns the caller budget and the exchange backstop.
 				refresh: (current, refreshSignal) =>
-					this.#requestOAuthCredentialRefresh(
-						provider,
-						current,
-						credentialId,
-						signal && refreshSignal ? AbortSignal.any([signal, refreshSignal]) : (signal ?? refreshSignal),
-						reason,
-					),
+					this.#requestOAuthCredentialRefresh(provider, current, credentialId, refreshSignal, reason, undefined),
 				isDefinitiveFailure:
 					reason === "usage-probe" ? undefined : error => AIError.isDefinitiveOAuthFailure(String(error)),
 				disabledCause: error => `oauth refresh failed: ${String(error)}`,
@@ -4815,15 +5353,23 @@ export class AuthStorage {
 				provider,
 			});
 		}
-		return this.#requestOAuthCredentialRefresh(provider, credential, credentialId, signal, reason);
+		return this.#requestOAuthCredentialRefresh(
+			provider,
+			credential,
+			credentialId,
+			signal,
+			reason,
+			DEFAULT_OAUTH_REFRESH_TIMEOUT_MS,
+		);
 	}
 
 	async #requestOAuthCredentialRefresh(
 		provider: Provider,
 		credential: OAuthCredential,
 		credentialId: number | undefined,
-		signal?: AbortSignal,
-		reason?: OAuthRefreshReason,
+		signal: AbortSignal | undefined,
+		reason: OAuthRefreshReason | undefined,
+		timeoutMs: number | undefined,
 	): Promise<OAuthCredentials> {
 		let refreshPromise: Promise<OAuthCredentials>;
 
@@ -4846,18 +5392,24 @@ export class AuthStorage {
 			}
 		}
 
+		// Stop awaiting after `timeoutMs` or on `signal`. Leased exchanges pass no
+		// timeout: `refreshStoredOAuthCredential` stops its caller waiting without
+		// dropping the result, and only its backstop signal ends the exchange itself.
 		const cancellation = Promise.withResolvers<never>();
 		let onAbort: (() => void) | undefined;
-		const timeout = setTimeout(
-			() =>
-				cancellation.reject(
-					new AIError.OAuthError(`OAuth token refresh timed out for provider: ${provider}`, {
-						kind: "timeout",
-						provider,
-					}),
-				),
-			DEFAULT_OAUTH_REFRESH_TIMEOUT_MS,
-		);
+		const timeout =
+			timeoutMs === undefined
+				? undefined
+				: setTimeout(
+						() =>
+							cancellation.reject(
+								new AIError.OAuthError(`OAuth token refresh timed out for provider: ${provider}`, {
+									kind: "timeout",
+									provider,
+								}),
+							),
+						timeoutMs,
+					);
 		if (signal) {
 			if (signal.aborted) {
 				cancellation.reject(new AIError.AbortError("OAuth token refresh aborted by caller"));
@@ -5003,6 +5555,8 @@ export class AuthStorage {
 					selection.credential,
 					credentialId,
 					options?.signal,
+					options?.forceRefresh ? options?.refreshReason : undefined,
+					options?.forceRefresh ? options?.rejectedAccessToken : undefined,
 				);
 				const apiKey = customProvider.getApiKey
 					? customProvider.getApiKey(refreshedCredentials)
@@ -5014,6 +5568,8 @@ export class AuthStorage {
 					selection.credential,
 					credentialId,
 					options?.signal,
+					options?.forceRefresh ? options?.refreshReason : undefined,
+					options?.forceRefresh ? options?.rejectedAccessToken : undefined,
 				);
 				const oauthCreds: Record<string, OAuthCredentials> = {
 					[provider]: refreshedCredentials,
@@ -5069,7 +5625,7 @@ export class AuthStorage {
 					}
 				}
 			}
-			this.#recordOAuthBearerCredentialId(provider, result.apiKey, credentialId);
+			this.#recordOAuthBearerCredentialId(provider, result.apiKey, credentialId, updated.access);
 			if (options?.recordAffinity !== false)
 				this.#recordSessionCredential(provider, sessionId, "oauth", selection.index);
 			return { apiKey: result.apiKey, credential: updated, credentialId };
@@ -5276,7 +5832,10 @@ export class AuthStorage {
 		try {
 			let index = selection.index;
 			if (options?.forceRefresh) {
-				await this.refreshCredentialById(selection.credentialId, options.signal, { reason: options.refreshReason });
+				await this.refreshCredentialById(selection.credentialId, options.signal, {
+					reason: options.refreshReason,
+					rejectedAccess: options.rejectedAccessToken,
+				});
 				index = this.#getStoredCredentials(provider).findIndex(entry => entry.id === selection.credentialId);
 				if (index === -1) throw new Error(`OAuth credential ${selection.credentialId} was removed during refresh`);
 			}
@@ -6173,6 +6732,8 @@ export class AuthStorage {
 	resolver(provider: string, options?: { sessionId?: string; baseUrl?: string; modelId?: string }): ApiKeyResolver {
 		const { sessionId, baseUrl, modelId } = options ?? {};
 		return async ({ lastChance, error, signal, previousKey }) => {
+			// The bearer the failed request sent names the token the provider rejected.
+			const rejectedAccessToken = this.#oauthAccessForBearer(provider, previousKey);
 			if (error === undefined) {
 				return this.getApiKey(provider, sessionId, {
 					baseUrl,
@@ -6205,6 +6766,8 @@ export class AuthStorage {
 				baseUrl,
 				modelId,
 				forceRefresh: true,
+				refreshReason: AIError.status(error) === 401 ? "auth-recovery" : undefined,
+				rejectedAccessToken,
 				signal,
 				throwOnTransientOAuthRefreshFailure: true,
 			});
@@ -6242,15 +6805,35 @@ export class AuthStorage {
 	async refreshCredentialById(
 		id: number,
 		signal?: AbortSignal,
-		options?: { reason?: OAuthRefreshReason },
+		options?: { reason?: OAuthRefreshReason; rejectedAccess?: string },
 	): Promise<AuthCredentialSnapshotEntry> {
+		if (this.#shuttingDown) throw new AIError.AbortError("OAuth refresh stopped during shutdown");
 		const existing = this.#oauthRefreshInFlight.get(id);
-		if (existing) return raceWithSignal(existing, signal, () => new AIError.AbortError("credential refresh aborted"));
+		if (existing) {
+			const joined = await raceWithSignal(
+				existing,
+				signal,
+				() => new AIError.AbortError("credential refresh aborted"),
+			);
+			// A refresh that started earlier can land on the very token this caller's
+			// request was refused with; that is no recovery, so refresh again.
+			if (
+				options?.rejectedAccess === undefined ||
+				joined.credential.type !== "oauth" ||
+				joined.credential.access !== options.rejectedAccess
+			) {
+				return joined;
+			}
+			// Whatever refresh runs now is checked against the rejected token the same way.
+			return this.refreshCredentialById(id, signal, options);
+		}
+		// A caller that already left must not own a refresh that later callers join.
+		if (signal?.aborted) throw new AIError.AbortError("credential refresh aborted");
 
 		const promise = (async () => {
 			this.#bumpGeneration("credential-refresh-start");
 			try {
-				return await this.#forceRefreshCredentialByIdUnshared(id, signal, options?.reason);
+				return await this.#forceRefreshCredentialByIdUnshared(id, signal, options?.reason, options?.rejectedAccess);
 			} catch (error) {
 				this.#bumpGeneration("credential-refresh-failure");
 				throw error;
@@ -6258,7 +6841,8 @@ export class AuthStorage {
 				this.#oauthRefreshInFlight.delete(id);
 			}
 		})();
-		this.#oauthRefreshInFlight.set(id, promise);
+		// Saves by id itself; tracked so the store stays open until that save lands.
+		this.#oauthRefreshInFlight.set(id, this.#track(promise));
 		return raceWithSignal(promise, signal, () => new AIError.AbortError("credential refresh aborted"));
 	}
 
@@ -6270,6 +6854,7 @@ export class AuthStorage {
 		id: number,
 		signal?: AbortSignal,
 		reason?: OAuthRefreshReason,
+		rejectedAccess?: string,
 	): Promise<AuthCredentialSnapshotEntry> {
 		for (const [provider, entries] of this.#data) {
 			const index = entries.findIndex(entry => entry.id === id);
@@ -6286,7 +6871,14 @@ export class AuthStorage {
 			const stale: OAuthCredential = { ...attempted, expires: 0 };
 			let refreshed: OAuthCredentials;
 			try {
-				refreshed = await this.#refreshOAuthCredential(provider as Provider, stale, id, signal, reason);
+				refreshed = await this.#refreshOAuthCredential(
+					provider as Provider,
+					stale,
+					id,
+					signal,
+					reason,
+					rejectedAccess,
+				);
 			} catch (error) {
 				if (reason !== "usage-probe" && AIError.isDefinitiveOAuthFailure(String(error))) {
 					if (

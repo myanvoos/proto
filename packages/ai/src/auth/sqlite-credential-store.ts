@@ -15,6 +15,7 @@ import type {
 	AuthCredential,
 	AuthCredentialStore,
 	CredentialRefreshLeaseFence,
+	CredentialRefreshLeaseHolder,
 	DisabledCredentialSummary,
 	OAuthCredential,
 	StoredAuthCredential,
@@ -320,6 +321,8 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 	#deleteExpiredCredentialBlocksStmt: Statement;
 	#acquireCredentialRefreshLeaseStmt: Statement;
 	#getCredentialRefreshLeaseStmt: Statement;
+	#getCredentialRefreshLeaseHolderStmt: Statement;
+	#handBackCredentialRefreshLeaseStmt: Statement;
 	#renewCredentialRefreshLeaseStmt: Statement;
 	#releaseCredentialRefreshLeaseStmt: Statement;
 	#lastCredentialBlockSweepMs = Number.NEGATIVE_INFINITY;
@@ -432,6 +435,12 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		);
 		this.#getCredentialRefreshLeaseStmt = this.#db.prepare(
 			"SELECT expires_at_ms FROM auth_credential_refresh_leases WHERE credential_id = ?",
+		);
+		this.#getCredentialRefreshLeaseHolderStmt = this.#db.prepare(
+			"SELECT owner, expires_at_ms FROM auth_credential_refresh_leases WHERE credential_id = ?",
+		);
+		this.#handBackCredentialRefreshLeaseStmt = this.#db.prepare(
+			`UPDATE auth_credential_refresh_leases SET owner = ?, expires_at_ms = ?, updated_at = ${SQLITE_NOW_EPOCH} WHERE credential_id = ? AND owner = ?`,
 		);
 		this.#renewCredentialRefreshLeaseStmt = this.#db.prepare(
 			`UPDATE auth_credential_refresh_leases SET expires_at_ms = ?, updated_at = ${SQLITE_NOW_EPOCH} WHERE credential_id = ? AND owner = ?`,
@@ -1531,6 +1540,24 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		return result.changes === 1;
 	}
 
+	getCredentialRefreshLeaseHolder(credentialId: number): CredentialRefreshLeaseHolder | undefined {
+		const row = this.#getCredentialRefreshLeaseHolderStmt.get(credentialId) as
+			| { owner?: string; expires_at_ms?: number }
+			| undefined;
+		if (typeof row?.owner !== "string" || typeof row.expires_at_ms !== "number") return undefined;
+		return { owner: row.owner, expiresAtMs: row.expires_at_ms };
+	}
+
+	handBackCredentialRefreshLease(credentialId: number, owner: string, holder: CredentialRefreshLeaseHolder): boolean {
+		const result = this.#handBackCredentialRefreshLeaseStmt.run(
+			holder.owner,
+			holder.expiresAtMs,
+			credentialId,
+			owner,
+		) as { changes: number };
+		return result.changes === 1;
+	}
+
 	releaseCredentialRefreshLease(credentialId: number, owner: string): void {
 		try {
 			this.#releaseCredentialRefreshLeaseStmt.run(credentialId, owner);
@@ -1848,6 +1875,8 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		this.#deleteCachePrefixStmt.finalize();
 		this.#acquireCredentialRefreshLeaseStmt.finalize();
 		this.#getCredentialRefreshLeaseStmt.finalize();
+		this.#getCredentialRefreshLeaseHolderStmt.finalize();
+		this.#handBackCredentialRefreshLeaseStmt.finalize();
 		this.#renewCredentialRefreshLeaseStmt.finalize();
 		this.#releaseCredentialRefreshLeaseStmt.finalize();
 		this.#db.close();
