@@ -5,6 +5,7 @@
 ### Fixed
 
 - Honor `x-should-retry: false` in the OpenAI wire transport and provider retry loops so a retrying gateway's terminal 5xx is not replayed.
+- Treat a 429 or 402 token-cap response as a rate limit instead of context overflow, so throttled turns still retry and walk the fallback chain.
 
 ## [19.2.1] - 2026-11-03
 
