@@ -1097,7 +1097,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 30.5,
+		"int": 30.8,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -1781,6 +1781,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 500000,
+		"int": 31,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -1865,7 +1866,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 500000,
-		"int": 35.3,
+		"int": 35.5,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

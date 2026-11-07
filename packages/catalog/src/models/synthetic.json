@@ -100,7 +100,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
-		"int": 32.5,
+		"int": 32.6,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
@@ -183,7 +183,7 @@
 		},
 		"contextWindow": 524288,
 		"maxTokens": 65536,
-		"int": 18.7,
+		"int": 18.9,
 		"thinking": {
 			"mode": "effort",
 			"efforts": [

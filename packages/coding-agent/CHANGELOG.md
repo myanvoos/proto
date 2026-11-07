@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep an extension provider with `authHeader: true` and its cached `fetchDynamicModels` catalog when a forced refresh fails, instead of showing no models until the next successful refresh.
+- Report a provider discovery failure from a throwing dynamic fetcher in the discovery state and log while still serving cached or bundled models.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

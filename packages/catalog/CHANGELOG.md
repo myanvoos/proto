@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add the `toolNamePrefix` Responses compat field, set to `_` for Muse Code.
+
+### Fixed
+
+- Keep newly published Azure models with runtime-resolved endpoints after a catalog refresh.
+- Keep only chat-capable Mistral models in discovery and read their context, vision and reasoning from the row's capabilities.
+- Price Devin SWE-2 Flash and SWE-2 Fast separately from SWE-2 and cover their raw effort uids.
+- Keep a cached catalog whose models carry request headers after a failed refresh instead of replacing it with an empty snapshot.
+- Report an endpoint fetcher failure on the resolution result instead of swallowing it.
+- Stop reporting a dated list-price card as a peak/off-peak tariff.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes

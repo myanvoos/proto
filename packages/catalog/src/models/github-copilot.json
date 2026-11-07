@@ -87,7 +87,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 49,
+		"int": 49.2,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -227,7 +227,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 36.2,
+		"int": 36.5,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -576,6 +576,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
+		"int": 44.2,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -645,7 +646,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 58.4,
+		"int": 59.1,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -986,7 +987,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 128000,
-		"int": 54.2,
+		"int": 54.5,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -1719,7 +1720,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 64000,
-		"int": 30.5,
+		"int": 30.8,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3258,6 +3259,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 23.8,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3438,6 +3440,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 32.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3619,7 +3622,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 27.8,
+		"int": 27.9,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3710,6 +3713,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
+		"int": 44.2,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3800,7 +3804,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 54.5,
+		"int": 54.6,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -3891,7 +3895,7 @@
 		},
 		"contextWindow": 1050000,
 		"maxTokens": 128000,
-		"int": 51,
+		"int": 51.3,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -4073,6 +4077,7 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 128000,
+		"int": 31,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",
@@ -4164,7 +4169,7 @@
 		},
 		"contextWindow": 500000,
 		"maxTokens": 128000,
-		"int": 35.3,
+		"int": 35.5,
 		"headers": {
 			"User-Agent": "copilot/1.0.82",
 			"Editor-Version": "copilot/1.0.82",

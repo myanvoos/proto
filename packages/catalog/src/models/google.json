@@ -684,6 +684,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
+		"int": 6.2,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [
@@ -944,7 +945,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 65536,
-		"int": 30.5,
+		"int": 30.8,
 		"thinking": {
 			"mode": "google-level",
 			"efforts": [

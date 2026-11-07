@@ -1452,13 +1452,13 @@
 			"image"
 		],
 		"cost": {
-			"input": 0.5,
-			"output": 3,
-			"cacheRead": 0.09999999999999999,
-			"cacheWrite": 0.625
+			"input": 0.06,
+			"output": 2.3,
+			"cacheRead": 0.059,
+			"cacheWrite": 0
 		},
-		"contextWindow": 1000000,
-		"maxTokens": 131072,
+		"contextWindow": 262144,
+		"maxTokens": 262144,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -5336,9 +5336,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.07600000000000001,
-			"output": 0.153,
-			"cacheRead": 0.014,
+			"input": 0.13,
+			"output": 0.26,
+			"cacheRead": 0.028,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
@@ -5457,13 +5457,13 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.66,
-			"output": 1.9800000000000002,
-			"cacheRead": 0.022,
+			"input": 1.32,
+			"output": 3.9600000000000004,
+			"cacheRead": 0.13199999999999998,
 			"cacheWrite": 0
 		},
-		"contextWindow": 1000000,
-		"maxTokens": 384000,
+		"contextWindow": 1048600,
+		"maxTokens": 1048600,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -5711,6 +5711,67 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 262144,
+		"requiresGlyphTokenization": false,
+		"tokenizer": "deepseek-v3",
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"deepseek/deepseek-v4.1-flash-1017-ultrafast": {
+		"id": "deepseek/deepseek-v4.1-flash-1017-ultrafast",
+		"name": "DeepSeek V4.1 Flash 1017 Ultrafast",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2.4,
+			"output": 9.6,
+			"cacheRead": 0.048,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 1048576,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "deepseek-v3",
 		"thinking": {
@@ -7523,7 +7584,7 @@
 	"google/gemma-4-26b-a4b-it": {
 		"id": "google/gemma-4-26b-a4b-it",
 		"requiresGlyphTokenization": false,
-		"name": "Gemma 4 26B A4B",
+		"name": "Gemma 4 26B A4B IT",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -7600,6 +7661,65 @@
 		},
 		"contextWindow": 262144,
 		"maxTokens": 131072,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
+	"humansand/ampersand-v0.1": {
+		"id": "humansand/ampersand-v0.1",
+		"name": "Ampersand v0.1",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text"
+		],
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
 		"thinking": {
 			"mode": "budget",
 			"efforts": [
@@ -8480,9 +8600,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 0.3,
+			"output": 0.8999999999999999,
+			"cacheRead": 0.06,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,
@@ -10021,7 +10141,7 @@
 	"minimax/minimax-m2": {
 		"id": "minimax/minimax-m2",
 		"requiresGlyphTokenization": false,
-		"name": "MiniMax-M2",
+		"name": "MiniMax M2",
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
@@ -10085,7 +10205,7 @@
 	"minimax/minimax-m2.1": {
 		"id": "minimax/minimax-m2.1",
 		"requiresGlyphTokenization": false,
-		"name": "MiniMax-M2.1",
+		"name": "MiniMax M2.1",
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
@@ -10338,7 +10458,7 @@
 	"minimax/minimax-m2.7": {
 		"id": "minimax/minimax-m2.7",
 		"requiresGlyphTokenization": false,
-		"name": "MiniMax-M2.7",
+		"name": "MiniMax M2.7",
 		"api": "anthropic-messages",
 		"provider": "vercel-ai-gateway",
 		"baseUrl": "https://ai-gateway.vercel.sh",
@@ -11758,7 +11878,7 @@
 		"api": "anthropic-messages",
 		"baseUrl": "https://ai-gateway.vercel.sh",
 		"provider": "vercel-ai-gateway",
-		"reasoning": true,
+		"reasoning": false,
 		"input": [
 			"text",
 			"image"
@@ -11771,17 +11891,6 @@
 		},
 		"contextWindow": 256000,
 		"maxTokens": 256000,
-		"thinking": {
-			"mode": "budget",
-			"efforts": [
-				"minimal",
-				"low",
-				"medium",
-				"high",
-				"xhigh",
-				"max"
-			]
-		},
 		"tokenizer": "kimi-k2",
 		"supportsAssistantPrefill": false,
 		"int": 23.5,
@@ -11808,7 +11917,7 @@
 			"requiresToolResultId": false,
 			"requiresThinkingEnabled": false,
 			"requiresThinkingPresence": false,
-			"replayUnsignedThinking": true,
+			"replayUnsignedThinking": false,
 			"escapeBuiltinToolNames": false
 		},
 		"supportsComputerUse": false
@@ -12137,10 +12246,10 @@
 			"input": 2,
 			"output": 10,
 			"cacheRead": 0.19999999999999998,
-			"cacheWrite": 2
+			"cacheWrite": 0
 		},
-		"contextWindow": 1048576,
-		"maxTokens": 1048576,
+		"contextWindow": 1000000,
+		"maxTokens": 262144,
 		"requiresGlyphTokenization": false,
 		"tokenizer": "kimi-k2",
 		"thinking": {
@@ -12432,9 +12541,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.049999999999999996,
-			"output": 0.19999999999999998,
-			"cacheRead": 0.01,
+			"input": 0.06,
+			"output": 0.16,
+			"cacheRead": 0.03,
 			"cacheWrite": 0
 		},
 		"contextWindow": 262144,
@@ -20174,6 +20283,66 @@
 		},
 		"supportsComputerUse": false
 	},
+	"tencent/hy4": {
+		"id": "tencent/hy4",
+		"name": "Hy4",
+		"api": "anthropic-messages",
+		"provider": "vercel-ai-gateway",
+		"baseUrl": "https://ai-gateway.vercel.sh",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 0.417,
+			"output": 1.2505,
+			"cacheRead": 0.020999999999999998,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1024000,
+		"maxTokens": 64000,
+		"requiresGlyphTokenization": false,
+		"thinking": {
+			"mode": "budget",
+			"efforts": [
+				"minimal",
+				"low",
+				"medium",
+				"high",
+				"xhigh",
+				"max"
+			]
+		},
+		"supportsAssistantPrefill": false,
+		"compat": {
+			"maxImageDimension": 8000,
+			"maxImagePayloadBytes": 10485760,
+			"officialEndpoint": false,
+			"signingEndpoint": false,
+			"supportsContextManagement": true,
+			"supportsServerCompaction": false,
+			"firstPartyProvider": false,
+			"disableStrictTools": false,
+			"disableAdaptiveThinking": false,
+			"allowAnthropicHeaderOverrides": false,
+			"supportsEagerToolInputStreaming": false,
+			"supportsLongCacheRetention": false,
+			"supportsMidConversationSystem": false,
+			"supportsTurnScopedSystem": false,
+			"supportsMidConversationToolChanges": false,
+			"supportsPerMessageEffort": false,
+			"supportsThinkingBindingControls": false,
+			"supportsForcedToolChoice": true,
+			"supportsSamplingParams": true,
+			"requiresToolResultId": false,
+			"requiresThinkingEnabled": false,
+			"requiresThinkingPresence": false,
+			"replayUnsignedThinking": true,
+			"escapeBuiltinToolNames": false
+		},
+		"supportsComputerUse": false
+	},
 	"tencent/hy4-preview": {
 		"id": "tencent/hy4-preview",
 		"name": "Hy4 preview",
@@ -22781,9 +22950,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0.7999999999999999,
-			"output": 2.5500000000000003,
-			"cacheRead": 0.16,
+			"input": 1.4,
+			"output": 4.4,
+			"cacheRead": 0.14,
 			"cacheWrite": 0
 		},
 		"contextWindow": 1000000,

@@ -1089,6 +1089,42 @@
 		"supportsComputerUse": false,
 		"supportsAssistantPrefill": true
 	},
+	"kimi-k3.1-pro": {
+		"id": "kimi-k3.1-pro",
+		"name": "Kimi K3.1 Pro",
+		"api": "ollama-chat",
+		"provider": "ollama-cloud",
+		"baseUrl": "https://ollama.com",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"cost": {
+			"input": 2,
+			"output": 10,
+			"cacheRead": 0.2,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 131072,
+		"int": 46.5,
+		"omitMaxOutputTokens": true,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"high",
+				"max"
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
+		},
+		"requiresGlyphTokenization": false,
+		"tokenizer": "kimi-k2",
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": true
+	},
 	"mimo-v2.6-flash": {
 		"id": "mimo-v2.6-flash",
 		"name": "MiMo-V2.6-Flash",
@@ -1312,7 +1348,7 @@
 		},
 		"contextWindow": 512000,
 		"maxTokens": 131072,
-		"int": 18.7,
+		"int": 18.9,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1346,7 +1382,7 @@
 		},
 		"contextWindow": 1000000,
 		"maxTokens": 512000,
-		"int": 28.9,
+		"int": 29.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1488,7 +1524,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 262144,
-		"int": 26,
+		"int": 26.1,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
@@ -1522,7 +1558,7 @@
 		},
 		"contextWindow": 1048576,
 		"maxTokens": 131072,
-		"int": 24.7,
+		"int": 24.9,
 		"omitMaxOutputTokens": true,
 		"thinking": {
 			"mode": "effort",
