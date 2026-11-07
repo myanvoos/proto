@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pi_shell::minimizer::{MinimizerConfig, engine, pipeline};
+use pi_shell::minimizer::{MinimizerConfig, engine, pipeline, primitives};
 
 fn config() -> MinimizerConfig {
 	MinimizerConfig { enabled: true, ..Default::default() }
@@ -102,4 +102,64 @@ fn psql_messages_quoting_pipes_survive_table_row_caps() {
 	);
 	assert!(out.text.contains("LINE 1: select 1 || 2\n"), "{}", out.text);
 	assert!(out.text.contains("rows elided"), "{}", out.text);
+}
+
+#[test]
+fn rustfmt_check_counts_files_not_diff_locations() {
+	let input = format!(
+		"{}\nDiff in /p/src/x.rs:1:\n-fn  a(){{}}\n+fn a() {{}}\n fn f1() {{}}\nDiff in \
+		 /p/src/x.rs:19:\n fn f20() {{}}\n-fn  b(){{}}\n+fn b() {{}}\n",
+		"x".repeat(1_200)
+	);
+	let out = engine::apply("rustfmt --check src/x.rs", &input, 1, &config());
+	assert!(
+		out.text
+			.starts_with("1 file needs formatting:\n  /p/src/x.rs\n"),
+		"{}",
+		out.text
+	);
+	assert!(!out.text.contains(":19"), "{}", out.text);
+}
+
+#[test]
+fn diff_lists_binary_and_renamed_files_without_counted_lines() {
+	let patch = concat!(
+		"diff --git a/app icon.png b/app icon.png\nindex bdc955b..8835708 100644\nGIT binary \
+		 patch\nliteral 2\nJcmZQz0ssI600RI3\n\ndiff --git a/salt and pepper.bin b/salt and \
+		 pepper.bin\nindex bdc955b..8835708 100644\nBinary files a/salt and pepper.bin and b/salt \
+		 and pepper.bin differ\ndiff --git a/old name.txt b/new name.txt\nsimilarity index \
+		 100%\nrename from old name.txt\nrename to new name.txt\ndiff --git a/t.rs b/t.rs\nindex \
+		 422c2b7..0f7bc76 100644\n--- a/t.rs\n+++ b/t.rs\n@@ -1,2 +1,2 @@\n a\n-b\n+c\n",
+	);
+	let input = format!("{patch} {}\n", "x".repeat(primitives::WHOLE_OUTPUT_BYTES));
+	let out = engine::apply("git diff HEAD", &input, 0, &config());
+	assert_eq!(out.text.lines().take(5).collect::<Vec<_>>(), [
+		"app icon.png | Bin",
+		"salt and pepper.bin | Bin",
+		"new name.txt | 0",
+		"t.rs | 2 +-",
+		"4 files changed, 1 insertions(+), 1 deletions(-)",
+	]);
+	assert!(
+		out.text
+			.contains("File: salt and pepper.bin\n  Binary files differ\n"),
+		"{}",
+		out.text
+	);
+}
+
+#[test]
+fn stash_pop_keeps_drop_line_and_counts_only_indented_untracked_entries() {
+	let input = format!(
+		"On branch {}\nUntracked files:\n  (use \"git add <file>...\" to include in what will be \
+		 committed)\n\tno changes added.md\n\tDropped stash@{{0}}\n\nnothing added to commit but \
+		 untracked files present (use \"git add\" to track)\nDropped refs/stash@{{0}} (0123abcd)\n",
+		"b".repeat(1_000)
+	);
+	let out = engine::apply("git stash pop", &input, 0, &config());
+	assert!(out.text.contains("untracked 2"), "{}", out.text);
+	assert!(out.text.contains("?? no changes added.md"), "{}", out.text);
+	assert!(out.text.contains("?? Dropped stash@{0}"), "{}", out.text);
+	assert!(!out.text.contains("?? nothing added"), "{}", out.text);
+	assert!(out.text.ends_with("\nDropped refs/stash@{0} (0123abcd)\n"), "{}", out.text);
 }
