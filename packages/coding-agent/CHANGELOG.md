@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Hide skills from the model's skill listing with `skills.manualSkills` patterns while keeping them invocable by name.
+
 ### Fixed
 
 - Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
