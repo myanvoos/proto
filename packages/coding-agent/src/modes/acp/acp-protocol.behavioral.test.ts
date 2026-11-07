@@ -452,6 +452,42 @@ test("ACP handles remain usable after an extension resets the conversation and a
 	}
 }, 30_000);
 
+test("a client-declared server that fails to connect does not fail session/new", async () => {
+	const server = new AcpServer(["--model", "w7ok/mok"]);
+	try {
+		await server.initialize();
+		server.send({
+			jsonrpc: "2.0",
+			id: 2,
+			method: "session/new",
+			params: {
+				cwd: workDir,
+				mcpServers: [{ name: "broken", command: "/nonexistent/proto-fixture-binary", args: [], env: [] }],
+			},
+		});
+		const created = await server.response(2);
+		// The session must load so the failure can be reauthorized or retried later.
+		expect(created.error).toBeUndefined();
+		const sessionId = created.result?.sessionId as string;
+		expect(sessionId).toBeTruthy();
+
+		// The failure surfaces as a chunk attributed to the new session.
+		const deadline = Date.now() + 10_000;
+		let text = "";
+		while (Date.now() < deadline && !text.includes(`MCP server "broken" failed to connect`)) {
+			text = server
+				.notifications("agent_message_chunk")
+				.filter(frame => frame.params?.sessionId === sessionId)
+				.map(frame => (frame.params?.update as { content?: { text?: string } } | undefined)?.content?.text ?? "")
+				.join("\n");
+			if (!text.includes(`MCP server "broken" failed to connect`)) await Bun.sleep(50);
+		}
+		expect(text).toContain(`MCP server "broken" failed to connect`);
+	} finally {
+		server.kill();
+	}
+}, 30_000);
+
 afterAll(async () => {
 	flaky.stop(true);
 	unauthorized.stop(true);

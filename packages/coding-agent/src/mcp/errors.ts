@@ -274,8 +274,19 @@ export function formatMCPToolFailure(error: unknown, serverName: string, toolNam
 	if (diagnostic.code !== undefined) lines.push(`code: ${diagnostic.code}`);
 	if (diagnostic.traceId !== undefined) lines.push(`trace_id: ${diagnostic.traceId}`);
 	if (diagnostic.data !== undefined) lines.push(`data: ${diagnostic.data}`);
+	// A non-retryable connection loss was lost after dispatch: a successful write
+	// or POST only hands the request to the transport, so it may already have run.
+	const lostAfterSend =
+		!diagnostic.retryable &&
+		(diagnostic.failure === "eof" || diagnostic.failure === "reset" || diagnostic.failure === "closed");
 	lines.push(
-		`next: ${hints[diagnostic.failure]}${diagnostic.requestAccepted ? " The server accepted the request; verify its outcome before retrying." : ""}`,
+		`next: ${hints[diagnostic.failure]}${
+			diagnostic.requestAccepted
+				? " The server accepted the request; verify its outcome before retrying."
+				: lostAfterSend
+					? " The connection was lost after the request was sent, so it may already have run; check its effect before retrying."
+					: ""
+		}`,
 	);
 	return lines.join("\n");
 }

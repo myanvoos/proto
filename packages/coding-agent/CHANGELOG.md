@@ -20,6 +20,12 @@
 - A session whose request carries no titleable text of its own — an attached `@brief.md`, a greeting — is now named once from the assistant's reading of it, instead of staying untitled until the next titleable message
 - Tool results whose `details` hold an object with a throwing getter no longer stop the session from saving for the rest of the process
 - `/quit` and `/exit` no longer wait several seconds for an unresponsive OTLP telemetry collector
+### Fixed
+
+- Fixed MCP OAuth login and token refresh failing with a JSON parse error against token endpoints that reply form-encoded unless JSON is requested, such as GitHub's.
+- Fixed MCP OAuth tokens targeting the authorization server's own default audience instead of the MCP server's canonical resource URI.
+- Fixed ACP sessions refusing to load when a client-declared MCP server failed to connect; the session now loads and reports the server failure instead.
+- MCP tool failures after a lost connection now say the request may already have run instead of implying it never reached the server.
 
 ## [20.1.2] - 2026-11-04
 

@@ -290,6 +290,11 @@ type ManagedSessionRecord = {
 	mcpManager: MCPManager | undefined;
 
 	mcpRefreshChain: Promise<void> | undefined;
+	// MCP startup failures recorded during session setup, before the
+	// newSession/loadSession response has told the client the session id.
+	// Drained by `#emitBootstrapUpdates` behind the bootstrap race guard so
+	// clients (Zed) cannot drop them as notifications for an unknown session.
+	pendingMcpStartupChunks: Array<{ name: string; message: string }>;
 	promptTurn: PromptTurnState | undefined;
 	promptQueue: PromptQueueState;
 	pendingPromptDispatches: PromptDispatchCancellation[];
@@ -1519,6 +1524,7 @@ export class AcpAgent implements Agent {
 			setToolUIContext,
 			mcpManager: undefined,
 			mcpRefreshChain: undefined,
+			pendingMcpStartupChunks: [],
 			promptTurn: undefined,
 			promptQueue: { promise: Promise.resolve(), release: undefined },
 			liveMessageId: undefined,
@@ -2075,6 +2081,21 @@ export class AcpAgent implements Agent {
 	async #emitBootstrapUpdates(sessionId: string, record: ManagedSessionRecord): Promise<void> {
 		if (this.#sessions.get(sessionId) !== record) {
 			return;
+		}
+		// MCP startup failures queued by `#configureMcpServers` flush here,
+		// behind the bootstrap race guard, so the client can finally attribute
+		// them to a session it knows.
+		for (const { name, message } of record.pendingMcpStartupChunks.splice(0)) {
+			await this.#connection.sessionUpdate({
+				sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: {
+						type: "text",
+						text: `MCP server "${name}" failed to connect: ${message}. Its tools are unavailable until it is reauthorized or the client restarts the session.`,
+					},
+				},
+			});
 		}
 		await this.#connection.sessionUpdate({
 			sessionId,
@@ -2643,16 +2664,19 @@ export class AcpAgent implements Agent {
 		}
 
 		const result = await manager.connectServers(configs, sources);
-		if (result.errors.size > 0) {
-			throw new Error(
-				Array.from(result.errors.entries())
-					.map(([name, message]) => `${name}: ${message}`)
-					.join("; "),
-			);
-		}
-
+		// A client-declared server whose initial connect fails (e.g. an expired
+		// client-owned bearer answering 401 inside the startup window) must not
+		// abort session creation: the record keeps the manager with the failed
+		// definition, and the client is told through a chunk instead of the
+		// session refusing to load. The chunk is queued, not sent, because this
+		// runs before the newSession/loadSession response has given the client
+		// the session id; `#emitBootstrapUpdates` drains the queue behind the
+		// same race guard as the other bootstrap notifications.
 		record.mcpManager = manager;
 		await enqueueMcpToolsRefresh();
+		for (const [name, message] of result.errors) {
+			record.pendingMcpStartupChunks.push({ name, message });
+		}
 	}
 
 	#toMcpConfig(server: McpServer): MCPServerConfig {

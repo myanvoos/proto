@@ -24,6 +24,7 @@ This document describes how MCP servers are discovered, connected, exposed as to
 
 - **Headless/SDK** (no UI, no provided manager): awaits `discoverAndLoadMCPTools(cwd, { ... })` and merges the returned tools into the startup `customTools` set. Print mode (`-p`) then calls `MCPManager.waitForStartup()` before the first prompt, bounded by the MCP request timeout (`PROTO_MCP_TIMEOUT_MS`, else 30s; `0` waits until settled), refreshes the session's MCP tools, and warns on stderr about servers still not ready.
 - **Interactive/TUI** (`hasUI: true`, no provided manager): constructs `MCPManager` immediately (with cache + auth storage), defers `discoverAndConnect()` to a background task started after the session exists, then binds tools via `session.refreshMCPTools(...)` (disconnecting the manager if the session was torn down mid-connect).
+  The first UI/RPC turn waits up to 1.5 s for this MCP startup, so its system prompt includes servers connected by then; slower servers register later and change the next turn's prompt.
 
 Both paths:
 
@@ -146,7 +147,7 @@ Server and tool name components are lowercased and sanitized to letters, digits,
 
 - `MCPTool` calls tools through an already connected `MCPServerConnection`.
 - `DeferredMCPTool` waits for `waitForConnection(server)` before calling; this allows cached tools to exist before connection is ready.
-- Both attempt a reconnect + single retry for retriable connection failures. Pre-acceptance HTTP request timeouts and stdio request timeouts retain that one retry. Once an HTTP POST receives a successful response, failures while reading its body or resuming its SSE stream are not replayed, including EOF, timeout, and resume authentication failures; verify the tool's outcome before retrying manually.
+- Both attempt a reconnect + single retry for retriable connection failures. Pre-acceptance HTTP request timeouts and stdio request timeouts retain that one retry. A Streamable HTTP or legacy SSE POST whose connection is reset or closed once established is not replayed, and neither is any failure after an HTTP POST receives a successful response (reading its body, resuming its SSE stream, timeout, or resume authentication failure); verify the tool's outcome before retrying manually. A refused connection proves the request never left PROTO and still retries.
 - A structured tool-result auth challenge can trigger the configured auth handler, reconnect, and one retry. Interactive mode wires this to the `/mcp` OAuth controller; without a handler the challenge remains an MCP error.
 
 Both return structured tool output and convert remaining transport/tool errors into actionable `MCP failure` diagnostics (abort remains abort), including transport, failure stage, retryability, and bounded credential-redacted server data and safe trace IDs. When the client-side request timeout fired, that content also names the server and how to raise the limit: its `timeout` config field or the process-wide `PROTO_MCP_TIMEOUT_MS`.
