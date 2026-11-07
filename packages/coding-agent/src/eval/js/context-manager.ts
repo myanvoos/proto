@@ -20,7 +20,12 @@ import {
 	isDeclaredStateKernelSafeToRelease,
 	withDeclaredStateExecution,
 } from "../declared-state";
-import { attachSessionOwner, resolveOwnerScopedSessionKey, type SessionOwners } from "../executor-base";
+import {
+	abortReasonError,
+	attachSessionOwner,
+	resolveOwnerScopedSessionKey,
+	type SessionOwners,
+} from "../executor-base";
 import { DEFAULT_KERNEL_IDLE_REAP_MS, type KernelReapNote } from "../idle-timeout";
 import { kernelAdmission } from "../kernel-admission";
 import { clearKernelLaneConfigurations, type JsKernelRuntime, validateKernelKeepalive } from "../kernel-environment";
@@ -264,7 +269,7 @@ export async function executeInVmContext(options: {
 }): Promise<VmRunResult> {
 	return withDeclaredStateExecution(options.ownerId ?? options.sessionId, async () => {
 		if (options.runState.signal?.aborted) {
-			throw reasonToError(options.runState.signal.reason, "Execution aborted");
+			throw abortReasonError(options.runState.signal.reason, "Execution aborted");
 		}
 		const session = await prepareVmSession({ ...options, signal: options.runState.signal });
 		await enterDeclaredStateKernel(
@@ -583,7 +588,7 @@ async function runOnce(
 	// Acquisition can finish after cancellation. Do not dispatch the cell or
 	// kill a shared worker that the cancelled request never started using.
 	if (options.runState.signal?.aborted) {
-		throw reasonToError(options.runState.signal.reason, "Execution aborted");
+		throw abortReasonError(options.runState.signal.reason, "Execution aborted");
 	}
 	const runId = `r-${Snowflake.next()}`;
 	const { promise, resolve, reject } = Promise.withResolvers<VmRunResult>();
@@ -607,7 +612,7 @@ async function runOnce(
 
 	const onAbort = (): void => {
 		const reason = options.runState.signal?.reason;
-		const abortError = reasonToError(reason, "Execution aborted");
+		const abortError = abortReasonError(reason, "Execution aborted");
 
 		pending.aborted = true;
 		pending.input.cancel();
@@ -1107,12 +1112,6 @@ function safeSend(session: JsSession, msg: WorkerInbound): void {
 	}
 }
 
-function reasonToError(reason: unknown, fallback: string): Error {
-	if (reason instanceof Error) return reason;
-	if (typeof reason === "string") return new ToolAbortError(reason);
-	return new ToolAbortError(fallback);
-}
-
 function errorFromPayload(payload: RunErrorPayload): Error {
 	if (payload.isAbort) {
 		const err = new ToolAbortError(payload.message || "Execution aborted");
@@ -1155,7 +1154,7 @@ async function raceWithTimeout<T>(
 	signal?.throwIfAborted();
 	const { promise: timeoutPromise, reject } = Promise.withResolvers<never>();
 	const onAbort = (): void =>
-		reject(signal?.aborted ? reasonToError(signal.reason, "Execution aborted") : new ToolError(reason));
+		reject(signal?.aborted ? abortReasonError(signal.reason, "Execution aborted") : new ToolError(reason));
 	const timer = setTimeout(onAbort, timeoutMs);
 	timer.unref?.();
 	signal?.addEventListener("abort", onAbort, { once: true });

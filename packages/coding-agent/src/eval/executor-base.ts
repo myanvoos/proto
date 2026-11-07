@@ -11,6 +11,7 @@ import {
 	resolveOutputMaxColumns,
 	resolveOutputSinkHeadBytes,
 } from "../tools/output-meta";
+import { ToolAbortError } from "../tools/tool-errors";
 import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEvent } from "./bridge-timeout";
 import type { FsObservation } from "./fs-observations";
 import type { JsStatusEvent } from "./js/shared/types";
@@ -102,6 +103,13 @@ export function getExecutionDeadlineMs(options?: { deadlineMs?: number; timeoutM
 export function getRemainingTimeoutMs(deadlineMs?: number): number | undefined {
 	if (deadlineMs === undefined) return undefined;
 	return deadlineMs - Date.now();
+}
+
+/** The error an aborted kernel call reports: the signal's own reason (`Interrupted by user`, …) or `fallback`. */
+export function abortReasonError(reason: unknown, fallback: string): Error {
+	if (reason instanceof Error) return reason;
+	if (typeof reason === "string") return new ToolAbortError(reason);
+	return new ToolAbortError(fallback);
 }
 
 export function isCancellationError(error: unknown, cancelledErrorClass: CancelledErrorClass): boolean {
