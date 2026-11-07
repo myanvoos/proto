@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed MCP OAuth login and token refresh failing with a JSON parse error against token endpoints that reply form-encoded unless JSON is requested, such as GitHub's.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

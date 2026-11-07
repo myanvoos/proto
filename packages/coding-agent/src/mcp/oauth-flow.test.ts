@@ -167,6 +167,51 @@ describe("MCP OAuth client id normalization", () => {
 	});
 });
 
+describe("GitHub-style token endpoint", () => {
+	// github.com/login/oauth/access_token replies form-encoded unless the
+	// request asks for JSON via Accept, which fails with a JSON parse error.
+	const githubTokenEndpoint: FetchImpl = async (_input, init) => {
+		if (new Headers(init?.headers).get("accept")?.includes("application/json")) {
+			return Response.json({ access_token: "gho_token", refresh_token: "ghr_token", expires_in: 28800 });
+		}
+		return new Response("access_token=gho_token&token_type=bearer&refresh_token=ghr_token&expires_in=28800", {
+			headers: { "Content-Type": "application/x-www-form-urlencoded; charset=utf-8" },
+		});
+	};
+
+	test("exchanges the authorization code", async () => {
+		const flow = new MCPOAuthFlow(
+			{
+				authorizationUrl: "https://github.com/login/oauth/authorize",
+				tokenUrl: "https://github.com/login/oauth/access_token",
+				clientId: "client-id",
+				clientSecret: "client-secret",
+				fetch: githubTokenEndpoint,
+			},
+			{},
+		);
+
+		await flow.generateAuthUrl("state-x", "http://127.0.0.1:47923/callback");
+		const credentials = await flow.exchangeToken("code", "state-x", "http://127.0.0.1:47923/callback");
+
+		expect(credentials.access).toBe("gho_token");
+		expect(credentials.refresh).toBe("ghr_token");
+	});
+
+	test("refreshes the token", async () => {
+		const credentials = await refreshMCPOAuthToken(
+			"https://github.com/login/oauth/access_token",
+			"ghr_old",
+			"client-id",
+			"client-secret",
+			{ fetch: githubTokenEndpoint },
+		);
+
+		expect(credentials.access).toBe("gho_token");
+		expect(credentials.refresh).toBe("ghr_token");
+	});
+});
+
 describe("MCP OAuth issuer and resource handling", () => {
 	test("dynamic registration probes the issuer's metadata, not the authorization endpoint's path", async () => {
 		const requested: string[] = [];
