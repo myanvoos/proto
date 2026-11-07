@@ -1,10 +1,16 @@
 import { afterEach, expect, it, vi } from "bun:test";
 import * as ai from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import {
+	DEFAULT_SPINNER_INTERVAL_MS,
+	SPINNER_INTERVAL_STATIC,
+	setSpinnerInterval,
+} from "@oh-my-pi/pi-tui/spinner-clock";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
 import {
+	buildTerminalTitleWithState,
 	disposeTerminalTitleState,
 	generateSessionTitle,
 	initTerminalTitleState,
@@ -89,6 +95,28 @@ function captureTitleWrites(): { titles: string[]; restore: () => void } {
 		},
 	};
 }
+
+it("pins a static separator in the working title when spinners are still", () => {
+	expect(buildTerminalTitleWithState("alpha", "working", 3, true, true)).toBe("p : alpha");
+	// Animated titles keep the braille frame they are given.
+	expect(buildTerminalTitleWithState("alpha", "working", 3, true, false)).toBe("p ⠸ alpha");
+});
+
+it("pins the working separator when spinners are static", () => {
+	const capture = captureTitleWrites();
+	try {
+		initTerminalTitleState();
+		setSessionTerminalTitle("alpha");
+		setSpinnerInterval(SPINNER_INTERVAL_STATIC);
+		setTerminalTitleState("working");
+		expect(capture.titles.at(-1)).toBe("p : alpha");
+	} finally {
+		setSpinnerInterval(DEFAULT_SPINNER_INTERVAL_MS);
+		setTerminalTitleState("idle");
+		disposeTerminalTitleState();
+		capture.restore();
+	}
+});
 
 it("writes no terminal title after teardown until the UI claims the terminal again", () => {
 	const capture = captureTitleWrites();

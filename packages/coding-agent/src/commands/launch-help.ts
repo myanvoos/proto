@@ -97,6 +97,22 @@ export const launchHelp = {
 		"no-title": Flags.boolean({ description: "Disable title auto-generation" }),
 		"print-thoughts": Flags.boolean({ description: "Include thinking blocks in print mode text output" }),
 		"max-time": Flags.string({ description: "Stop the session after this duration (e.g., 600, 10m, 1h)" }),
+		"spinner-interval": Flags.string({
+			description:
+				"Milliseconds between spinner frames (working row, tool cards, terminal title; default 80; 0 = static). Overrides tui.spinnerInterval for this run; PI_SPINNER_INTERVAL takes precedence",
+		}),
+		"max-fps": Flags.string({
+			description:
+				"Ceiling on how often the TUI repaints (1-120; default 30). Overrides tui.maxFps for this run; PI_MAX_FPS takes precedence",
+		}),
+		motion: Flags.string({
+			description:
+				"One switch over every animation: full, reduced, or none. Overrides tui.motion for this run; PI_MOTION takes precedence",
+		}),
+		shimmer: Flags.string({
+			description:
+				"Working-message shimmer style: classic, kitt, or disabled. Overrides display.shimmer for this run; PI_SHIMMER takes precedence",
+		}),
 		"prompt-cache-key": Flags.string({ description: "Provider prompt-cache key to reuse across runs" }),
 		"provider-session-id": Flags.string({ description: "Provider-side session id to continue (provider specific)" }),
 	},

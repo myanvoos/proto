@@ -23,6 +23,8 @@ export * from "./desktop-notify";
 export type * from "./editor-component";
 export * from "./editor-limits";
 
+export * from "./frame-rate";
+
 export * from "./fuzzy";
 
 export * from "./keybindings";
@@ -34,7 +36,11 @@ export * from "./kitty-graphics";
 export * from "./latex-block";
 export * from "./latex-to-unicode";
 
+export * from "./motion-effects";
+
 export * from "./mouse";
+
+export * from "./spinner-clock";
 
 export * from "./stdin-buffer";
 export type * from "./symbols";

@@ -637,6 +637,9 @@ tui:
 | `images.autoResize`         | boolean | `true`           | Resize large images for model compatibility.                              |
 | `images.blockImages`        | boolean | `false`          | Never send images to providers.                                           |
 | `tui.hyperlinks`            | enum    | `auto`           | `off`, `auto`, `always`.                                                  |
+| `tui.spinnerInterval`       | number  | `80`             | Milliseconds between frames of every spinner — the working row, live tool cards, and the terminal title; `0` shows static glyphs. Also `--spinner-interval` and `PI_SPINNER_INTERVAL`. |
+| `tui.maxFps`                | number  | `30`             | Ceiling on how often the TUI repaints (1-120). Keystroke echo keeps its own 30 fps cadence. Also `--max-fps` and `PI_MAX_FPS`. |
+| `tui.motion`                | enum    | `full`           | `full`, `reduced`, `none`. One switch over every animation; an explicitly set spinner interval, max fps, or shimmer still wins. Also `--motion` and `PI_MOTION`. |
 
 #### File links in Orca
 

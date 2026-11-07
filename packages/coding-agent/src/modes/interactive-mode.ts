@@ -2726,6 +2726,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 		nextEditor.setShimmerRepaintHandler(() => this.ui.requestComponentRender(nextEditor));
+		// The new editor is fully built and bound: release the outgoing one now (drops its
+		// motion-effects subscription and pending shimmer frame). Done here, not earlier, so a
+		// throwing factory above leaves the previous editor live and intact.
+		if (previousEditor !== nextEditor) previousEditor.setShimmerRepaintHandler(undefined);
 		this.editor = nextEditor;
 		this.composer.setEditor(nextEditor);
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());

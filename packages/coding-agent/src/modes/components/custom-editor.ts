@@ -14,6 +14,7 @@ import {
 	TUI,
 } from "@oh-my-pi/pi-tui";
 import { BracketedPasteHandler } from "@oh-my-pi/pi-tui/bracketed-paste";
+import { motionEffectsEnabled, onMotionEffectsChange } from "@oh-my-pi/pi-tui/motion-effects";
 import { materializeString } from "@oh-my-pi/pi-utils/materialize-string";
 import type { AppKeybinding } from "../../config/keybindings";
 import {
@@ -419,6 +420,8 @@ export class CustomEditor extends Editor {
 	#shimmerTimer: Timer | undefined;
 
 	#requestShimmerRepaint: (() => void) | undefined;
+	/** Live-switch hook: a `tui.motion` change stops a running keyword-shimmer timer at once. */
+	#unsubscribeMotionEffects: (() => void) | undefined;
 	#decorationRevision = -1;
 	#decorationText = "";
 	#decorationHasMagicKeyword = false;
@@ -439,7 +442,8 @@ export class CustomEditor extends Editor {
 		const editorText = this.#decorationText;
 		const caret = this.getCursor();
 		this.#typing.update(this.textRevision, this.#decorationLines, caret.line, caret.col, this.focused);
-		const animated = this.focused && this.#shimmerEnabled() && this.#decorationHasMagicKeyword;
+		const animated =
+			this.focused && this.#shimmerEnabled() && motionEffectsEnabled() && this.#decorationHasMagicKeyword;
 		const phase = animated ? (Date.now() % CustomEditor.SHIMMER_PERIOD_MS) / CustomEditor.SHIMMER_PERIOD_MS : 0;
 		if (animated) this.#scheduleShimmerFrame();
 		let sourceSearchOffset = 0;
@@ -511,11 +515,27 @@ export class CustomEditor extends Editor {
 
 	setShimmerRepaintHandler(handler: (() => void) | undefined): void {
 		this.#requestShimmerRepaint = handler;
-		if (!handler && this.#shimmerTimer) {
+		if (handler) {
+			this.#unsubscribeMotionEffects ??= onMotionEffectsChange(this.#onMotionEffectsChange);
+			return;
+		}
+		this.#unsubscribeMotionEffects?.();
+		this.#unsubscribeMotionEffects = undefined;
+		if (this.#shimmerTimer) {
 			clearTimeout(this.#shimmerTimer);
 			this.#shimmerTimer = undefined;
 		}
 	}
+
+	/** A live `tui.motion` switch: drop a pending sweep frame and repaint, so the keyword settles to
+	 *  its static gradient at once (and re-arms from the next render when motion returns). */
+	#onMotionEffectsChange = (): void => {
+		if (this.#shimmerTimer) {
+			clearTimeout(this.#shimmerTimer);
+			this.#shimmerTimer = undefined;
+		}
+		this.#requestShimmerRepaint?.();
+	};
 
 	override dispose(): void {
 		this.#disposed = true;

@@ -941,6 +941,73 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"tui.spinnerInterval": {
+		type: "number",
+		default: 80,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Spinner Interval (ms)",
+			description:
+				"Milliseconds between frames of every spinner: the working row, live tool cards, and the terminal title. Each frame is a repaint the terminal must process (and under tmux control mode, every attached client), so a slower spinner saves CPU and battery. 0 shows static glyphs",
+			options: [
+				{ value: "0", label: "Static", description: "No animation: fixed glyphs, ':' in the title" },
+				{ value: "80", label: "80 ms", description: "12.5 frames/s (default)" },
+				{ value: "250", label: "250 ms", description: "4 frames/s" },
+				{ value: "500", label: "500 ms", description: "2 frames/s" },
+				{ value: "1000", label: "1 s", description: "1 frame/s" },
+			],
+		},
+	},
+
+	"tui.maxFps": {
+		type: "number",
+		default: 30,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Max Frames Per Second",
+			description:
+				"Ceiling on how often the TUI repaints. Lower it to cut terminal writes and CPU on slow links or many panes; keystroke echo keeps its own 30 fps cadence so typing stays crisp",
+			options: [
+				{ value: "1", label: "1 fps", description: "Slowest; content still streams, animations barely move" },
+				{ value: "4", label: "4 fps", description: "Quiet panes" },
+				{ value: "10", label: "10 fps" },
+				{ value: "15", label: "15 fps" },
+				{ value: "30", label: "30 fps", description: "Default" },
+				{ value: "60", label: "60 fps" },
+				{ value: "120", label: "120 fps", description: "Fastest" },
+			],
+		},
+	},
+
+	"tui.motion": {
+		type: "enum",
+		values: ["full", "reduced", "none"] as const,
+		default: "full",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Motion",
+			description:
+				"One switch over every animation: spinner cadence, shimmer, and decorative motion. Content (streaming text) keeps repainting at the frame ceiling, which the presets leave alone; set Max Frames Per Second to throttle that too. A setting you set explicitly (spinner interval, max fps, shimmer) still wins over the preset",
+			options: [
+				{ value: "full", label: "Full", description: "Every animation at its own setting (default)" },
+				{
+					value: "reduced",
+					label: "Reduced",
+					description: "Spinners at 250 ms, no shimmer, no decorative motion; text still streams at full rate",
+				},
+				{
+					value: "none",
+					label: "None",
+					description:
+						"Static spinners and title, no shimmer, no decorative motion; text still streams at full rate",
+				},
+			],
+		},
+	},
+
 	"tui.hyperlinks": {
 		type: "enum",
 		values: ["off", "auto", "always"] as const,

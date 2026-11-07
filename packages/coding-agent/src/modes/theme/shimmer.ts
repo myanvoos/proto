@@ -122,7 +122,10 @@ function tierFor(intensity: number): Tier {
 
 function resolveMode(): ShimmerMode {
 	if (!isSettingsInitialized()) return "classic";
-	return settings.get("display.shimmer");
+	const configured = settings.get("display.shimmer");
+	// The `tui.motion` preset stills the sweep; an explicitly set shimmer still wins over it.
+	if (settings.isConfigured("display.shimmer")) return configured;
+	return settings.get("tui.motion") === "full" ? configured : "disabled";
 }
 
 export function shimmerEnabled(): boolean {
