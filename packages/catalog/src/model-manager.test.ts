@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fingerprintStaticModels, resolveProviderModels } from "./model-manager";
+import { modelsDevCatalogFallback } from "./provider-models";
 import type { ModelCost, ModelSpec } from "./types";
 
 function modelSpec(cost: ModelCost): ModelSpec<"openai-completions"> {
@@ -223,5 +224,106 @@ describe("model source resolution", () => {
 			// The additive boundary still keeps bundled metadata; only the scores flow through.
 			expect(models[0]).toMatchObject({ id: "bundled", name: "bundled", int: 61.5, tps: 88 });
 		}
+	});
+
+	it("reports a throwing endpoint fetcher on the resolution result instead of swallowing it", async () => {
+		const cacheDbPath = await tempCacheDb();
+		const options = {
+			providerId: "venice",
+			staticModels: [chatSpec("bundled")],
+			cacheDbPath,
+			fetchDynamicModels: async () => {
+				throw new Error("HTTP 503");
+			},
+		};
+
+		const failed = await resolveProviderModels(options, "online");
+		expect(failed.fetchError).toBe("HTTP 503");
+		expect(failed.models.map(model => model.id)).toEqual(["bundled"]);
+
+		const recovered = await resolveProviderModels(
+			{ ...options, fetchDynamicModels: async () => [chatSpec("live")] },
+			"online",
+		);
+		expect(recovered.fetchError).toBeUndefined();
+	});
+
+	it("keeps a header-bearing cached catalog after a failed refresh so the next launch refetches it", async () => {
+		const cacheDbPath = await tempCacheDb();
+		// Live headers with no static source: the cache omits them and the row's model cannot be
+		// restored offline.
+		const headerModel: ModelSpec<"openai-completions"> = {
+			...chatSpec("tenant-model"),
+			provider: "header-failed-refresh-test",
+			headers: { "X-Tenant": "tenant-a" },
+		};
+		let fail = false;
+		let fetches = 0;
+		const options = {
+			providerId: "header-failed-refresh-test" as const,
+			staticModels: [] as ModelSpec<"openai-completions">[],
+			dynamicModelsAuthoritative: true,
+			cacheDbPath,
+			now: () => 1_000_000,
+			fetchDynamicModels: async () => {
+				fetches++;
+				return fail ? null : [headerModel];
+			},
+		};
+
+		const populated = await resolveProviderModels(options, "online");
+		expect(populated.models.map(model => model.id)).toEqual(["tenant-model"]);
+
+		fail = true;
+		await resolveProviderModels(options, "online");
+		expect(fetches).toBe(2);
+
+		// The clock does not advance: a rewritten empty snapshot would read back fresh and skip
+		// this fetch, hiding the model until the backoff expires.
+		fail = false;
+		const recovered = await resolveProviderModels(options, "online-if-uncached");
+		expect(recovered.models.map(model => model.id)).toEqual(["tenant-model"]);
+		expect(fetches).toBe(3);
+	});
+});
+
+describe("runtime-resolved endpoints", () => {
+	const tempDirs: string[] = [];
+	afterEach(async () => {
+		await Promise.all(tempDirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true })));
+	});
+
+	it("discovers and caches models whose baseUrl is resolved at request time", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-catalog-azure-discovery-"));
+		tempDirs.push(dir);
+		const fallback = modelsDevCatalogFallback("azure");
+		if (!fallback) throw new Error("Azure did not configure a shared catalog fallback");
+		const options = {
+			providerId: "azure" as const,
+			staticModels: [] as ModelSpec<"openai-completions">[],
+			cacheDbPath: path.join(dir, "models.db"),
+			modelsDev: {
+				...fallback,
+				fetch: async () => ({
+					azure: {
+						models: {
+							"gpt-6.1-terra": {
+								name: "GPT-6.1 Terra",
+								tool_call: true,
+								reasoning: true,
+								limit: { context: 1_050_000, output: 128_000 },
+							},
+						},
+					},
+				}),
+			},
+		};
+
+		const online = await resolveProviderModels(options, "online");
+		expect(online.models.map(model => `${model.provider}/${model.id}`)).toEqual(["azure/gpt-6.1-terra"]);
+		expect(online.models[0]?.baseUrl).toBe("");
+
+		const cached = await resolveProviderModels(options, "offline");
+		expect(cached.models.map(model => `${model.provider}/${model.id}`)).toEqual(["azure/gpt-6.1-terra"]);
 	});
 });
