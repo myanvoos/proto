@@ -3,7 +3,7 @@ import { invalidModelSelectorReason } from "../config/model-resolver";
 import { Settings } from "../config/settings";
 import type { ToolSession } from "../tools";
 import * as discovery from "./discovery";
-import { resolveEffectiveSubagentPolicy } from "./structured-subagent";
+import { renderSubagentPrompt, resolveEffectiveSubagentPolicy } from "./structured-subagent";
 
 describe("subagent model selector validation", () => {
 	it("rejects default/inherit selectors with thinking suffixes", () => {
@@ -15,6 +15,15 @@ describe("subagent model selector validation", () => {
 });
 
 afterEach(() => vi.restoreAllMocks());
+
+// Regression: formatting the whole rendered prompt collapsed blank-line runs, Markdown hard breaks
+// and table padding in the assignment before the subagent saw it.
+it("keeps assignment whitespace while still formatting the template", () => {
+	const assignment = " \r\nFirst line.  \r\n\r\n\r\n| column | value |\r\n| --- | --- |\r\n| a  |  b |\r\n\t ";
+	expect(renderSubagentPrompt(assignment)).toEndWith(
+		"\nFirst line.  \n\n\n| column | value |\n| --- | --- |\n| a  |  b |",
+	);
+});
 
 it("concurrent preflights share one discovery but later spawns rescan", async () => {
 	const scan = Promise.withResolvers<discovery.DiscoveryResult>();
