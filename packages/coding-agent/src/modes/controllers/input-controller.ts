@@ -201,6 +201,9 @@ export class InputController {
 
 	#lastChipsSignature = "";
 
+	/** Settles when the latest follow-up submission has passed its input hooks. */
+	#followUpHookOrder: Promise<void> = Promise.resolve();
+
 	/** Returns cleanup that drops the progress row when the title request settles before the download does. */
 	#showTinyTitleDownloadProgress(modelKey: string): (() => void) | undefined {
 		if (!isTinyTitleLocalModelKey(modelKey)) return;
@@ -1334,17 +1337,28 @@ export class InputController {
 
 		// Anything typed after this point belongs to the next submission, even while input hooks run.
 		this.ctx.editor.clearDraft();
-		if (this.ctx.session.extensionRunner?.hasHandlers("input")) {
-			try {
-				const result = await this.#runInputHandlers(text, images, imageLinks);
-				if (result === "handled") return;
-				({ text, images, imageLinks } = result);
-			} catch (error) {
-				restoreInputDraft(this.ctx.editor, text, images, imageLinks);
-				this.ctx.showError(error instanceof Error ? error.message : String(error));
-				return;
+		// The follow-up key fires without awaiting: input hooks pass in submission order, so a slow hook
+		// on one follow-up cannot let a later one reach the queues first. Dispatch past this point
+		// decides queue placement synchronously.
+		const earlier = this.#followUpHookOrder;
+		const hooksDone = Promise.withResolvers<void>();
+		this.#followUpHookOrder = hooksDone.promise;
+		try {
+			await earlier;
+			if (this.ctx.session.extensionRunner?.hasHandlers("input")) {
+				try {
+					const result = await this.#runInputHandlers(text, images, imageLinks);
+					if (result === "handled") return;
+					({ text, images, imageLinks } = result);
+				} catch (error) {
+					restoreInputDraft(this.ctx.editor, text, images, imageLinks);
+					this.ctx.showError(error instanceof Error ? error.message : String(error));
+					return;
+				}
+				if (!text && !images?.length) return;
 			}
-			if (!text && !images?.length) return;
+		} finally {
+			hooksDone.resolve();
 		}
 
 		if (this.ctx.session.isCompacting) {

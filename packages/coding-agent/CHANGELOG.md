@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Keep rapid follow-up submissions in order when an extension input hook is slow.
 - Keep saving a session whose tool result details hold a throwing accessor instead of latching a disk failure.
 - Surface an out-of-credit provider balance immediately instead of sleeping through a quota wait that never reopens.
 

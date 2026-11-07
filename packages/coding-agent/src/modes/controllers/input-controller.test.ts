@@ -855,6 +855,61 @@ test("Ctrl+Enter follow-ups pass through extension input handlers before dispatc
 	expect(editor.text).toBe("");
 });
 
+test("a slow input hook on one follow-up cannot reorder a later follow-up ahead of it", async () => {
+	const delivered: string[] = [];
+	const editor = {
+		text: "",
+		addToHistory: () => {},
+		pendingImages: [] as ImageContent[],
+		pendingImageLinks: [] as Array<string | undefined>,
+		getExpandedText() {
+			return this.text;
+		},
+		clearDraft() {
+			this.text = "";
+		},
+	};
+	const slowHook = Promise.withResolvers<void>();
+	const context = {
+		editor,
+		session: {
+			isCompacting: false,
+			isStreaming: true,
+			extensionRunner: {
+				hasHandlers: (event: string) => event === "input",
+				// The first follow-up waits; the second would pass straight through without the ordering guard.
+				emitInput: async (text: string) => {
+					if (text === "first") await slowHook.promise;
+					return { text };
+				},
+			},
+			prompt: async (text: string) => {
+				delivered.push(text);
+			},
+		},
+		getToolUIContext: () => undefined,
+		withLocalSubmission: (_text: string, fn: () => Promise<void>) => fn(),
+		updatePendingMessagesDisplay: () => {},
+		ui: { requestRender: () => {} },
+		showError: (message: string) => {
+			throw new Error(message);
+		},
+	} as unknown as InteractiveModeContext;
+	const controller = new InputController(context);
+
+	editor.text = "first";
+	const first = controller.handleFollowUp();
+	editor.text = "second";
+	const second = controller.handleFollowUp();
+	await Promise.resolve();
+	// The later follow-up must still be waiting on the first one's hook.
+	expect(delivered).toEqual([]);
+	slowHook.resolve();
+	await Promise.all([first, second]);
+
+	expect(delivered).toEqual(["first", "second"]);
+});
+
 test("a rejected image marker does not retain the unattached image or reference link", async () => {
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "proto-image-rejection-"));
 	try {
