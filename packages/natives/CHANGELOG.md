@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Send Wayland double and triple clicks as held, spaced presses instead of microseconds apart, so Qt apps on KDE Plasma (such as Kate) see them as multi-clicks rather than single clicks.
+- Report `input: false` and `inputPermission: "unavailable"` on Wayland desktops without a RemoteDesktop portal (such as sway), and fail input calls at once naming the missing portal instead of prompting for one that cannot appear.
+- Match AT-SPI actions by their machine names rather than the localized `GetActions` text, so `press` works in apps under a non-English locale and on Chromium, Electron and Qt elements.
+- Press Chromium and Electron radio buttons and radio menu items through their `check` action, the only activation they expose.
+- Name the focused application window on Wayland instead of an always-active shell frame or keyboard helper, so `focusedWindow()` reports the window you are working in.
+- Read GTK3 file dialogs as AT-SPI windows, so `ax()` and `find()` work on Open and Save dialogs.
+- Search 64 levels deep in `find()`, reaching content such as VS Code's editor that nests deeper than 24 levels.
+- Drain an autorelease pool around macOS spell-server calls so spellcheck, autocorrect and completion stop leaking every result for the life of the process.
+- Name the loaded addon file, its release and the rebuild command when a symbol this checkout exports is missing from it, instead of only the symbol name.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

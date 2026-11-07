@@ -13,6 +13,143 @@ pub struct AtSpiAx {
 	connection: atspi::AccessibilityConnection,
 }
 
+/// Leaves `focused` set on at most one window.
+///
+/// Shell surfaces report the Active state at all times: the compositor's own
+/// frames (gnome-shell's "Main stage") and untitled frames (plasma-keyboard's).
+/// When several windows are active, the compositor's frames drop out first,
+/// then untitled ones, until one is left; a shell frame alone keeps focus, as
+/// in the GNOME overview. When only untitled frames are left (an untitled app
+/// beside plasma-keyboard), the one that `holds_focus` (contains the
+/// keyboard-focused element) wins. Two active titled application windows leave
+/// none focused, rather than naming one at random.
+pub(crate) fn resolve_focus(
+	windows: &mut [DesktopWindow],
+	compositor_pid: Option<u32>,
+	mut holds_focus: impl FnMut(&DesktopWindow) -> bool,
+) {
+	let mut active: Vec<usize> = (0..windows.len())
+		.filter(|&index| windows[index].focused)
+		.collect();
+	if active.len() < 2 {
+		return;
+	}
+	if let Some(pid) = compositor_pid {
+		active.retain(|&index| windows[index].pid != Some(pid));
+	}
+	if active.len() > 1 {
+		let titled: Vec<usize> = active
+			.iter()
+			.copied()
+			.filter(|&index| !windows[index].title.trim().is_empty())
+			.collect();
+		active = if titled.is_empty() {
+			active
+				.into_iter()
+				.filter(|&index| holds_focus(&windows[index]))
+				.collect()
+		} else {
+			titled
+		};
+	}
+	let focused = match active.as_slice() {
+		[only] => Some(*only),
+		_ => None,
+	};
+	for (index, window) in windows.iter_mut().enumerate() {
+		if window.focused {
+			window.focused = Some(index) == focused;
+		}
+	}
+}
+
+/// The id [`AtSpiAx::windows`] gives a frame, so a listed window can be
+/// matched back to its AT-SPI object.
+fn window_id(frame: &ObjectRefOwned) -> String {
+	let name = frame.name().map(ToString::to_string).unwrap_or_default();
+	format!("atspi:{name}:{}", frame.path())
+}
+
+/// Generic press means activation, not action zero (GTK4 text views put
+/// `buffer.delete-line` there). Explicit advertised actions remain available.
+fn action_index<'a>(
+	mut actions: impl Iterator<Item = &'a str> + Clone,
+	requested: &str,
+) -> Option<usize> {
+	actions
+		.clone()
+		.position(|name| name.eq_ignore_ascii_case(requested))
+		.or_else(|| {
+			requested
+				.eq_ignore_ascii_case("press")
+				.then(|| {
+					actions.position(|name| {
+						[
+							"click",
+							"clickAncestor",
+							"activate",
+							"invoke",
+							"toggle",
+							"open",
+							"jump",
+							"do default",
+							"do-default",
+						]
+						.iter()
+						.any(|safe| name.eq_ignore_ascii_case(safe))
+					})
+				})
+				.flatten()
+		})
+}
+
+/// The most actions read of one element: the count comes from the app.
+const MAX_ACTIONS: i32 = 256;
+
+/// The machine names of an element's actions, by index (`press`, `click`,
+/// `activate`): what libatspi's `atspi_action_get_action_name` reads.
+/// `GetActions` returns localized names instead: Firefox reports each as `;;`,
+/// Chromium, Electron and the GTK3 build of `LibreOffice` as empty strings, and
+/// every toolkit translates them under a non-English locale.
+async fn action_names(
+	proxy: &atspi::proxy::action::ActionProxy<'_>,
+) -> atspi::zbus::Result<Vec<String>> {
+	let count = proxy.n_actions().await?.clamp(0, MAX_ACTIONS);
+	futures::future::try_join_all((0..count).map(|index| proxy.get_name(index))).await
+}
+
+/// The index of `action` among `proxy`'s actions, matched by machine name. A
+/// generic press of a checkbox, radio button or toggle button falls back on
+/// `check` or `uncheck`, the only activation Chromium and Electron give them.
+async fn resolve_action(
+	proxy: &atspi::proxy::action::ActionProxy<'_>,
+	accessible: &atspi::proxy::accessible::AccessibleProxy<'_>,
+	action: &str,
+) -> CoreResult<i32> {
+	let names = action_names(proxy)
+		.await
+		.map_err(|err| DesktopError::ax_failed(format!("AT-SPI actions: {err}")))?;
+	let names = || names.iter().map(String::as_str);
+	let mut index = action_index(names(), action);
+	if index.is_none()
+		&& action.eq_ignore_ascii_case("press")
+		&& matches!(
+			accessible.get_role().await,
+			Ok(Role::CheckBox
+				| Role::CheckMenuItem
+				| Role::RadioButton
+				| Role::RadioMenuItem
+				| Role::ToggleButton)
+		) {
+		index = names().position(|name| {
+			name.eq_ignore_ascii_case("check") || name.eq_ignore_ascii_case("uncheck")
+		});
+	}
+	let index = index
+		.ok_or_else(|| DesktopError::ax_failed(format!("AT-SPI action '{action}' is unavailable")))?;
+	i32::try_from(index).map_err(|err| DesktopError::ax_failed(err.to_string()))
+}
+
 impl AtSpiAx {
 	pub(crate) fn new() -> CoreResult<Self> {
 		let rt = Builder::new_current_thread()
@@ -78,8 +215,7 @@ impl AtSpiAx {
 					if width < 16 || height < 16 {
 						continue;
 					}
-					let name = frame.name().map(ToString::to_string).unwrap_or_default();
-					let id = format!("atspi:{name}:{}", frame.path());
+					let id = window_id(&frame);
 					windows.push(DesktopWindow {
 						id,
 						title,
@@ -99,6 +235,27 @@ impl AtSpiAx {
 				}
 			}
 			Ok(windows)
+		})
+	}
+
+	/// Whether the window's frame contains the keyboard-focused element. A
+	/// lookup that fails counts as not holding focus.
+	pub(crate) fn holds_focus(&self, window: &DesktopWindow) -> bool {
+		self.rt.block_on(async {
+			let Ok(app) = Self::app_for_window(&self.connection, window).await else {
+				return false;
+			};
+			let Ok(frames) = Self::frames(&self.connection, &app).await else {
+				return false;
+			};
+			for frame in frames {
+				if window_id(&frame) == window.id {
+					return Self::find_focused(self.connection.connection(), frame, 0)
+						.await
+						.is_ok_and(|found| found.is_some());
+				}
+			}
+			false
 		})
 	}
 
@@ -161,7 +318,14 @@ impl AtSpiAx {
 				.as_accessible_proxy(connection.connection())
 				.await
 				.map_err(|err| err.to_string())?;
-			if matches!(child_proxy.get_role().await, Ok(Role::Frame | Role::Dialog | Role::Window)) {
+			// `FileChooser` counts only here, as a child of the application:
+			// GTK3 gives its Open and Save dialogs that role and gives it to the
+			// file chooser widget inside them too. Inside a window it stays a
+			// widget.
+			if matches!(
+				child_proxy.get_role().await,
+				Ok(Role::Frame | Role::Dialog | Role::Window | Role::FileChooser)
+			) {
 				frames.push(child);
 			}
 		}
@@ -199,6 +363,9 @@ impl AtSpiAx {
 			.map_err(|err| err.to_string())?
 			.path(object.path().clone())
 			.map_err(|err| err.to_string())?
+			// The property cache reads `GetAll`, which Qt refuses, so `NActions`
+			// would fail on every Qt element.
+			.cache_properties(atspi::zbus::proxy::CacheProperties::No)
 			.build()
 			.await
 			.map_err(|err| err.to_string())
@@ -311,13 +478,7 @@ impl AxBackend for AtSpiAx {
 				None
 			};
 			let actions = match Self::action(&self.connection, &object).await {
-				Ok(action) => action
-					.get_actions()
-					.await
-					.unwrap_or_default()
-					.into_iter()
-					.map(|a| a.name)
-					.collect(),
+				Ok(action) => action_names(&action).await.unwrap_or_default(),
 				Err(_) => Vec::new(),
 			};
 			let child_count = proxy.child_count().await.unwrap_or(0).max(0) as u32;
@@ -382,21 +543,11 @@ impl AxBackend for AtSpiAx {
 			let proxy = Self::action(&self.connection, &object)
 				.await
 				.map_err(DesktopError::ax_failed)?;
-			let actions = proxy
-				.get_actions()
+			let accessible = object
+				.as_accessible_proxy(self.connection.connection())
 				.await
-				.map_err(|err| DesktopError::ax_failed(format!("AT-SPI actions: {err}")))?;
-			let index = if action.eq_ignore_ascii_case("press") {
-				0
-			} else {
-				actions
-					.iter()
-					.position(|item| item.name.eq_ignore_ascii_case(action))
-					.map(|i| i as i32)
-					.ok_or_else(|| {
-						DesktopError::ax_failed(format!("AT-SPI action '{action}' is unavailable"))
-					})?
-			};
+				.map_err(|err| DesktopError::ax_failed(err.to_string()))?;
+			let index = resolve_action(&proxy, &accessible, action).await?;
 			if proxy
 				.do_action(index)
 				.await
@@ -544,6 +695,60 @@ impl AxBackend for AtSpiAx {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// `computer.focusedWindow()` must name the user's application, not the
+	/// compositor's always-active shell frame or a keyboard helper's untitled
+	/// frame: the host picks the first window reporting focus.
+	#[test]
+	fn shell_frames_yield_focus_to_the_active_application_window() {
+		let frame = |title: &str, pid: u32, focused: bool| DesktopWindow {
+			id: format!("{title}-{pid}"),
+			pid: Some(pid),
+			title: title.into(),
+			app: "app".into(),
+			x: 0,
+			y: 0,
+			width: 100,
+			height: 100,
+			focused,
+		};
+		let focused_ids = |windows: &[DesktopWindow]| -> Vec<String> {
+			windows
+				.iter()
+				.filter(|window| window.focused)
+				.map(|window| window.id.clone())
+				.collect()
+		};
+		let no_lookup = |_: &DesktopWindow| -> bool { panic!("focus lookup was not needed") };
+
+		// GNOME: gnome-shell (the compositor, pid 1) keeps its "Main stage"
+		// active.
+		let mut gnome = vec![frame("Main stage", 1, true), frame("notes.txt - gedit", 7, true)];
+		resolve_focus(&mut gnome, Some(1), no_lookup);
+		assert_eq!(focused_ids(&gnome), ["notes.txt - gedit-7"]);
+
+		// KDE: plasma-keyboard's untitled frame stays active.
+		let mut kde = vec![frame("", 5, true), frame("notes.txt — Kate", 8, true)];
+		resolve_focus(&mut kde, None, no_lookup);
+		assert_eq!(focused_ids(&kde), ["notes.txt — Kate-8"]);
+
+		// The GNOME overview: only the shell is active, and it keeps focus.
+		let mut overview = vec![frame("Main stage", 1, true), frame("notes.txt - gedit", 7, false)];
+		resolve_focus(&mut overview, Some(1), no_lookup);
+		assert_eq!(focused_ids(&overview), ["Main stage-1"]);
+
+		// Two active application windows: none is named.
+		let mut two = vec![frame("Main stage", 1, true), frame("A", 7, true), frame("B", 9, true)];
+		resolve_focus(&mut two, Some(1), no_lookup);
+		assert!(focused_ids(&two).is_empty());
+
+		// KDE with an untitled app beside plasma-keyboard: the frame holding
+		// keyboard focus wins.
+		let mut kde_untitled = vec![frame("", 5, true), frame("", 8, true)];
+		resolve_focus(&mut kde_untitled, None, |window| window.pid == Some(8));
+		assert_eq!(focused_ids(&kde_untitled), ["-8"]);
+	}
+
 	#[test]
 	fn focused_search_skips_null_child_refs() {
 		use atspi::zbus::{

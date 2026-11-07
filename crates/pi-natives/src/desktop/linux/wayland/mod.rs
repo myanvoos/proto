@@ -3,6 +3,8 @@ mod capture;
 mod libei;
 mod portal;
 
+use std::{cell::OnceCell, os::fd::AsRawFd, path::PathBuf};
+
 use image::RgbaImage;
 
 use crate::desktop::{
@@ -10,7 +12,7 @@ use crate::desktop::{
 	error::{CoreResult, DesktopError},
 	frame::FrameGeometry,
 	keys::KeyName,
-	linux::ax::AtSpiAx,
+	linux::ax::{AtSpiAx, resolve_focus},
 	types::{
 		CaptureCaps, DesktopCapabilities, DesktopDisplay, DesktopWindow, DisplaySelector, Target,
 	},
@@ -21,12 +23,43 @@ pub struct WaylandBackend {
 		not(feature = "wayland-pipewire"),
 		expect(dead_code, reason = "only read by the pipewire capture path")
 	)]
-	display:     DisplaySelector,
-	ax:          Option<AtSpiAx>,
-	ax_error:    Option<DesktopError>,
-	input:       Option<libei::Libei>,
-	input_error: Option<DesktopError>,
-	displays:    Vec<DesktopDisplay>,
+	display:           DisplaySelector,
+	ax:                Option<AtSpiAx>,
+	ax_error:          Option<DesktopError>,
+	input:             Option<libei::Libei>,
+	input_error:       Option<DesktopError>,
+	/// Why native input can never work here, probed once without a prompt;
+	/// `None` when it may.
+	input_unavailable: OnceCell<Option<String>>,
+	displays:          Vec<DesktopDisplay>,
+	/// The compositor's PID, whose own AT-SPI frames never count as the
+	/// focused application window.
+	compositor_pid:    Option<u32>,
+}
+
+/// Reads the compositor's PID from the peer credentials of its Wayland socket.
+fn compositor_pid() -> Option<u32> {
+	let display = PathBuf::from(std::env::var_os("WAYLAND_DISPLAY")?);
+	let path = if display.is_absolute() {
+		display
+	} else {
+		PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join(display)
+	};
+	let socket = std::os::unix::net::UnixStream::connect(path).ok()?;
+	let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
+	let mut length = size_of::<libc::ucred>() as libc::socklen_t;
+	// SAFETY: `credentials` and `length` are live, correctly sized out-params
+	// for SO_PEERCRED on a connected Unix socket; the kernel keeps no pointer.
+	let status = unsafe {
+		libc::getsockopt(
+			socket.as_raw_fd(),
+			libc::SOL_SOCKET,
+			libc::SO_PEERCRED,
+			(&raw mut credentials).cast(),
+			&raw mut length,
+		)
+	};
+	(status == 0 && credentials.pid > 0).then_some(credentials.pid as u32)
 }
 
 impl WaylandBackend {
@@ -36,7 +69,28 @@ impl WaylandBackend {
 			Ok(ax) => (Some(ax), None),
 			Err(err) => (None, Some(err)),
 		};
-		Self { display, ax, ax_error, input: None, input_error: None, displays: Vec::new() }
+		Self {
+			display,
+			ax,
+			ax_error,
+			input: None,
+			input_error: None,
+			input_unavailable: OnceCell::new(),
+			displays: Vec::new(),
+			compositor_pid: compositor_pid(),
+		}
+	}
+
+	/// Read on every call: a `LIBEI_SOCKET` set later in the session reaches
+	/// EIS directly, whatever the cached portal probe found.
+	fn input_unavailable(&self) -> Option<&str> {
+		if std::env::var_os("LIBEI_SOCKET").is_some() {
+			return None;
+		}
+		self
+			.input_unavailable
+			.get_or_init(portal::input_unavailable_reason)
+			.as_deref()
 	}
 
 	fn window_input_error(target: &Target, kind: &str) -> CoreResult<()> {
@@ -53,6 +107,9 @@ impl WaylandBackend {
 	fn prepare_input(&mut self, target: &Target, kind: &str) -> CoreResult<&mut libei::Libei> {
 		Self::window_input_error(target, kind)?;
 		if self.input.is_none() && self.input_error.is_none() {
+			if let Some(reason) = self.input_unavailable() {
+				return Err(DesktopError::permission_denied(reason));
+			}
 			match libei::Libei::new() {
 				Ok(input) => self.input = Some(input),
 				Err(err) => self.input_error = Some(err),
@@ -100,9 +157,10 @@ impl WaylandBackend {
 
 impl Backend for WaylandBackend {
 	fn capabilities(&mut self) -> DesktopCapabilities {
+		let input_unavailable = self.input.is_none() && self.input_unavailable().is_some();
 		let input_permission = if self.input.is_some() {
 			"granted"
-		} else if self.input_error.is_some() {
+		} else if input_unavailable || self.input_error.is_some() {
 			"unavailable"
 		} else {
 			"prompt-or-granted"
@@ -112,7 +170,7 @@ impl Backend for WaylandBackend {
 			display_server: Some("wayland".to_string()),
 
 			capture: cfg!(feature = "wayland-pipewire"),
-			input: self.input_error.is_none(),
+			input: self.input_error.is_none() && !input_unavailable,
 			ax: self.ax.is_some(),
 			background_window_input: false,
 			delivery_modes: vec!["background".to_string()],
@@ -136,16 +194,15 @@ impl Backend for WaylandBackend {
 	}
 
 	fn windows(&mut self) -> CoreResult<Vec<DesktopWindow>> {
-		self
-			.ax
-			.as_mut()
-			.ok_or_else(|| {
-				self
-					.ax_error
-					.clone()
-					.unwrap_or_else(DesktopError::ax_unsupported)
-			})?
-			.windows()
+		let ax = self.ax.as_ref().ok_or_else(|| {
+			self
+				.ax_error
+				.clone()
+				.unwrap_or_else(DesktopError::ax_unsupported)
+		})?;
+		let mut windows = ax.windows()?;
+		resolve_focus(&mut windows, self.compositor_pid, |window| ax.holds_focus(window));
+		Ok(windows)
 	}
 
 	fn capture(

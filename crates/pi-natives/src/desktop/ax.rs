@@ -449,6 +449,12 @@ pub fn snapshot(
 	Ok(AxSnapshot { text, node_count, truncated: state.truncated })
 }
 
+/// How many elements `find()` reads, and how deep. The node limit bounds the
+/// work; the depth limit bounds `walk_raw`'s recursion, deep enough for the
+/// levels Electron nests its content in.
+const FIND_MAX_NODES: u32 = 5_000;
+const FIND_MAX_DEPTH: u32 = 64;
+
 pub fn query(
 	backend: &mut dyn AxBackend,
 	registry: &mut AxRegistry,
@@ -461,8 +467,8 @@ pub fn query(
 	let mut state = WalkState {
 		visited:   0,
 		skipped:   0,
-		max_nodes: 5_000,
-		max_depth: 24,
+		max_nodes: FIND_MAX_NODES,
+		max_depth: FIND_MAX_DEPTH,
 		truncated: false,
 		bounds:    WalkBounds::Read,
 	};
