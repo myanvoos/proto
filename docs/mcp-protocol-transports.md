@@ -275,6 +275,7 @@ They fail fast and propagate errors.
 - **Malformed stdio message line**: dropped; stream continues.
 - **Stdio stream/process ends**: transport closes; pending requests rejected as `Transport closed`; manager-managed connections trigger reconnect.
 - **HTTP non-2xx**: request/notify throws HTTP error; managed OAuth requests can refresh auth and retry once on 401/403.
+- **HTTP or legacy SSE POST connection reset or closed after it was sent**: the request fails as non-retryable and is not replayed, because the server may already have run it. A refused connection still reconnects and retries once.
 - **Invalid JSON response**: parse exception propagated.
 - **Legacy SSE stream ends**: pending requests fail with `Transport closed: legacy SSE stream closed`; manager-managed connections trigger reconnect.
 - **SSE ends without matching id**: request fails with `No response received for request ID ...`.
