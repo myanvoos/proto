@@ -5,6 +5,7 @@
 ### Fixed
 
 - Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
+- Revived subagents now resolve their per-agent soft request budget by the agent definition name (such as `scout`) instead of the generated task label.
 
 ## [20.1.2] - 2026-11-04
 
