@@ -653,6 +653,11 @@ export class InputController {
 				await this.#normalizeAndInsertPastedImage(image, `Unsupported pasted image format: ${image.mimeType}`);
 			},
 			showStatus: message => this.ctx.showStatus(message),
+			pasteNative: () => {
+				if (this.clipboard.isTerminalLocal?.() === false) return false;
+				void this.handleImagePaste();
+				return true;
+			},
 		});
 		this.ctx.ui.addInputListener(data => (this.#enhancedPaste?.handleInput(data) ? { consume: true } : undefined));
 		this.ctx.ui.addStartListener(() => this.#enhancedPaste?.enable());

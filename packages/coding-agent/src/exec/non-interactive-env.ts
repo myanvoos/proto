@@ -52,16 +52,53 @@ export const NON_INTERACTIVE_ENV: Readonly<Record<string, string>> = {
 	CLOUDSDK_CORE_DISABLE_PROMPTS: "1",
 };
 
+/**
+ * Locale pinned for agent commands: byte-order collation, `C` numbers, dates,
+ * and English messages like `C`, but UTF-8 text, which `C` would split into bytes.
+ */
+const AGENT_LOCALE = "C.UTF-8";
+
+function hasLocaleEnvValue(env: Record<string, string | undefined> | undefined): boolean {
+	if (!env) return false;
+	for (const [key, value] of Object.entries(env)) {
+		if (value === undefined) continue;
+		if (key === "LANG" || key.startsWith("LC_")) return true;
+	}
+	return false;
+}
+
+/** Copy of the base env with `CI` removed, for the `PI_BASH_NO_CI` opt-out. */
 function withoutCI(env: Readonly<Record<string, string>>): Record<string, string> {
 	const { CI: _ci, ...rest } = env;
 	return rest;
 }
 
+/** Options for {@link buildNonInteractiveEnv}. */
+export interface NonInteractiveEnvOptions {
+	/** Env the child inherits from the launcher. */
+	baseEnv?: Record<string, string | undefined>;
+	/** Keep the inherited locale instead of pinning {@link AGENT_LOCALE}: user-typed `!` commands. */
+	inheritLocale?: boolean;
+}
+
+/** Builds the per-command environment for non-interactive child processes. */
 export function buildNonInteractiveEnv(
 	overrides?: Record<string, string>,
-	baseEnv: Record<string, string | undefined> = Bun.env,
+	{ baseEnv = Bun.env, inheritLocale = false }: NonInteractiveEnvOptions = {},
 ): Record<string, string> {
-	const base =
-		baseEnv.PI_BASH_NO_CI || baseEnv.CLAUDE_BASH_NO_CI ? withoutCI(NON_INTERACTIVE_ENV) : NON_INTERACTIVE_ENV;
-	return overrides ? { ...base, ...overrides } : base;
+	// `PI_BASH_NO_CI` (and its legacy alias) opts out of the automatic `CI=true`
+	// injection. Mirrors the session-env gate in `procmgr.ts` so the opt-out
+	// reaches the per-command env, which otherwise overrides the session value.
+	const env: Record<string, string> =
+		baseEnv.PI_BASH_NO_CI || baseEnv.CLAUDE_BASH_NO_CI ? withoutCI(NON_INTERACTIVE_ENV) : { ...NON_INTERACTIVE_ENV };
+
+	// Agent commands pin the locale whatever the launcher inherited, so sort
+	// order, number formats, and messages do not vary by machine; a locale in
+	// the command's own env (or direnv) opts out.
+	if (!inheritLocale && !hasLocaleEnvValue(overrides)) {
+		env.LANG = AGENT_LOCALE;
+		env.LC_ALL = AGENT_LOCALE;
+	}
+
+	return overrides ? { ...env, ...overrides } : env;
 }

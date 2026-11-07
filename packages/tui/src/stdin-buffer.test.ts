@@ -181,6 +181,71 @@ describe("StdinBuffer string/paste lifecycle recovery", () => {
 		expect(pastes).toEqual(["abcdefgh"]);
 		expect(received).toEqual([]);
 	});
+
+	it("routes APC terminal reports out of pasted text", () => {
+		const received: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5 });
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		const ack = "\x1b_Gi=31;OK\x1b\\";
+
+		buffer.process(Buffer.from(`\x1b[200~hello ${ack}`, "utf8"));
+		expect(received).toEqual([ack]);
+		expect(pastes).toEqual([]);
+
+		buffer.process(Buffer.from("world\x1b[201~", "utf8"));
+		expect(received).toEqual([ack]);
+		expect(pastes).toEqual(["hello world"]);
+	});
+
+	it("reassembles an APC report split at every byte inside a paste", () => {
+		const received: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5 });
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		const ack = '\x1b_25a1;e;{"ev":"ack","s":988}\x1b\\';
+
+		buffer.process(Buffer.from("\x1b[200~before", "utf8"));
+		for (const byte of ack) buffer.process(byte);
+		buffer.process(Buffer.from("after\x1b[201~", "utf8"));
+
+		expect(received).toEqual([ack]);
+		expect(pastes).toEqual(["beforeafter"]);
+	});
+
+	it("preserves non-APC pasted escapes and partial end markers", () => {
+		const received: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5 });
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		const content = "before\x1b[31mred\x1b[0m\x1b[201after\x1b";
+
+		buffer.process(Buffer.from(`\x1b[200~${content}`, "utf8"));
+		buffer.process(Buffer.from("\x1b[201~", "utf8"));
+
+		expect(received).toEqual([]);
+		expect(pastes).toEqual([content]);
+	});
+
+	it("keeps an incomplete APC report off the paste content when recovery fires", async () => {
+		const received: string[] = [];
+		const pastes: string[] = [];
+		const buffer = new StdinBuffer({ timeout: 5, pasteTimeout: 20 });
+		buffer.on("data", sequence => received.push(sequence));
+		buffer.on("paste", content => pastes.push(content));
+		const ack = "\x1b_Gi=7;OK\x1b\\";
+
+		buffer.process(Buffer.from(`\x1b[200~pasted${ack.slice(0, -1)}`, "utf8"));
+		await Bun.sleep(40);
+		expect(pastes).toEqual(["pasted"]);
+
+		// The held report head stays on the data path and completes normally.
+		buffer.process(Buffer.from("\\", "utf8"));
+		expect(received).toEqual([ack]);
+	});
 	it("drops held UTF-8 leads that began inside a discarded string", async () => {
 		// Torn-string discard only engages under the Kitty protocol.
 		setKittyProtocolActive(true);

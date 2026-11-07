@@ -11,6 +11,10 @@ function begin(controller: EnhancedPasteController, mime: string): void {
 	controller.handleInput(packet("DONE"));
 }
 
+function unexpectedNativePaste(): never {
+	throw new Error("unexpected native clipboard paste");
+}
+
 test("enhanced text paste enforces aggregate decoded bytes across packets", () => {
 	const texts: string[] = [];
 	const statuses: string[] = [];
@@ -19,6 +23,7 @@ test("enhanced text paste enforces aggregate decoded bytes across packets", () =
 		pasteText: text => texts.push(text),
 		pasteImage: () => {},
 		showStatus: status => statuses.push(status),
+		pasteNative: unexpectedNativePaste,
 	});
 	const half = Buffer.from("é".repeat(EDITOR_LIMITS.draftBytes / 4)).toString("base64");
 	begin(controller, "text/plain");
@@ -46,6 +51,7 @@ test("enhanced image paste rejects new transactions while native work is pending
 			return gate.promise;
 		},
 		showStatus: status => statuses.push(status),
+		pasteNative: unexpectedNativePaste,
 	});
 	begin(controller, "image/png");
 	controller.handleInput(packet("DATA", "image/png", "YQ=="));
@@ -58,4 +64,51 @@ test("enhanced image paste rejects new transactions while native work is pending
 	gate.resolve();
 	await gate.promise;
 	controller.disable();
+});
+
+test("enhanced paste falls back to the native clipboard when the listing has no supported MIME type", () => {
+	const writes: string[] = [];
+	const statuses: string[] = [];
+	let nativeAvailable = true;
+	let nativePastes = 0;
+	const controller = new EnhancedPasteController({
+		write: data => writes.push(data),
+		pasteText: () => {},
+		pasteImage: () => {},
+		showStatus: status => statuses.push(status),
+		pasteNative: () => {
+			nativePastes++;
+			return nativeAvailable;
+		},
+	});
+
+	// macOS screenshots copied straight to the clipboard list only `image/tiff` (#17696).
+	begin(controller, "image/tiff");
+	expect(nativePastes).toBe(1);
+	expect(writes).toEqual([]);
+	expect(statuses).toEqual([]);
+
+	// Remote session: the native clipboard is not the user's, so report the unsupported listing.
+	nativeAvailable = false;
+	begin(controller, "text/html");
+	expect(nativePastes).toBe(2);
+	expect(writes).toEqual([]);
+	expect(statuses).toEqual(["Clipboard paste has no supported text or image data"]);
+});
+
+test("enhanced paste does not read the regular clipboard for an unsupported primary-selection listing", () => {
+	const statuses: string[] = [];
+	const controller = new EnhancedPasteController({
+		write: () => {},
+		pasteText: () => {},
+		pasteImage: () => {},
+		showStatus: status => statuses.push(status),
+		pasteNative: unexpectedNativePaste,
+	});
+
+	controller.handleInput(packet("OK:loc=primary"));
+	controller.handleInput(packet("DATA", "image/tiff"));
+	controller.handleInput(packet("DONE"));
+
+	expect(statuses).toEqual(["Clipboard paste has no supported text or image data"]);
 });

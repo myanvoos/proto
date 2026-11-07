@@ -20,6 +20,8 @@ import { EventEmitter } from "events";
 import { isKittyProtocolActive } from "./keys";
 
 const ESC = "\x1b";
+/** APC introducer: terminal reports (kitty graphics, glyph protocol) arrive as APC strings. */
+const APC_PREFIX = `${ESC}_`;
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
@@ -387,6 +389,11 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	#pastePendingMatched = 0;
 	#pasteChunks: string[] = [];
 	#pasteOverlap: string = "";
+	// An undecided APC report head carried across paste chunks, so a terminal
+	// report split between two reads is routed to the data path instead of
+	// being typed as pasted text.
+	#pasteReportHead: string = "";
+	#pasteReportSearchOffset = 0;
 	#pasteBytes = 0;
 	#pasteWatchdog?: NodeJS.Timeout;
 	#pendingKittyPrintableCodepoint: number | undefined;
@@ -580,6 +587,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#pasteMode = true;
 			this.#pasteChunks = [];
 			this.#pasteOverlap = "";
+			this.#pasteReportHead = "";
+			this.#pasteReportSearchOffset = 0;
 			this.#pasteBytes = 0;
 			this.#consumePasteChunk(firstChunk);
 			return;
@@ -725,7 +734,74 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#buffer += "\ufffd";
 	}
 
+	/**
+	 * Split APC terminal reports out of a paste chunk and emit them on the data
+	 * path. A report split across reads keeps its undecided head in
+	 * `#pasteReportHead`, so the next chunk completes it instead of leaking the
+	 * bytes into the editor as text.
+	 */
+	#extractPasteReports(chunk: string): string {
+		const input = this.#pasteReportHead + chunk;
+		this.#pasteReportHead = "";
+		const length = input.length;
+		let text = "";
+		let pos = 0;
+		let searchFrom = 0;
+
+		while (searchFrom < length) {
+			const escape = input.indexOf(ESC, searchFrom);
+			if (escape === -1) break;
+			if (length - escape < APC_PREFIX.length) {
+				// A trailing ESC may open a report (or the paste-end marker, which
+				// the caller's overlap scan still sees once this head is restored).
+				text += input.slice(pos, escape);
+				this.#pasteReportHead = input.slice(escape);
+				this.#pasteReportSearchOffset = length - escape;
+				return text;
+			}
+			if (!input.startsWith(APC_PREFIX, escape)) {
+				searchFrom = escape + 1;
+				continue;
+			}
+
+			const end = resolveEscapeEnd(input, escape, length, escape === 0 ? this.#pasteReportSearchOffset : 0);
+			if (end === -1) {
+				text += input.slice(pos, escape);
+				this.#pasteReportHead = input.slice(escape);
+				this.#pasteReportSearchOffset = length - escape;
+				return text;
+			}
+			if (end <= STRING_ABORTED) {
+				// Not a report after all: its bytes are ordinary pasted text.
+				searchFrom = STRING_ABORTED - end;
+				continue;
+			}
+			if (end === -2) {
+				// Oversized APC: treat it as payload rather than discard pasted text.
+				searchFrom = escape + APC_PREFIX.length;
+				continue;
+			}
+
+			text += input.slice(pos, escape);
+			this.#emitDataSequence(input.slice(escape, end));
+			pos = end;
+			searchFrom = end;
+		}
+
+		text += input.slice(pos);
+		return text;
+	}
+
 	#consumePasteChunk(chunk: string): void {
+		// Terminal reports (kitty-graphics and glyph-protocol APC replies) that
+		// arrive mid-paste belong to the data path, not to the pasted text.
+		chunk = this.#extractPasteReports(chunk);
+		if (chunk.length === 0) {
+			// A report is not pasted content, so it must not extend the paste's
+			// inactivity window; the existing watchdog still bounds a lost marker.
+			if (!this.#pasteWatchdog) this.#armPasteWatchdog();
+			return;
+		}
 		const probe = this.#pasteOverlap + chunk;
 		if (this.#pasteOverLimit) {
 			if (this.#pastePendingMarker.length > 0) {
@@ -755,6 +831,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 					this.#pastePendingMatched = 0;
 					this.#pasteChunks = [];
 					this.#pasteOverlap = "";
+					this.#pasteReportHead = "";
+					this.#pasteReportSearchOffset = 0;
 					this.#pasteBytes = 0;
 					this.#pendingKittyPrintableCodepoint = undefined;
 					this.emit("paste", delivered);
@@ -801,6 +879,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			this.#pastePendingMatched = 0;
 			this.#pasteChunks = [];
 			this.#pasteOverlap = "";
+			this.#pasteReportHead = "";
+			this.#pasteReportSearchOffset = 0;
 			this.#pasteBytes = 0;
 			this.#pendingKittyPrintableCodepoint = undefined;
 			this.emit("paste", delivered);
@@ -861,6 +941,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#pastePendingMatched = 0;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
+		this.#pasteReportHead = "";
+		this.#pasteReportSearchOffset = 0;
 		this.#pasteBytes = 0;
 		this.#pendingKittyPrintableCodepoint = undefined;
 
@@ -890,15 +972,21 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		// the paste payload — drop it so its continuation cannot leak into
 		// ordinary input after the paste ends.
 		const content = `${this.#pasteChunks.join("")}${this.#pastePendingMarker}`;
+		// A report head still waiting for its terminator belongs to the terminal,
+		// not to the abandoned paste: replay it on the data path after the paste.
+		const pendingReport = this.#pasteReportHead.startsWith(APC_PREFIX) ? this.#pasteReportHead : "";
 		this.#pasteMode = false;
 		this.#pasteOverLimit = false;
 		this.#pastePendingMarker = "";
 		this.#pastePendingMatched = 0;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
+		this.#pasteReportHead = "";
+		this.#pasteReportSearchOffset = 0;
 		this.#pasteBytes = 0;
 		this.#utf8Held = Buffer.alloc(0);
 		this.emit("paste", content);
+		if (pendingReport.length > 0) this.process(pendingReport);
 	}
 
 	/**
@@ -1334,6 +1422,8 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 		this.#pastePendingMatched = 0;
 		this.#pasteChunks = [];
 		this.#pasteOverlap = "";
+		this.#pasteReportHead = "";
+		this.#pasteReportSearchOffset = 0;
 		this.#pasteBytes = 0;
 		this.#pendingKittyPrintableCodepoint = undefined;
 		this.#partialHoldStartMs = 0;

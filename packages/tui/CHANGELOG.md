@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Terminal report acknowledgements that arrive during a paste no longer appear as text in the editor, including reports split across reads.
+
 ## [20.1.2] - 2026-11-04
 
 ### Changed

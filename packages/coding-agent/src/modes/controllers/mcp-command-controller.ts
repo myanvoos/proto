@@ -23,6 +23,7 @@ import {
 	updateMCPServer,
 } from "../../mcp/config-writer";
 import {
+	hasMcpAuthorizationHeader,
 	lookupMcpOAuthCredentialForServer,
 	mcpOAuthCredentialIdsForServerUrl,
 	removeManagedMcpOAuthCredential,
@@ -941,11 +942,16 @@ export class MCPCommandController {
 			readMCPConfigFile(projectPath),
 		]);
 
-		if (userConfig.mcpServers?.[name]) {
-			return { filePath: userPath, scope: "user", config: userConfig.mcpServers[name] };
-		}
+		// Project wins over user on a name collision: runtime discovery
+		// enumerates project paths first and deduplicates first-wins, so the
+		// project entry is the server actually invoked. Refreshing the user
+		// shadow instead would report success while the active project server
+		// keeps its stale credential after the next reload.
 		if (projectConfig.mcpServers?.[name]) {
 			return { filePath: projectPath, scope: "project", config: projectConfig.mcpServers[name] };
+		}
+		if (userConfig.mcpServers?.[name]) {
+			return { filePath: userPath, scope: "user", config: userConfig.mcpServers[name] };
 		}
 
 		const standalonePaths = [path.join(cwd, "mcp.json"), path.join(cwd, ".mcp.json")];
@@ -1731,7 +1737,16 @@ export class MCPCommandController {
 			}
 
 			const urlKeyedId = serverUrl ? mcpOAuthCredentialId(serverUrl) : undefined;
-			const shouldPersist = currentAuth || oauthResult.credentialId !== urlKeyedId;
+			// A client-supplied bearer header is the one exception to the
+			// definition-only policy: at startup `lookupMcpOAuthCredential`
+			// disables the url-keyed fallback while the header is present, so
+			// without an explicit `auth` block the fresh credential never wins
+			// again and the next process reuses the stale bearer despite the
+			// reported success.
+			const shouldPersist =
+				currentAuth !== undefined ||
+				hasMcpAuthorizationHeader(found.config) ||
+				oauthResult.credentialId !== urlKeyedId;
 			const updatedConfig = shouldPersist
 				? this.#persistOAuthResult(baseConfig, oauthResult, {
 						tokenUrl: oauth.tokenUrl,
