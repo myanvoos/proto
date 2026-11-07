@@ -22,6 +22,7 @@ import type { cursorProvider } from "./cursor";
 import type { deepinfraProvider } from "./deepinfra";
 import type { deepseekProvider } from "./deepseek";
 import type { devinProvider } from "./devin";
+import type { devinCliProvider } from "./devin-cli";
 import type { exaProvider } from "./exa";
 import type { firepassProvider } from "./firepass";
 import type { fireworksProvider } from "./fireworks";
@@ -103,6 +104,7 @@ export type RegistryDefinition = [
 	typeof githubCopilotProvider,
 	typeof cursorProvider,
 	typeof devinProvider,
+	typeof devinCliProvider,
 	typeof googleAntigravityProvider,
 	typeof googleGeminiCliProvider,
 	typeof openaiCodexDeviceProvider,
@@ -197,6 +199,7 @@ export const REGISTRY_IDS = [
 	"github-copilot",
 	"cursor",
 	"devin",
+	"devin-cli",
 	"google-antigravity",
 	"google-gemini-cli",
 	"openai-codex-device",
@@ -317,6 +320,8 @@ export function loadProviderDefinition(id: string): RegistryDefinition | undefin
 			return require("./cursor").cursorProvider;
 		case "devin":
 			return require("./devin").devinProvider;
+		case "devin-cli":
+			return require("./devin-cli").devinCliProvider;
 		case "google-antigravity":
 			return require("./google-antigravity").googleAntigravityProvider;
 		case "google-gemini-cli":

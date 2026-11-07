@@ -5,6 +5,7 @@
 ### Added
 
 - Continue Anthropic conversations as server-held message threads, so long sessions upload their history once and later turns send only new messages.
+- Adopt the Devin CLI's saved Windsurf seat key as a stored `devin` account with the `devin-cli` login; API-key logins now honor a provider's `store-as` target.
 
 ### Fixed
 
