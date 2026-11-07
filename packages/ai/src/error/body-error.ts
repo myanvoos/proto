@@ -14,7 +14,7 @@
  *  - Unrecognised envelopes return `undefined` and keep their existing handling.
  */
 import { ProviderHttpError } from "./classes";
-import { attach, create, Flag } from "./flags";
+import { attach, create, Flag } from "./flags-core";
 import { ProviderResponseError } from "./provider";
 import { isOpaqueStatusBody } from "./rate-limit";
 

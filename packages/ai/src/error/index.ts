@@ -6,6 +6,7 @@ export * from "./body-error";
 export * from "./classes";
 export * from "./finalize";
 export * from "./flags";
+export * from "./flags-core";
 export * from "./format";
 export * from "./gateway";
 export * from "./network-cause";

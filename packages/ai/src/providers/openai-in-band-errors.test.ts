@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { isAuthRetryableError } from "../error/auth-classify";
-import { Flag, is, retriable } from "../error/flags";
+import { retriable } from "../error/flags";
+import { Flag, is } from "../error/flags-core";
 import { isUsageLimitOutcome } from "../error/rate-limit";
 import type { AssistantMessage, Context, FetchImpl } from "../types";
 import { AssistantMessageEventStream } from "../utils/event-stream";

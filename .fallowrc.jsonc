@@ -7,13 +7,35 @@
 	// shared test utilities (e.g. `e2eApiKey`, `withEnv`, `waitForDelayOrAbort`),
 	// breaking the test build with `noUnusedVariables` lint errors.
 	"entry": [
-		"packages/*/test/**/*.{ts,tsx}",
-		"packages/*/test/**/*.test.{ts,tsx}",
-		"packages/*/scripts/**/*.ts"
+		"packages/*/test/**/*.{ts,tsx,mjs}",
+		"packages/*/test/**/*.test.{ts,tsx,mjs}",
+		"packages/*/scripts/**/*.ts",
+		// Bun.build() entrypoint built by packages/browser-relay/scripts/build-extension.ts;
+		// the path is computed at runtime, so static import analysis can't see it.
+		"packages/browser-relay/extension/background.ts"
+	],
+	"ignorePatterns": [
+		// Build output; keeps fallow from warning about a skipped hidden directory.
+		"packages/natives/native/.build/**"
 	],
 	"ignoreDependencies": [
-		// Used via `node_modules/.bin/napi` from packages/natives/scripts/build-native.ts.
-		"@napi-rs/cli"
+		// Virtual module that only exists inside compiled binaries; imported dynamically
+		// behind IS_COMPILED_BINARY in packages/coding-agent/src/extensibility/plugins/host-module-compat.ts.
+		"proto-host-modules",
+		// Root scripts and tests import these without a root dependency: the root package.json
+		// intentionally declares none. Workspace packages resolve via hoisting (e.g. scripts/rewrite-changelog.ts,
+		// scripts/session-stats/audit.ts, scripts/check-spoofed-versions.ts, scripts/bun-install.test.ts);
+		// @huggingface/transformers is pinned in the root catalog (scripts/ci-release-build-binaries.ts);
+		// @oh-my-pi/pi-coding-agent is imported type-only from docs/skills/examples/*.
+		"@huggingface/transformers",
+		"@oh-my-pi/omptype",
+		"@oh-my-pi/pi-ai",
+		"@oh-my-pi/pi-catalog",
+		"@oh-my-pi/pi-coding-agent",
+		"@oh-my-pi/pi-utils",
+		// Compile-time optional dependency of packages/coding-agent: resolved via createRequire
+		// at binary build time (packages/coding-agent/scripts/claude-agent-plugin.ts), never statically imported.
+		"@anthropic-ai/claude-agent-sdk"
 	],
 	"duplicates": {
 		"ignore": [

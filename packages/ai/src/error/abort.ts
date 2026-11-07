@@ -1,4 +1,4 @@
-import { attach, create, Flag } from "./flags";
+import { attach, create, Flag } from "./flags-core";
 
 export class AbortError extends Error {
 	constructor(message = "Request was aborted", options?: { cause?: unknown }) {

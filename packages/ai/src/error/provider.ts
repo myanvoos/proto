@@ -1,5 +1,5 @@
 import { ProviderHttpError } from "./classes";
-import { attach, create, Flag } from "./flags";
+import { attach, create, Flag } from "./flags-core";
 
 export type ProviderResponseErrorKind =
 	| "incomplete-stream"
