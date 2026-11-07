@@ -10,7 +10,7 @@ import * as mcpClient from "../../mcp/client";
 import * as mcpConfigWriter from "../../mcp/config-writer";
 import * as oauthFlow from "../../mcp/oauth-flow";
 import { mcpOAuthCredentialId } from "../../mcp/oauth-flow";
-import type { MCPServerConfig } from "../../mcp/types";
+import type { MCPConfigFile, MCPServerConfig } from "../../mcp/types";
 import { AuthStorage } from "../../session/auth-storage";
 import { OAuthManualInputManager } from "../oauth-manual-input";
 import { initThemeSync } from "../theme/theme";
@@ -58,7 +58,7 @@ async function makeHarness(serverConfig: MCPServerConfig): Promise<Harness> {
 
 	const userPath = getMCPConfigPath("user", getProjectDir());
 	const projectPath = getMCPConfigPath("project", getProjectDir());
-	vi.spyOn(mcpConfigWriter, "readMCPConfigFile").mockImplementation(async filePath => {
+	vi.spyOn(mcpConfigWriter, "readMCPConfigFile").mockImplementation(async (filePath): Promise<MCPConfigFile> => {
 		if (filePath === projectPath) return { mcpServers: { envserver: serverConfig } };
 		if (filePath === userPath) {
 			return { mcpServers: { envserver: { type: "http", url: USER_SHADOW_URL } } };
@@ -105,7 +105,9 @@ describe("/mcp reauth persistence", () => {
 			credentialId: mcpOAuthCredentialId(SERVER_URL),
 			tokenUrl: "https://auth.example.com/token",
 		});
-		expect(harness.persisted()?.headers).toEqual({ Authorization: "Bearer stale" });
+		const persisted = harness.persisted();
+		if (persisted?.type !== "http") throw new Error("expected an HTTP server config");
+		expect(persisted.headers).toEqual({ Authorization: "Bearer stale" });
 	});
 
 	it("leaves a definition-only entry untouched when no client bearer shadows the url-keyed credential", async () => {
