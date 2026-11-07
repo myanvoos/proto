@@ -14,6 +14,10 @@
 - Drain an autorelease pool around macOS spell-server calls so spellcheck, autocorrect and completion stop leaking every result for the life of the process.
 - Name the loaded addon file, its release and the rebuild command when a symbol this checkout exports is missing from it, instead of only the symbol name.
 - Fixed `.bzl` files resolving to Python instead of Starlark in AST grep, edit, summaries, and block operations.
+- Collate and read numbers in sort with the shell's locale per call instead of the host process locale, so `LC_ALL=C sort` and `sort -u` keep lines that differ only in punctuation.
+- Merge with comm in the same collation as sort, so `sort | comm` agrees under a UTF-8 locale.
+- Accept a pattern that starts with `-` after `-e` in grep and ripgrep.
+- Remove a read-only directory with `rm -d` on Windows.
 
 ## [20.1.2] - 2026-11-04
 

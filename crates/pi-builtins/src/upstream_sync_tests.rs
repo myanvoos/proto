@@ -297,3 +297,40 @@ async fn a_tagged_checksum_line_without_an_algorithm_is_rejected_not_a_panic() {
 	assert_eq!(out, "");
 	assert!(!err.contains("internal error"), "{err}");
 }
+
+/// Failure mode: sort and comm read the host process locale, so a command's
+/// own `LC_ALL` was ignored and `sort | comm` disagreed under a UTF-8 locale.
+#[cfg(unix)]
+#[tokio::test]
+async fn sort_and_comm_follow_the_shell_locale() {
+	if !crate::locale::locale_loadable("en_US.UTF-8", libc::LC_ALL_MASK) {
+		eprintln!("skipping: en_US.UTF-8 not installed");
+		return;
+	}
+	let dir = tempfile::tempdir().unwrap();
+	let input = "printf 'a\\nB\\n'";
+
+	let (code, out, err) = run(&format!("{input} | LC_ALL=en_US.UTF-8 sort"), "", dir.path()).await;
+	assert_eq!((code, out.as_str(), err.as_str()), (0, "a\nB\n", ""));
+	let (code, out, err) = run(&format!("{input} | LC_ALL=C sort"), "", dir.path()).await;
+	assert_eq!((code, out.as_str(), err.as_str()), (0, "B\na\n", ""));
+
+	// Shifted collation at tertiary strength treated punctuation-bearing paths
+	// as equal, so `sort -u` discarded three of these four lines.
+	let (code, out, err) = run(
+		"printf 'src/a-b.ts\\nsrc/ab.ts\\nsrc/a_b.ts\\nsrc/a.b.ts\\n' | LC_ALL=en_US.UTF-8 sort -u",
+		"",
+		dir.path(),
+	)
+	.await;
+	assert_eq!(code, 0, "{err}");
+	let mut lines: Vec<&str> = out.lines().collect();
+	lines.sort_unstable();
+	assert_eq!(lines, ["src/a-b.ts", "src/a.b.ts", "src/a_b.ts", "src/ab.ts"]);
+
+	// comm merges in the order sort writes, so common lines are not dropped.
+	std::fs::write(dir.path().join("a"), "a\nB\nPASS3-r140\nPASS3-r14-moe\n").unwrap();
+	std::fs::write(dir.path().join("b"), "B\nPASS3-r14-moe\nzzz\n").unwrap();
+	let (code, out, err) = run("LC_ALL=en_US.UTF-8 comm -12 a b", "", dir.path()).await;
+	assert_eq!((code, out.as_str(), err.as_str()), (0, "B\nPASS3-r14-moe\n", ""));
+}

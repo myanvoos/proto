@@ -38,7 +38,7 @@ pub(crate) fn pcre2_jit_enabled(host: &Host) -> bool {
 	args_override_self = true
 )]
 struct GrepArgs {
-	#[arg(short = 'e', long = "regexp", value_name = "PATTERN")]
+	#[arg(short = 'e', long = "regexp", value_name = "PATTERN", allow_hyphen_values = true)]
 	patterns: Vec<String>,
 
 	#[arg(short = 'f', long = "file", value_name = "FILE")]
@@ -1637,6 +1637,21 @@ pub(crate) mod tests {
 		assert_eq!(capture.out(), "");
 		let err = capture.err();
 		assert!(err.contains("grep: big: pattern file larger than 256 MiB"), "{err}");
+	}
+
+	/// `-e` exists so a pattern may start with `-` (GNU grep); clap read
+	/// `-e --canary` as an unknown `--canary` flag and exited 2.
+	#[cfg(unix)]
+	#[test]
+	fn regexp_operand_may_start_with_a_dash() {
+		let input = "x --canary\n-> y\nz\n";
+		let (code, capture) = run_util::<Grep>(&["-e", "--canary"], input, "/");
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(capture.out(), "x --canary\n");
+
+		let (code, capture) = run_util::<Grep>(&["-ne", "->", "--regexp", "-z"], input, "/");
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(capture.out(), "2:-> y\n");
 	}
 	fn drain_bounded(input: impl Read, terminator: Option<u8>) -> Option<String> {
 		let mut reader = BoundedSearchReader { inner: input, terminator, run: 0 };
