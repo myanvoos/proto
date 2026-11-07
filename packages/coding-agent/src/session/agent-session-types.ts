@@ -37,6 +37,7 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { ToolSession } from "../tools";
 import type { XdevState } from "../tools/xdev";
 import type { AgentSession } from "./agent-session";
+import type { CacheWarmer } from "./cache-warmer";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SubagentUsageTotals } from "./session-entries";
 import type { SessionManager } from "./session-manager";
@@ -105,6 +106,9 @@ export interface AgentSessionConfig {
 	sessionManager: SessionManager;
 	settings: Settings;
 	allowSessionModelFallback?: boolean;
+
+	/** Prompt-cache warmer for the main loop; absent on side sessions, subagents and one-shot hosts. */
+	cacheWarmer?: CacheWarmer;
 
 	scoutAllowedBySpawnPolicy?: boolean;
 	/** Resolved worker authority, retained by side-session clones. */

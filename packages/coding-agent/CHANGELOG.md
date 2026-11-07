@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Show whether the next message reads the prompt cache in a `cache` status-line segment, with a Prompt Cache section in `/session`.
+- Keep prompt-cache entries warm by replaying the last request shortly before they expire (`providers.cacheWarming`), with warm-refresh spend counted in session usage.
+
+### Fixed
+
+- Keep the prompt-cache marker right across warm refreshes, `/clear`, rewinds and reopened sessions.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

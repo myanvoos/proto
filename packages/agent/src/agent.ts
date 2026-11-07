@@ -708,6 +708,20 @@ export class Agent {
 		this.#pruneToolDescriptions = prune;
 	}
 
+	/** Whether requests for `model` prune tool descriptions; an owned dialect sends no tools to prune. */
+	prunesToolDescriptions(model: Model | undefined): boolean {
+		if (!this.#pruneToolDescriptions || model === undefined) return false;
+		return (this.#dialect ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT)) === undefined;
+	}
+
+	get intentTracing(): boolean {
+		return this.#intentTracing;
+	}
+
+	set intentTracing(value: boolean) {
+		this.#intentTracing = value;
+	}
+
 	setTools(t: AgentTool<any>[]) {
 		this.#state.tools = t;
 	}

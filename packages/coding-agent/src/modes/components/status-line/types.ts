@@ -1,5 +1,6 @@
 import type { StatusLineSegmentId, StatusLineSeparatorStyle } from "../../../config/settings-schema";
 import type { AgentSession } from "../../../session/agent-session";
+import type { PromptCacheStatus } from "../../../session/prompt-cache-status";
 import type { UsageStatistics } from "../../../session/session-entries";
 import type { ActiveRepoContext } from "../../../utils/active-repo-context";
 import type { GitStatusSummary } from "../../../utils/git";
@@ -77,6 +78,8 @@ export interface SegmentContext {
 	worktree: { projectName: string; worktreeName: string } | null;
 
 	account: { label: string; storedCount: number; isPrediction: boolean } | null;
+	/** What the next request finds in the prompt cache; read only when the `cache` segment is configured. */
+	promptCache?: PromptCacheStatus;
 	usage: {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };

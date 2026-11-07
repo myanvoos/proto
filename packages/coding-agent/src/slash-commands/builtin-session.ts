@@ -1,5 +1,6 @@
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { promptCacheDetails } from "../modes/components/status-line/prompt-cache-details";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { truncateToWidth } from "../tools/render-utils";
@@ -701,11 +702,17 @@ async function runSessionCommand(
 ): Promise<SlashCommandResult> {
 	const { verb, rest } = parseSubcommand(command.args);
 	if (!verb || (verb === "info" && !rest)) {
-		await runtime.output(
-			[`Session: ${runtime.session.sessionId}`, `Title: ${runtime.session.sessionName}`, `CWD: ${runtime.cwd}`].join(
-				"\n",
-			),
-		);
+		const lines = [
+			`Session: ${runtime.session.sessionId}`,
+			`Title: ${runtime.session.sessionName}`,
+			`CWD: ${runtime.cwd}`,
+		];
+		const cacheStatus = runtime.session.getPromptCacheStatus();
+		if (cacheStatus) {
+			lines.push("", "Prompt Cache");
+			for (const row of promptCacheDetails(cacheStatus, Date.now())) lines.push(`${row.label}: ${row.value}`);
+		}
+		await runtime.output(lines.join("\n"));
 		return commandConsumed();
 	}
 	if (verb === "delete" && !rest) {
