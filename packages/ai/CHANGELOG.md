@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- ChatGPT Pro Max (`promax`) now counts as Pro for Codex account routing, so a blocked Pro account no longer wins over an open Pro Max account
 - Fixed `auth-gateway` rejecting providers whose catalog policy allows a missing API key (for example AWS-authenticated Bedrock Mantle); keyless requests no longer attempt credential rotation
 - Fixed Gemini and Vertex `MALFORMED_RESPONSE` finishes showing as "Unhandled stop reason" and dropping that turn's token usage; they now surface as a retryable error stop
 
