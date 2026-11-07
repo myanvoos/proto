@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Opt into catalog-gated WebSockets for standard OpenAI Responses with `preferWebsockets`; socket-local continuation reuses `previous_response_id` anchors without forcing stored responses.
+- Preserve the Codex server-held prefix when an `onPayload` hook drops the chain.
+
+### Fixed
+
+- Keep a WebSocket generation from being replayed as HTTP/SSE after it was sent, and bound stale-anchor and connect failures per logical session.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes

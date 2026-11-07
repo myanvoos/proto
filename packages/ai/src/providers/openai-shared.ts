@@ -28,7 +28,6 @@ import {
 	$env,
 	classifyJsonPrefix,
 	cloneJsonTree,
-	extractHttpStatusFromError,
 	isRecord,
 	logger,
 	parseImageMetadata,
@@ -110,6 +109,7 @@ import { applyInferenceHeaders, applySessionHeader, mergeHeaders, setHeaderIfAbs
 import { getNativeFinishReasonError } from "./native-finish-reason";
 import type { ChatCompletionCreateParamsStreaming } from "./openai-chat-wire";
 import { type InputItem, sanitizeCodexCallId } from "./openai-codex/request-transformer";
+import { isOpenAIRequestValidationError } from "./openai-request-error";
 import type {
 	Response as OpenAIResponse,
 	ResponseComputerToolCall,
@@ -1201,8 +1201,7 @@ export function isCompiledGrammarTooLargeStrictError(
 	error: unknown,
 	capturedErrorResponse: CapturedHttpErrorResponse | undefined,
 ): boolean {
-	const status = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
-	if (status !== 400) return false;
+	if (!isOpenAIRequestValidationError(error, capturedErrorResponse)) return false;
 	const messageParts = [error instanceof Error ? error.message : undefined, capturedErrorResponse?.bodyText]
 		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
 		.join("\n");
@@ -1256,8 +1255,7 @@ export function shouldRetryWithoutStrictTools(
 ): boolean {
 	const { model, strictToolsApplied, tools } = context;
 	if (!tools || tools.length === 0 || !strictToolsApplied) return false;
-	const status = extractHttpStatusFromError(error) ?? capturedErrorResponse?.status;
-	if (status !== 400 && status !== 422) return false;
+	if (!isOpenAIRequestValidationError(error, capturedErrorResponse)) return false;
 	const errorMessage = error instanceof Error ? error.message.trim() : "";
 	const messageParts = [error instanceof Error ? error.message : undefined, capturedErrorResponse?.bodyText]
 		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
@@ -1289,34 +1287,6 @@ function normalizeOpenAIStableId(value: string | undefined, maxLength: number, h
 	const wellFormed = value.toWellFormed();
 	if (wellFormed.length <= maxLength) return wellFormed;
 	return `${hashPrefix}${Bun.hash(wellFormed).toString(36)}`;
-}
-
-export const OPENAI_RESPONSES_PROGRESS_EVENT_TYPES: ReadonlySet<string> = new Set([
-	"response.created",
-	"response.output_item.added",
-	"response.reasoning_summary_part.added",
-	"response.reasoning_summary_text.delta",
-	"response.reasoning_summary_text.done",
-	"response.reasoning_summary_part.done",
-	"response.reasoning_text.delta",
-	"response.content_part.added",
-	"response.output_text.delta",
-	"response.refusal.delta",
-	"response.function_call_arguments.delta",
-	"response.function_call_arguments.done",
-	"response.custom_tool_call_input.delta",
-	"response.custom_tool_call_input.done",
-	"response.output_item.done",
-	"response.completed",
-	"response.incomplete",
-	"response.failed",
-	"error",
-]);
-
-export function isOpenAIResponsesProgressEvent(event: unknown): boolean {
-	if (!event || typeof event !== "object") return false;
-	const type = (event as { type?: unknown }).type;
-	return typeof type === "string" && OPENAI_RESPONSES_PROGRESS_EVENT_TYPES.has(type);
 }
 
 export function encodeTextSignatureV1(id: string, phase?: TextSignatureV1["phase"]): string {
@@ -3424,20 +3394,7 @@ export async function processResponsesStream<TApi extends Api>(
 				);
 			}
 			if (response?.status === "failed" || response?.status === "cancelled") {
-				const error = response?.error ?? (response as any)?.status_details?.error;
-				const details = response?.incomplete_details;
-				const statusDetailsReason = (response as any)?.status_details?.reason;
-				// In-band throttles must advance retry/fallback like an HTTP 429/5xx.
-				const inBand = details ? undefined : AIError.createInBandProviderError({ ...response, error });
-				if (inBand) throw inBand;
-				const message = error
-					? `${error.code || "unknown"}: ${error.message || "no message"}`
-					: details?.reason
-						? `incomplete: ${details.reason}`
-						: typeof statusDetailsReason === "string" && statusDetailsReason.length > 0
-							? `status_details: ${statusDetailsReason}`
-							: "Unknown error (no error details in response)";
-				throw new AIError.ProviderResponseError(message, { provider: model.provider, kind: "output" });
+				throwOpenAIResponsesEventError(event, output, model.provider);
 			}
 			if (response?.status === "incomplete" && response.incomplete_details?.reason === "content_filter") {
 				throw new AIError.ProviderResponseError("incomplete: content_filter", {
@@ -3457,28 +3414,8 @@ export async function processResponsesStream<TApi extends Api>(
 			options?.onCompleted?.();
 
 			break;
-		} else if (event.type === "error") {
-			const err = (event as any).error ?? event;
-			const inBand = AIError.createInBandProviderError(event);
-			if (inBand) throw inBand;
-			const code = err.code ?? "unknown";
-			const message = err.message ?? "no message";
-			throw new AIError.ProviderResponseError(`Error Code ${code}: ${message}`, {
-				provider: model.provider,
-				kind: "output",
-			});
-		} else if (event.type === "response.failed") {
-			populateResponsesUsageFromResponse(output, event.response?.usage);
-			const error = event.response?.error ?? (event.response as any)?.status_details?.error;
-			const details = event.response?.incomplete_details;
-			const inBand = details ? undefined : AIError.createInBandProviderError({ ...event.response, error });
-			if (inBand) throw inBand;
-			const message = error
-				? `${error.code || "unknown"}: ${error.message || "no message"}`
-				: details?.reason
-					? `incomplete: ${details.reason}`
-					: "Unknown error (no error details in response)";
-			throw new AIError.ProviderResponseError(message, { provider: model.provider, kind: "output" });
+		} else if (event.type === "error" || event.type === "response.failed") {
+			throwOpenAIResponsesEventError(event, output, model.provider);
 		}
 	}
 }
@@ -3858,9 +3795,9 @@ const REPLAY_SANITIZED_ITEM_EXCLUDE_MAP = {
 };
 
 export function buildResponsesDeltaInput<TItem extends ResponseInputItem | InputItem>(
-	previous: { input?: TItem[] } | undefined,
+	previous: { input?: string | TItem[] | null } | undefined,
 	previousResponseItems: readonly TItem[] | undefined,
-	current: { input?: TItem[] },
+	current: { input?: string | TItem[] | null },
 	additionalTopLevelExcludeMap?: Readonly<Record<string, boolean>>,
 ): TItem[] | null {
 	if (!previous) return null;
@@ -3889,4 +3826,57 @@ export function buildResponsesDeltaInput<TItem extends ResponseInputItem | Input
 		}
 	}
 	return current.input.slice(index) as TItem[];
+}
+
+/** Stored HTTP responses and socket-local WS anchors use the same rejection vocabulary. */
+export function isOpenAIResponsesStalePreviousResponseError(error: unknown): boolean {
+	if (!error || typeof error !== "object") return false;
+	if ("code" in error && error.code === "previous_response_not_found") return true;
+	if (!("message" in error) || typeof error.message !== "string") return false;
+	return (
+		/previous[ _]?response/i.test(error.message) &&
+		/not[ _]?found|invalid|expired|stale|unsupported/i.test(error.message)
+	);
+}
+
+/** Preserve one error/usage mapping for ordinary processing and pre-generation validation negotiation. */
+export function throwOpenAIResponsesEventError(
+	event: ResponseStreamEvent,
+	output: AssistantMessage,
+	provider: string,
+): never {
+	const envelope = event as unknown as Record<string, unknown>;
+	if (event.type === "error") {
+		const error = isRecord(envelope.error) ? envelope.error : envelope;
+		const inBand = AIError.createInBandProviderError(event);
+		if (inBand) throw inBand;
+		throw new AIError.ProviderResponseError(
+			`Error Code ${error.code ?? "unknown"}: ${error.message ?? "no message"}`,
+			{
+				provider,
+				kind: "output",
+			},
+		);
+	}
+	const response = isRecord(envelope.response) ? envelope.response : undefined;
+	if (event.type === "response.failed") populateResponsesUsageFromResponse(output, event.response?.usage);
+	const statusDetails = isRecord(response?.status_details) ? response.status_details : undefined;
+	const error = isRecord(response?.error)
+		? response.error
+		: isRecord(statusDetails?.error)
+			? statusDetails.error
+			: undefined;
+	const details = isRecord(response?.incomplete_details) ? response.incomplete_details : undefined;
+	const inBand = details ? undefined : AIError.createInBandProviderError({ ...response, error });
+	if (inBand) throw inBand;
+	const message = error
+		? `${error.code || "unknown"}: ${error.message || "no message"}`
+		: details?.reason
+			? `incomplete: ${details.reason}`
+			: event.type !== "response.failed" &&
+					typeof statusDetails?.reason === "string" &&
+					statusDetails.reason.length > 0
+				? `status_details: ${statusDetails.reason}`
+				: "Unknown error (no error details in response)";
+	throw new AIError.ProviderResponseError(message, { provider, kind: "output" });
 }
