@@ -117,3 +117,17 @@ export function normalizeSearchText(value: unknown): string | undefined {
 export function siteHosts(sites: readonly string[]): string[] {
 	return [...new Set(sites.map(site => site.split("/", 1)[0]).filter(Boolean))];
 }
+
+/**
+ * Parse a provider-supplied result URL, keeping only absolute http(s) URLs.
+ * Returns the normalized string, or `undefined` for anything else.
+ */
+export function normalizeHttpUrl(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	try {
+		const url = new URL(value);
+		return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : undefined;
+	} catch {
+		return undefined;
+	}
+}

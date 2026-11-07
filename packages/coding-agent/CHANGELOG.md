@@ -75,6 +75,7 @@
 - Broadcasts from other agents no longer cut short a `jobs` `wait` or interrupt running bash/eval; they arrive after the wait returns. A direct message still ends the wait, and the result now carries every message queued by then instead of one per call.
 - Subagent prompts no longer tell agents to message or broadcast before editing shared files; subagents message only to get unblocked and wait only on their own jobs.
 - `jobs` `wait` with nothing new returns a still-running snapshot after 5s instead of blocking on `irc.timeoutMs`, with the window climbing 5s → 10s → 30s → 1m → 5m across back-to-back waits (5s again after news or a minute away); from the 10s rung it tells the agent to get on with work that does not need the result.
+- Added Keenable as a web search engine (`web/keenable`). It uses `KEENABLE_API_KEY` or a stored `keenable` credential when present; an explicit selection without a key uses Keenable's keyless public endpoint
 
 ## [20.1.2] - 2026-11-04
 
