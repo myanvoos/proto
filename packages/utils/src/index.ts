@@ -23,6 +23,7 @@ export * from "./materialize-string";
 export * from "./math";
 export * from "./mermaid-ascii";
 export * from "./mime";
+export * from "./path";
 export * from "./path-tree";
 export * from "./peek-file";
 export * as postmortem from "./postmortem";
