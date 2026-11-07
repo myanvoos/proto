@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { formatMCPToolFailure } from "./errors";
 import { MCPTool } from "./tool-bridge";
 import { HttpTransport } from "./transports/http";
 import type { MCPHttpServerConfig, MCPServerConnection, MCPToolDefinition } from "./types";
@@ -112,6 +113,35 @@ test("JSON-RPC tool diagnostics keep bounded redacted data and a safe trace with
 	expect(serialized.length).toBeLessThanOrEqual(2000);
 	expect(JSON.parse(serialized).truncated).toBe(true);
 	expect(surfaced.match(/^next: /gm)).toHaveLength(1);
+});
+
+test("a reset after the request was sent warns that the call may already have run", async () => {
+	// Raw TCP: accept the POST, then drop the connection without a response. The
+	// transport cannot know whether the server read and ran the request, so the
+	// diagnostic must not imply it never reached the server.
+	const tcp = Bun.listen({
+		hostname: "127.0.0.1",
+		port: 0,
+		socket: {
+			data(socket) {
+				socket.end();
+			},
+		},
+	});
+	const transport = new HttpTransport({ type: "http", url: `http://127.0.0.1:${tcp.port}/mcp` });
+	try {
+		await transport.connect();
+		const error: unknown = await transport.request("tools/call", { name: "write" }).catch(reason => reason);
+		expect(error).toMatchObject({ transport: "http", failure: "reset", retryable: false });
+
+		const diagnostic = formatMCPToolFailure(error, "echo-server", "write");
+		expect(diagnostic).toContain(
+			"The connection was lost after the request was sent, so it may already have run; check its effect before retrying.",
+		);
+	} finally {
+		await transport.close();
+		tcp.stop(true);
+	}
 });
 
 test("unsafe header trace IDs are discarded in favor of safe nested JSON-RPC IDs", async () => {
