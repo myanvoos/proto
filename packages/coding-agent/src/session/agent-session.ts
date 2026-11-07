@@ -285,6 +285,7 @@ import {
 	type PythonExecutionMessage,
 	SKILL_PROMPT_MESSAGE_TYPE,
 	sanitizeAssistantForReparentedHistory,
+	titleContextWordCount,
 	USER_INTERRUPT_LABEL,
 } from "./messages";
 import { ModelControls, type ModelControlsHost } from "./model-controls";
@@ -347,6 +348,8 @@ import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 import { createTtsrJudge } from "./ttsr-judge";
 
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
+/** Words of assistant thinking plus reply a deferred auto-title waits for before retitling. */
+const DEFERRED_TITLE_MIN_WORDS = 40;
 
 const noOpUIContext: ExtensionUIContext = {
 	select: async (_title, _options, _dialogOptions) => undefined,
@@ -611,6 +614,15 @@ export class AgentSession {
 	#titleSystemPrompt: string | undefined;
 	#titleGenerationStart: (() => (() => void) | void) | undefined;
 	#titleGenerationInFlightFor: string | undefined;
+	/**
+	 * First-message auto-title the deterministic pre-filter declined: a greeting, or a
+	 * request that cleans away to nothing because it is all file attachment or markup.
+	 * Once the assistant has replied with enough words to reveal the task, the session
+	 * is named once from the conversation context instead of staying unnamed until
+	 * another titleable operator message — which a session launched from one `@brief.md`
+	 * and then left to run alone never gets. At most one such retry per operator message.
+	 */
+	#deferredTitle: { sessionId: string; replied: boolean; words: number } | undefined;
 	#waitingTitle:
 		| { sessionId: string; input: string; signal: AbortSignal; onStart?: () => (() => void) | void }
 		| undefined;
@@ -2466,6 +2478,14 @@ export class AgentSession {
 			this.#lastAssistantMessage = event.message;
 			for (const block of event.message.content) {
 				if (block.type === "toolCall") this.#runToolCallIds.add(block.id);
+			}
+			const deferred = this.#deferredTitle;
+			if (deferred && !deferred.replied && deferred.sessionId === this.sessionManager.getSessionId()) {
+				deferred.words += titleContextWordCount(event.message);
+				if (deferred.words >= DEFERRED_TITLE_MIN_WORDS) {
+					deferred.replied = true;
+					this.#advanceDeferredTitle();
+				}
 			}
 		}
 		if (
@@ -6139,13 +6159,25 @@ export class AgentSession {
 				extensionCommandSpace === -1 ? firstMessage.slice(1) : firstMessage.slice(1, extensionCommandSpace),
 			) !== undefined;
 		const sessionId = this.sessionManager.getSessionId();
-		if (isLocalExtensionCommand || this.sessionName || $env.PI_NO_TITLE || isLowSignalTitleInput(firstMessage)) {
+		if (isLocalExtensionCommand || this.sessionName || $env.PI_NO_TITLE) return;
+		if (isLowSignalTitleInput(firstMessage)) {
+			// The pre-filter's decline is the deferral's first half: without arming a
+			// retry here, the only trigger left is another titleable operator message.
+			// Never replace a retry this session already has, so a "hm" typed during a
+			// title request cannot drop the half the assistant already satisfied.
+			if (this.#deferredTitle?.sessionId !== sessionId) {
+				this.#deferredTitle = { sessionId, replied: false, words: 0 };
+			}
 			return;
 		}
 		if (this.#titleGenerationInFlightFor === sessionId) {
 			this.#waitingTitle = { sessionId, input: firstMessage, signal: this.titleGenerationSignal, onStart };
 			return;
 		}
+		this.#startTitleRequest(firstMessage, sessionId, onStart);
+	}
+
+	#startTitleRequest(firstMessage: string, sessionId: string, onStart?: () => (() => void) | void): void {
 		this.#titleGenerationInFlightFor = sessionId;
 		let cleanupProgress: (() => void) | void;
 		try {
@@ -6161,6 +6193,7 @@ export class AgentSession {
 				if (this.sessionManager.getSessionId() !== sessionId) return;
 				if (title && !this.sessionName) {
 					await this.sessionManager.setSessionName(title, "auto");
+					if (this.#deferredTitle?.sessionId === sessionId) this.#deferredTitle = undefined;
 				}
 			})
 			.catch(err => {
@@ -6176,12 +6209,37 @@ export class AgentSession {
 				}
 				cleanupProgress?.();
 				const waiting = this.#waitingTitle;
-				if (waiting?.sessionId !== sessionId) return;
-				this.#waitingTitle = undefined;
-				if (!waiting.signal.aborted && this.sessionManager.getSessionId() === sessionId && !this.#isDisposed) {
-					this.maybeStartTitleGeneration(waiting.input, waiting.onStart);
+				if (waiting?.sessionId === sessionId) {
+					this.#waitingTitle = undefined;
+					if (!waiting.signal.aborted && this.sessionManager.getSessionId() === sessionId && !this.#isDisposed) {
+						this.maybeStartTitleGeneration(waiting.input, waiting.onStart);
+					}
 				}
+				this.#advanceDeferredTitle();
 			});
+	}
+
+	/**
+	 * Retitle from the conversation context once the assistant has replied to a
+	 * request the pre-filter declined. A title request still running calls back
+	 * here when it settles, so a ready deferral waits for it instead of being
+	 * spent on a retry that cannot start.
+	 */
+	#advanceDeferredTitle(): void {
+		const deferred = this.#deferredTitle;
+		if (!deferred) return;
+		const sessionId = this.sessionManager.getSessionId();
+		if (deferred.sessionId !== sessionId || this.sessionName) {
+			this.#deferredTitle = undefined;
+			return;
+		}
+		if (!deferred.replied) return;
+		if (this.#titleGenerationInFlightFor === sessionId) return;
+		this.#deferredTitle = undefined;
+		if ($env.PI_NO_TITLE) return;
+		const context = this.#buildReplanTitleContext();
+		if (!context || isLowSignalTitleInput(context)) return;
+		this.#startTitleRequest(context, sessionId);
 	}
 
 	#resolveTitleProviderSessionId(parentSessionId: string): string {
@@ -6294,6 +6352,9 @@ export class AgentSession {
 			// An interrupt cancels in-flight title inference too; a fresh controller serves later requests.
 			this.#titleGenerationAbortController.abort();
 			if (!this.#isDisposed) this.#titleGenerationAbortController = new AbortController();
+			// The interrupted turn is not the reply a deferred retitle was waiting for; the next
+			// titleable operator message arms a new one.
+			this.#deferredTitle = undefined;
 			this.#loopGuards.cancelStreamedInput();
 			this.#abortAutolearnCapture();
 			for (const controller of this.#usagePreflightAbortControllers) controller.abort();

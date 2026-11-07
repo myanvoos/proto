@@ -20,7 +20,7 @@ import {
 	type SessionHeader,
 } from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
-import { isImageBlock, isImageDataPayload, isPersistedReplayBlobRef } from "./session-persistence";
+import { isImageBlock, isImageDataPayload, isPersistedReplayBlobRef, probeProperty } from "./session-persistence";
 import { FileSessionStorage, type SessionStorage } from "./session-storage";
 import {
 	parseTitleSlotFromContent,
@@ -763,7 +763,8 @@ export async function visitEntriesFromFile(
 }
 
 function hasImageUrl(value: unknown): value is { image_url: string } {
-	return typeof value === "object" && value !== null && "image_url" in value && typeof value.image_url === "string";
+	if (typeof value !== "object" || value === null) return false;
+	return typeof probeProperty(value, "image_url") === "string";
 }
 
 function shouldResolveImagePayload(value: unknown, key: string | undefined): value is { data: string } {

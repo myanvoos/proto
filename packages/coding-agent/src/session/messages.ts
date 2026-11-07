@@ -100,6 +100,18 @@ export function dedupeEphemeralReply(text: string, maxBytes = EPHEMERAL_REPLY_MA
 	return bytes.toString("utf8", 0, cut) + suffix;
 }
 
+/**
+ * Words of thinking plus reply text a settled assistant message contributes to
+ * {@link buildReplanTitleContext}. Deferred auto-titling accumulates these and
+ * retitles once the assistant has said enough to reveal the task; aborted and
+ * errored turns count zero.
+ */
+export function titleContextWordCount(message: AssistantMessage): number {
+	if (message.stopReason === "aborted" || message.stopReason === "error") return 0;
+	const text = `${thinkingFromContent(message.content)} ${textFromContent(message.content)}`;
+	return text.match(/\S+/g)?.length ?? 0;
+}
+
 export function buildReplanTitleContext(messages: AgentMessage[]): string {
 	const recent: TitleConversationTurn[] = [];
 	let i = messages.length - 1;

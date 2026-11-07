@@ -6,7 +6,7 @@ import type {
 	ChatUsageEvent,
 	ToolStatus,
 } from "@oh-my-pi/pi-agent-core";
-import { logger, postmortem } from "@oh-my-pi/pi-utils";
+import { logger, postmortem, untilAborted } from "@oh-my-pi/pi-utils";
 import { type Attributes, type Counter, context, type Histogram, type Meter, metrics } from "@opentelemetry/api";
 import {
 	type AnyValue,
@@ -27,6 +27,8 @@ import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import type { TelemetrySignalConfig } from "./telemetry-export";
 
 const FLUSH_INTERVAL_MS = 30_000;
+/** OTLP delivery is best-effort at process exit; a stalled collector must not hold the terminal open. */
+const SHUTDOWN_EXPORT_BUDGET_MS = 750;
 
 const SERVICE_NAME = "proto";
 
@@ -142,7 +144,13 @@ export async function registerProviders(signalConfig: TelemetrySignalConfig): Pr
 		if (traceProvider) shutdowns.push(traceProvider.shutdown());
 		if (logProvider) shutdowns.push(logProvider.shutdown());
 		if (meterProvider) shutdowns.push(meterProvider.shutdown());
-		await Promise.all(shutdowns);
+		const timeout = AbortSignal.timeout(SHUTDOWN_EXPORT_BUDGET_MS);
+		try {
+			await untilAborted(timeout, Promise.all(shutdowns));
+		} catch (error) {
+			if (!timeout.aborted) throw error;
+			logger.warn("OTLP export did not finish before process exit", { timeoutMs: SHUTDOWN_EXPORT_BUDGET_MS });
+		}
 	});
 }
 

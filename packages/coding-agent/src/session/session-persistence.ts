@@ -43,15 +43,22 @@ function truncateString(value: string, maxLength: number): string {
 	return truncated;
 }
 
+/**
+ * Read a property without tripping a throwing accessor. Tool `details` can keep
+ * library objects whose non-enumerable getters throw (firecrawl-js `SearchData.data`),
+ * and `in` plus a plain read reaches them while JSON never does.
+ */
+export function probeProperty(value: object, key: string): unknown {
+	try {
+		return key in value ? (value as Record<string, unknown>)[key] : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function isImageBlock(value: unknown): value is { type: "image"; data: string; mimeType?: string } {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"type" in value &&
-		(value as { type?: string }).type === "image" &&
-		"data" in value &&
-		typeof (value as { data?: string }).data === "string"
-	);
+	if (typeof value !== "object" || value === null) return false;
+	return probeProperty(value, "type") === "image" && typeof probeProperty(value, "data") === "string";
 }
 
 function isImageMimeType(value: unknown): value is string {
