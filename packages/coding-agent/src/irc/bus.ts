@@ -89,7 +89,7 @@ export class IrcBus {
 
 	async send(
 		msg: Omit<IrcMessage, "id" | "ts">,
-		opts?: { expectsReply?: boolean; suppressRelay?: boolean; fleetRoot?: string },
+		opts?: { expectsReply?: boolean; fleetRoot?: string },
 	): Promise<IrcDeliveryReceipt> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
 		const source = opts?.fleetRoot
@@ -156,7 +156,7 @@ export class IrcBus {
 		const waiter = this.#takeMatchingWaiter(message.to, message.from, fleetRoot);
 		if (waiter) {
 			waiter.resolve(message);
-			if (!opts?.suppressRelay) this.#relayToMainUi(message, fleetRoot);
+			this.#relayToMainUi(message, fleetRoot);
 			return { to: message.to, outcome: "delivered", effect: "injected", ...(revived ? { revived: true } : {}) };
 		}
 
@@ -167,7 +167,7 @@ export class IrcBus {
 
 		try {
 			const delivery = await session.deliverIrcMessage(message, opts);
-			if (!opts?.suppressRelay) this.#relayToMainUi(message, fleetRoot);
+			this.#relayToMainUi(message, fleetRoot);
 			return {
 				to: message.to,
 				outcome: "delivered",

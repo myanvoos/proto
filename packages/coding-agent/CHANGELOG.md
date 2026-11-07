@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Subagents can no longer broadcast: `fleet` `message` with `to: "all"` is refused unless the caller is the main agent, which messages the one agent that can answer instead.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

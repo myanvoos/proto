@@ -69,9 +69,10 @@ Labels (`[A-Za-z0-9_-]{1,48}`, rejected rather than rewritten) are display text 
   turn job ids, usage, and terminal recovery refs.
 
 ## Peer messaging (delivery-only)
-- `message` delivers to one peer or broadcasts to visible peers. Receipts report transport
-  only: `effect: "injected"` (no turn started), `effect: "wake_requested"` (turn start not
-  confirmed), `revived` (session loaded). A peer message never returns a turn receipt.
+- `message` delivers to one peer, or broadcasts to visible peers when the caller is the main
+  agent (subagents are refused and must message the one agent that can answer). Receipts report
+  transport only: `effect: "injected"` (no turn started), `effect: "wake_requested"` (turn start
+  not confirmed), `revived` (session loaded). A peer message never returns a turn receipt.
 - `inbox` drains queued bus and session messages; `peek: true` leaves both queues in place.
 - `list` with `scope: "visible"` lists peers in the caller's fleet with unread counts.
 - Blocking for a reply uses `jobs` `wait` with a mailbox selector.

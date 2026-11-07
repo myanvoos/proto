@@ -5,9 +5,10 @@ import type { Api, Model } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "../../async/job-manager";
 import { resolveAgentSpawnModelSelection } from "../../config/model-resolver";
 import { Settings } from "../../config/settings";
-import { IrcBus } from "../../irc/bus";
+import { IrcBus, type IrcMessage } from "../../irc/bus";
 import { OrchestratorRuntime } from "../../orchestrator/runtime";
 import { AgentRegistry } from "../../registry/agent-registry";
+import type { AgentSession } from "../../session/agent-session";
 import type { ToolSession } from "..";
 import { type FleetDetails, FleetTool } from ".";
 
@@ -86,6 +87,46 @@ function text(result: AgentToolResult<FleetDetails>): string {
 async function run(fleet: FleetTool, params: Record<string, unknown>): Promise<AgentToolResult<FleetDetails>> {
 	return Reflect.apply(fleet.execute, fleet, ["call", params]) as Promise<AgentToolResult<FleetDetails>>;
 }
+
+test("only the main agent may broadcast; a subagent's broadcast is refused without waking peers", async () => {
+	const registry = AgentRegistry.global();
+	registry.register({ id: "Main", label: "Main", kind: "main", session: null, fleetRoot: FLEET_ROOT, status: "idle" });
+	const received: IrcMessage[] = [];
+	const siblingSession = {
+		deliverIrcMessage: async (message: IrcMessage) => {
+			received.push(message);
+			return "injected";
+		},
+	} as unknown as AgentSession;
+	registry.register({
+		id: "Sibling",
+		label: "Sibling",
+		kind: "sub",
+		parentId: "Main",
+		session: siblingSession,
+		fleetRoot: FLEET_ROOT,
+		status: "idle",
+	});
+	registry.register({
+		id: "Sub",
+		label: "Sub",
+		kind: "sub",
+		parentId: "Main",
+		session: null,
+		fleetRoot: FLEET_ROOT,
+		status: "idle",
+	});
+	const fleet = new FleetTool(fleetSession({ getAgentId: () => "Sub" }));
+
+	const refused = await run(fleet, { op: "message", to: "all", message: "editing auth.ts" });
+	expect(refused.isError).toBe(true);
+	expect(text(refused)).toContain("Only the main agent can broadcast");
+	expect(received).toEqual([]);
+
+	const direct = await run(fleet, { op: "message", to: "Sibling", message: "who owns auth.ts?" });
+	expect(direct.isError).not.toBe(true);
+	expect(received.map(message => message.body)).toEqual(["who owns auth.ts?"]);
+});
 
 test("ids from owned and visible listings route tracked sends, peer messages, and termination; labels never route", async () => {
 	registerBusyWorker();
