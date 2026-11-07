@@ -6,6 +6,7 @@
 
 - Fixed MCP OAuth login and token refresh failing with a JSON parse error against token endpoints that reply form-encoded unless JSON is requested, such as GitHub's.
 - Fixed MCP OAuth tokens targeting the authorization server's own default audience instead of the MCP server's canonical resource URI.
+- Fixed ACP sessions refusing to load when a client-declared MCP server failed to connect; the session now loads and reports the server failure instead.
 
 ## [20.1.2] - 2026-11-04
 
