@@ -16,7 +16,12 @@ import type {
 	TextContent,
 	ToolChoice,
 } from "@oh-my-pi/pi-ai";
-import { calculateRateLimitBackoffMs, parseRateLimitReason, thinkingLoopDetail } from "@oh-my-pi/pi-ai";
+import {
+	calculateRateLimitBackoffMs,
+	isBillingCapUsageLimit,
+	parseRateLimitReason,
+	thinkingLoopDetail,
+} from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
@@ -2059,6 +2064,30 @@ export class TurnRecovery {
 			effectiveUsageLimitWaitMs > retrySettings.maxDelayMs &&
 			/\bGoUsageLimitError\b/.test(errorMessage) &&
 			(!this.#hasReplayUnsafeOutput(message) || this.#unexecutedToolCallsReplaySafe(message));
+		const maxDelayMs = retrySettings.maxDelayMs;
+		// retry.waitForUsageReset sleeps past the cap only on authoritative provider timing (a parsed reset hint
+		// or a complete usage-report reset). Heuristic-only usage limits (402 balance, dead spend caps) still
+		// fail fast, and the wait is bounded by the stated reset so an unrelated backoff cannot ride along.
+		// Computed before the chain consult: an authorized wait also exempts the error from budget
+		// termination, so overnight runs survive consecutive usage windows instead of aborting mid-wait.
+		const waitForUsageReset =
+			retrySettings.waitForUsageReset === true &&
+			recordedUsageLimitOutcome !== undefined &&
+			(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined) &&
+			effectiveUsageLimitWaitMs !== undefined &&
+			delayMs <= effectiveUsageLimitWaitMs;
+		// An account out of money has no reset to wait for: the QUOTA_EXHAUSTED
+		// heuristic backoff is a guess at a clock that does not exist, and a
+		// `retry.maxDelayMs` set at or above it (the 30-minute default ceiling
+		// users raise) would sleep through the whole guess. Surface the provider
+		// error instead, so the user tops up and the error frame's Retry
+		// re-attempts at once rather than idling in a retry the session cannot
+		// finish.
+		const billingCap = isBillingCapUsageLimit(message.errorStatus, errorMessage);
+		const exceedsDelayCap = (waitMs: number): boolean => {
+			if (billingCap) return true;
+			return maxDelayMs > 0 && waitMs > maxDelayMs && !waitForUsageReset;
+		};
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			const parsedSelector = parseRetryFallbackSelector(currentSelector, this.#host.modelRegistry);
 			const refusalKey = parsedSelector ? formatRetryFallbackBaseSelector(parsedSelector) : currentSelector;
@@ -2099,11 +2128,7 @@ export class TurnRecovery {
 						!classifierRefusal &&
 						!accountPolicyDenial &&
 						AIError.retriable(id) &&
-						(retrySettings.maxDelayMs <= 0 ||
-							delayMs <= retrySettings.maxDelayMs ||
-							(retrySettings.waitForUsageReset &&
-								recordedUsageLimitOutcome !== undefined &&
-								(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined))),
+						!exceedsDelayCap(delayMs),
 					wrapAround: longUsageLimitFallback,
 					preserveFailedTurn,
 				});
@@ -2119,18 +2144,6 @@ export class TurnRecovery {
 			}
 		}
 
-		// retry.waitForUsageReset sleeps past the cap only on authoritative provider timing (a parsed reset hint
-		// or a complete usage-report reset). Heuristic-only usage limits (402 balance, dead spend caps) still
-		// fail fast, and the wait is bounded by the stated reset so an unrelated backoff cannot ride along.
-		// Computed before the budget branch: an authorized wait also exempts the error from budget
-		// termination, so overnight runs survive consecutive usage windows instead of aborting mid-wait.
-		const maxDelayMs = retrySettings.maxDelayMs;
-		const waitForUsageReset =
-			retrySettings.waitForUsageReset === true &&
-			recordedUsageLimitOutcome !== undefined &&
-			(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined) &&
-			effectiveUsageLimitWaitMs !== undefined &&
-			delayMs <= effectiveUsageLimitWaitMs;
 		if (retryBudgetExhausted) {
 			if (!switchedModel && !switchedCredential) {
 				if (!waitForUsageReset) {
@@ -2194,7 +2207,7 @@ export class TurnRecovery {
 			return false;
 		}
 
-		if (maxDelayMs > 0 && delayMs > maxDelayMs && !switchedCredential && !switchedModel && !waitForUsageReset) {
+		if (exceedsDelayCap(delayMs) && !switchedCredential && !switchedModel) {
 			await this.persistTerminalEmptyErrorTurn(message);
 			const attempt = this.#retryAttempt;
 			this.#retryAttempt = 0;
@@ -2202,7 +2215,11 @@ export class TurnRecovery {
 				type: "auto_retry_end",
 				success: false,
 				attempt,
-				finalError: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
+				// A billing cap has no wait to report — the account is out of
+				// money — so the message the user acts on is the provider's own.
+				finalError: billingCap
+					? errorMessage
+					: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
 			});
 			this.#clearPendingRetryErrors();
 			this.resolveRetry();

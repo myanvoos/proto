@@ -10,6 +10,11 @@
 
 - Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
 - Count tool schemas as the request actually sends them, so context usage matches description-pruned requests and owned dialects.
+### Fixed
+
+- Keep rapid follow-up submissions in order when an extension input hook is slow.
+- Keep saving a session whose tool result details hold a throwing accessor instead of latching a disk failure.
+- Surface an out-of-credit provider balance immediately instead of sleeping through a quota wait that never reopens.
 
 ## [20.1.2] - 2026-11-04
 

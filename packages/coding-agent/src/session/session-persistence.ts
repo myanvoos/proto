@@ -1,5 +1,5 @@
 import { isAnthropicServerToolHistoryBlock } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
-import { countNewlines, materializeString } from "@oh-my-pi/pi-utils";
+import { countNewlines, materializeString, stringifyJson } from "@oh-my-pi/pi-utils";
 import {
 	type BlobStore,
 	externalizeImageDataSync,
@@ -63,9 +63,23 @@ export function isImageDataPayload(value: unknown): value is { data: string; mim
 		typeof value === "object" &&
 		value !== null &&
 		"data" in value &&
-		typeof (value as { data?: string }).data === "string" &&
+		typeof readDataField(value) === "string" &&
 		(isImageBlock(value) || ("mimeType" in value && isImageMimeType((value as { mimeType?: unknown }).mimeType)))
 	);
+}
+
+/**
+ * Read `data` without running an accessor that throws. Persistence and retention
+ * walks reach non-enumerable accessors the JSONL line never holds: a tool result
+ * whose `details` keep a library object (firecrawl-js `SearchData.data`) throws
+ * on a plain read and would latch a disk failure.
+ */
+function readDataField(value: object): unknown {
+	try {
+		return (value as { data?: unknown }).data;
+	} catch {
+		return undefined;
+	}
 }
 
 function shouldExternalizeImagePayload(
@@ -339,6 +353,31 @@ export function prepareEntryForPersistence(entry: FileEntry, blobStore: BlobStor
 	)
 		return { ...entry, data: preserveReplaySubtree(entry.data, blobStore) };
 	const stripped = stripReplayedReasoningSignatures(entry);
-	if (!needsPersistenceTraversal(stripped)) return stripped;
-	return truncateForPersistence(stripped, blobStore) as FileEntry;
+	try {
+		if (!needsPersistenceTraversal(stripped)) return stripped;
+		return truncateForPersistence(stripped, blobStore) as FileEntry;
+	} catch (error) {
+		// The walk probes fields such as `data` and `type` with `in` and plain
+		// reads, so it also reaches non-enumerable and inherited accessors that
+		// the JSONL line never holds. Tool `details` can keep a library object
+		// whose getter throws (firecrawl-js `SearchData.data`). Left unhandled,
+		// that latches a disk failure, and every later rewrite of the session
+		// meets the same entry, so nothing persists for the rest of the process.
+		// Retry once on the plain JSON of the entry: it holds the fields the
+		// line would serialize, and no accessors.
+		let json: string | undefined;
+		try {
+			json = stringifyJson(stripped);
+		} catch {
+			throw error;
+		}
+		if (json === undefined) throw error;
+		try {
+			return truncateForPersistence(JSON.parse(json), blobStore) as FileEntry;
+		} catch {
+			// A cause the clone does not remove (blob I/O) fails again: keep the
+			// first error so the logged cause stays stable.
+			throw error;
+		}
+	}
 }

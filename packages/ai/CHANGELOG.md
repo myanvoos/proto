@@ -46,6 +46,7 @@
 ### Added
 
 - Expose whether chat-completions requests drop a model's own prior thinking, and which thinking signatures still replay.
+- Recognize out-of-credit balances as billing caps rather than quota windows that reopen on a clock.
 
 ## [19.2.1] - 2026-11-03
 
