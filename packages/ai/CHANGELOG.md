@@ -43,6 +43,9 @@
 
 - Keep prompt-cache reads across long Anthropic thread turns, and cap retained thread chains per endpoint and model.
 - Send Muse Code function tools under a `_` prefix so subscription sessions no longer fail with `403 client_attestation_denied`; calls return under their own names and 64-character names stay valid.
+### Added
+
+- Expose whether chat-completions requests drop a model's own prior thinking, and which thinking signatures still replay.
 
 ## [19.2.1] - 2026-11-03
 

@@ -447,6 +447,18 @@ describe("the context a compaction fires at", () => {
 		expect(shouldCompact(101_000, 1_000_000, byTokens)).toBe(true);
 		expect(resolveThresholdTokens(1_000_000, byPercent)).toBe(200_000);
 	});
+
+	test("clamps a fixed trigger past the window's prompt budget so the next request still fits", () => {
+		// Regression: a fixed trigger one token under a provider-capped window fired after the
+		// reserve was spent, so the request that followed it overflowed before compaction ran.
+		const pastBudget = withSettings({ thresholdTokens: 195_000 });
+		expect(resolveThresholdTokens(200_000, pastBudget)).toBe(170_000);
+		expect(shouldCompact(180_000, 200_000, pastBudget)).toBe(true);
+
+		// A trigger inside the budget keeps the configured value.
+		const insideBudget = withSettings({ thresholdTokens: 100_000 });
+		expect(resolveThresholdTokens(200_000, insideBudget)).toBe(100_000);
+	});
 });
 
 describe("self-memory safety consolidation", () => {

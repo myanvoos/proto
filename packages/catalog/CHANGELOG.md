@@ -16,6 +16,9 @@
 
 - Added the `supportsMessageThreads` Anthropic compat axis, enabled for Claude 4.5 and newer on the first-party provider.
 - Added the `toolNamePrefix` Responses compat axis for hosts that reject certain declared tool names; Muse Code sets it to `_`.
+### Added
+
+- Expose Claude's 20-position prompt-cache lookback so warm-cache pruning stays inside the provider's reachable window.
 
 ## [19.2.1] - 2026-11-03
 

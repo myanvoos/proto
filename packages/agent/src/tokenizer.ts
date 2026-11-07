@@ -1,4 +1,5 @@
 import type { Model, ProviderPayload, UserContent } from "@oh-my-pi/pi-ai";
+import { completionsDropsOwnThinking, isLiteLLMThinkingSignature } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import type { ModelTokenizer } from "@oh-my-pi/pi-catalog/types";
 import * as natives from "@oh-my-pi/pi-natives";
 import { materializeString, stringifyJson } from "@oh-my-pi/pi-utils";
@@ -135,8 +136,21 @@ interface MessageEstimate {
 	floored?: number;
 }
 
+/** Identity of the model whose turns a {@link Tokenizer} counts, for own-turn replay decisions. */
+interface TokenizerModel extends Pick<Model, "tokenizer"> {
+	api?: Model["api"];
+	provider?: string;
+	id?: string;
+	reasoning?: boolean;
+	compat?: Model["compat"];
+}
+
 export class Tokenizer {
 	readonly #encoding: natives.Encoding | null;
+	/** The model whose own turns this tokenizer counts, when known. */
+	readonly #reader: { api: string; provider: string; id: string } | undefined;
+	/** Whether every chat-completions request to the model drops its own prior thinking text. */
+	readonly #dropsCompletionsThinking: boolean;
 
 	/** Exact native counts only; byte fallbacks stay mode-dependent and uncached. */
 	readonly #nativeCounts = new LRUCache<string, number>({
@@ -147,8 +161,13 @@ export class Tokenizer {
 
 	#estimates = new WeakMap<AgentMessage, MessageEstimate>();
 
-	constructor(model?: Pick<Model, "tokenizer"> | null) {
+	constructor(model?: TokenizerModel | null) {
 		this.#encoding = tokenizerEncodingForModel(model);
+		this.#reader =
+			model?.api && model.provider && model.id
+				? { api: model.api, provider: model.provider, id: model.id }
+				: undefined;
+		this.#dropsCompletionsThinking = completionsDropsOwnThinking(model);
 	}
 
 	get encoding(): natives.Encoding | null {
@@ -318,12 +337,21 @@ export class Tokenizer {
 			}
 			case "assistant": {
 				const collected: CollectedContent = { fragments: [], images: 0 };
+				// Chat-completions drops its own prior thinking unless LiteLLM replays it in `thinking_blocks`.
+				const reader = this.#reader;
+				const ownDroppedCompletionsTurn =
+					this.#dropsCompletionsThinking &&
+					reader !== undefined &&
+					message.api === reader.api &&
+					message.provider === reader.provider &&
+					message.model === reader.id;
 				for (const block of message.content) {
 					switch (block.type) {
 						case "text":
 							collected.fragments.push(block.text);
 							break;
 						case "thinking":
+							if (ownDroppedCompletionsTurn && !isLiteLLMThinkingSignature(block.thinkingSignature)) break;
 							collected.fragments.push(block.thinking);
 							if (block.thinkingSignature && !excludeEncryptedReasoning) {
 								collected.fragments.push(block.thinkingSignature);

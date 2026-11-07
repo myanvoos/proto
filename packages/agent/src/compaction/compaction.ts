@@ -274,8 +274,11 @@ export function promptBudgetTokens(contextWindow: number, settings: CompactionSe
 export function resolveThresholdTokens(contextWindow: number, settings: CompactionSettings): number {
 	const thresholdTokens = settings.thresholdTokens;
 	if (typeof thresholdTokens === "number" && Number.isFinite(thresholdTokens) && thresholdTokens > 0) {
-		if (thresholdTokens >= contextWindow) return promptBudgetTokens(contextWindow, settings);
-		return Math.min(contextWindow - 1, Math.max(1, thresholdTokens));
+		// Clamp to the real window's prompt budget, so a trigger at or past a
+		// window the provider caps below it compacts while the next request
+		// still fits, instead of firing one token short of the window and
+		// overflowing.
+		return Math.min(promptBudgetTokens(contextWindow, settings), Math.max(1, thresholdTokens));
 	}
 
 	const thresholdPercent = settings.thresholdPercent;
@@ -472,6 +475,13 @@ export interface SummaryOptions {
 	initiatorOverride?: MessageAttribution;
 	metadata?: Record<string, unknown>;
 	convertToLlm?: ConvertToLlm;
+	/**
+	 * Whether a message is a turn the user wrote. Remote Compaction V2 keeps these
+	 * next to the compaction item. Defaults to `role === "user"`; hosts whose
+	 * user-initiated turns also arrive as custom messages (e.g. skill invocations)
+	 * widen it.
+	 */
+	isUserAuthored?: (message: AgentMessage) => boolean;
 
 	telemetry?: AgentTelemetry;
 
@@ -1288,6 +1298,7 @@ async function compactPrepared(
 		initiatorOverride: options?.initiatorOverride,
 		metadata: options?.metadata,
 		convertToLlm: options?.convertToLlm,
+		isUserAuthored: options?.isUserAuthored,
 		telemetry: options?.telemetry,
 
 		thinkingLevel: options?.thinkingLevel,
@@ -1343,8 +1354,9 @@ async function compactPrepared(
 		// migrations, and custom/hook messages can serialize as user-role items
 		// too, so pick the user's own messages before serialization erases that,
 		// then serialize each one exactly as the request does.
+		const isUserAuthored = summaryOptions.isUserAuthored ?? ((message: AgentMessage) => message.role === "user");
 		const userMessages = convertToLlm(
-			[...messagesToSummarize, ...turnPrefixMessages, ...recentMessages].filter(message => message.role === "user"),
+			[...messagesToSummarize, ...turnPrefixMessages, ...recentMessages].filter(isUserAuthored),
 		);
 		const retainedUserItems: unknown[] = [...(previousReplacementHistory ?? [])];
 		const remoteSystemPrompt = summaryOptions.remoteSystemPrompt ?? [nativeCompactionPrompt];

@@ -18,6 +18,7 @@ import {
 	compact,
 	compactionContextTokens,
 	consolidateSelfSummary,
+	countResponsesHistoryTokens,
 	createCompactionSummaryMessage,
 	DEFAULT_SHAKE_CONFIG,
 	generateSelfSummary,
@@ -44,8 +45,9 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import type { AssistantMessage, CodexCompactionContext, Message, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { resolvePromptCacheLookback } from "@oh-my-pi/pi-catalog/model-policy";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { logger, Snowflake, stringifyJson } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { MODEL_ROLE_IDS } from "../config/model-roles";
 import type { CompactionSettings as ConfiguredCompactionSettings, Settings } from "../config/settings";
@@ -69,7 +71,12 @@ import {
 	resolveMethodSettings,
 	resolveSpeculationMethod,
 } from "./compaction-methods";
-import { convertToLlm, invalidateConvertToLlmArrayCache, stripImagesFromMessage } from "./messages";
+import {
+	convertToLlm,
+	invalidateConvertToLlmArrayCache,
+	isUserAuthoredMessage,
+	stripImagesFromMessage,
+} from "./messages";
 import { isTerminalTextAssistantAnswer } from "./queued-messages";
 import {
 	resolveCompactionConfiguredTarget,
@@ -426,13 +433,15 @@ export class SessionMaintenance {
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.#maintenanceBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
+		const model = this.#host.model();
 		const result = pruneToolOutputs(branchEntries, this.#tokenizer, {
 			...DEFAULT_PRUNE_CONFIG,
 			pruneUseless: this.#host.settings.getGroup("compaction").dropUseless,
 
 			keepBoundaryId,
-			cacheWarmSuffixTokens:
-				this.#host.model()?.thinking?.prefixBinding === true ? 0 : PRUNE_CACHE_WARM_SUFFIX_TOKENS,
+			cacheWarmSuffixTokens: model?.thinking?.prefixBinding === true ? 0 : PRUNE_CACHE_WARM_SUFFIX_TOKENS,
+			cacheLookbackPositions: model ? resolvePromptCacheLookback(model) : undefined,
+			convertToLlm,
 		});
 		if (result.prunedCount === 0) {
 			return undefined;
@@ -453,6 +462,7 @@ export class SessionMaintenance {
 		if (!supersedeReads && !dropUseless) return undefined;
 		const branchEntries = this.#maintenanceBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
+		const model = this.#host.model();
 		const result = pruneSupersededToolResults(branchEntries, this.#tokenizer, {
 			supersedeKey: supersedeReads ? readToolSupersedeKey : undefined,
 			pruneUseless: dropUseless,
@@ -460,7 +470,9 @@ export class SessionMaintenance {
 
 			keepBoundaryId,
 			idleFlushMs: PRUNE_IDLE_FLUSH_MS,
-			suffixTokenLimit: this.#host.model()?.thinking?.prefixBinding === true ? 0 : undefined,
+			suffixTokenLimit: model?.thinking?.prefixBinding === true ? 0 : undefined,
+			cacheLookbackPositions: model ? resolvePromptCacheLookback(model) : undefined,
+			convertToLlm,
 		});
 		if (result.prunedCount === 0) {
 			return undefined;
@@ -804,6 +816,7 @@ export class SessionMaintenance {
 							extraContext: compactionPrep.hookContext,
 							remoteSystemPrompt: this.#host.agent.state.systemPrompt,
 							convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+							isUserAuthored: isUserAuthoredMessage,
 							codexCompaction,
 						},
 						compactionCandidates,
@@ -1887,6 +1900,7 @@ export class SessionMaintenance {
 						...options,
 						metadata: this.#host.agent.metadataForProvider(candidate.provider),
 						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+						isUserAuthored: isUserAuthoredMessage,
 						telemetry,
 
 						thinkingLevel: this.#host.thinkingLevel(),
@@ -2094,8 +2108,7 @@ export class SessionMaintenance {
 			method: args.method,
 		});
 		const summaryTokens = this.#tokenizer.countMessages(convertToLlm([summaryMessage]), countOptions);
-		const serializedHistory = stringifyJson(providerPayload.items);
-		const nativeHistoryTokens = serializedHistory === undefined ? 0 : this.#tokenizer.countTokens(serializedHistory);
+		const nativeHistoryTokens = countResponsesHistoryTokens(providerPayload.items, this.#tokenizer);
 		return nonMessageTokens + rebuiltTokens - summaryTokens + nativeHistoryTokens;
 	}
 
@@ -2502,6 +2515,7 @@ export class SessionMaintenance {
 									metadata: this.#host.agent.metadataForProvider(candidate.provider),
 									initiatorOverride: "agent",
 									convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+									isUserAuthored: isUserAuthoredMessage,
 									telemetry,
 
 									thinkingLevel: this.#host.thinkingLevel(),

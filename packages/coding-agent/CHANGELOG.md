@@ -6,6 +6,10 @@
 
 - Adopt the Devin CLI's saved credentials as a `devin` account with the `devin-cli` login, so chat, discovery and usage no longer require `DEVIN_API_KEY`.
 - Sign in to a Windsurf Enterprise seat with the `devin-windsurf` login, which stores the exchanged seat key as a `devin` account.
+### Fixed
+
+- Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
+- Count tool schemas as the request actually sends them, so context usage matches description-pruned requests and owned dialects.
 
 ## [20.1.2] - 2026-11-04
 

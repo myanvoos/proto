@@ -830,7 +830,9 @@ export class ReviewerTransport implements ReviewerInstance {
 			compactionContextTokens(
 				providerContextTokens,
 				fixedPromptTokens +
-					estimateContextToolSchemaTokens(agent.state.tools, agent.tokenizer, model) +
+					estimateContextToolSchemaTokens(agent.state.tools, agent.tokenizer, model, {
+						pruneDescriptions: agent.prunesToolDescriptions(model),
+					}) +
 					storedConversationTokens +
 					incomingTokens,
 			);

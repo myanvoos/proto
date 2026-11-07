@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { buildModel, modelAcceptsSamplingParams } from "./build";
 import { Effort } from "./effort";
-import { isPromptCachePersistent } from "./model-policy";
+import { isPromptCachePersistent, resolvePromptCacheLookback } from "./model-policy";
 import { clampThinkingLevelForModel } from "./model-thinking";
 import { calculateUncachedInputCost } from "./models";
 import type { Api, ModelSpec } from "./types";
@@ -37,6 +37,23 @@ describe("reviewed catalog policies", () => {
 			isPromptCachePersistent({ provider: "openai-codex", baseUrl: "https://chatgpt.com/backend-api-impostor" }),
 		).toBe(false);
 		expect(isPromptCachePersistent({ provider: "openai", baseUrl: "https://chatgpt.com/backend-api" })).toBe(false);
+	});
+
+	it("bounds warm-cache pruning to Claude's 20-position lookback on every host", () => {
+		// Regression: without a bound, a rewrite behind a long run of small turns left no reachable
+		// cache entry and the next request re-wrote the whole conversation.
+		expect(resolvePromptCacheLookback(buildModel(spec("claude-sonnet-4-5", "anthropic", "anthropic-messages")))).toBe(
+			20,
+		);
+		expect(
+			resolvePromptCacheLookback(
+				buildModel({
+					...spec("anthropic.claude-sonnet-4-5-20250929-v1:0", "amazon-bedrock", "bedrock-converse-stream"),
+					requestModelId: undefined,
+				}),
+			),
+		).toBe(20);
+		expect(resolvePromptCacheLookback(buildModel(spec("gpt-5", "openai", "openai-responses")))).toBeUndefined();
 	});
 
 	it("prices Haiku's whole request above 100K without imposing that tier on Copilot's split rows", () => {
