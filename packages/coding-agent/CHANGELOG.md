@@ -76,6 +76,7 @@
 - Subagent prompts no longer tell agents to message or broadcast before editing shared files; subagents message only to get unblocked and wait only on their own jobs.
 - `jobs` `wait` with nothing new returns a still-running snapshot after 5s instead of blocking on `irc.timeoutMs`, with the window climbing 5s → 10s → 30s → 1m → 5m across back-to-back waits (5s again after news or a minute away); from the 10s rung it tells the agent to get on with work that does not need the result.
 - Added Keenable as a web search engine (`web/keenable`). It uses `KEENABLE_API_KEY` or a stored `keenable` credential when present; an explicit selection without a key uses Keenable's keyless public endpoint
+- RPC `bash` accepts `excludeFromContext: true` to keep a run out of model context like terminal `!!`; runtimes advertise support with `supportsBashExcludeFromContext` in the `ready` frame ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
 
 ## [20.1.2] - 2026-11-04
 
