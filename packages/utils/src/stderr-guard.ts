@@ -8,7 +8,6 @@ const STDOUT_FILENO = 1;
 const STDERR_FILENO = 2;
 
 interface LibcFdOps {
-	dup(fd: number): number;
 	dup2(oldFd: number, newFd: number): number;
 }
 
@@ -31,7 +30,6 @@ function libcFdOps(): LibcFdOps | null {
 	for (const candidate of candidates) {
 		try {
 			const libc = dlopen(candidate, {
-				dup: { args: [FFIType.i32], returns: FFIType.i32 },
 				dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
 			});
 			libcFdOpsCache = libc.symbols;
@@ -84,8 +82,12 @@ export function suppressTerminalStderr(options?: SuppressTerminalStderrOptions):
 		}
 	}
 
-	const saved = libc.dup(STDERR_FILENO);
-	if (saved === -1) {
+	// A saved copy opened from /dev/fd/2 is close-on-exec (Bun opens files that way), so a plain dup of the terminal is
+	// never leaked into children spawned without explicit fd handling — they could read keystrokes and terminal replies.
+	let saved: number;
+	try {
+		saved = fs.openSync(`/dev/fd/${STDERR_FILENO}`, fs.constants.O_WRONLY);
+	} catch {
 		fs.closeSync(redirectFd);
 		return false;
 	}

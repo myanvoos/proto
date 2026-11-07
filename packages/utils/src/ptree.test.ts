@@ -1,8 +1,13 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
-import { exec, spawn, TimeoutError, terminateProcess } from "./ptree";
+import { AbortError, ChildProcess, type ExecResult, exec, spawn, TimeoutError, terminateProcess } from "./ptree";
 
 // Real subprocess timing throughout: fake timers cannot drive child processes or pipe EOF.
+
+const BLOCK_FOREVER = `${JSON.stringify(process.execPath)} -e 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)'`;
 
 async function expectStopped(pid: number): Promise<void> {
 	// SIGKILL delivery is synchronous, but exit observation may settle on a later scheduler turn.
@@ -113,6 +118,99 @@ console.log("probe-done");`;
 			expect(Process.fromPid(descendantPid)?.status()).not.toBe(ProcessStatus.Running);
 		} finally {
 			Process.fromPid(descendantPid)?.killTree(9);
+		}
+	});
+
+	test("applies the deadline when the root exited before the timeout was attached", async () => {
+		// Bun can reap the root before spawn() returns, so attachTimeout() sees `proc.killed`; the orphan still holds
+		// stdout and only the deadline's cutoff ends the read.
+		const proc = Bun.spawn(["sh", "-c", "sleep 30 & echo token $!"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		expect(proc.killed).toBe(true);
+		let orphanPid: number | undefined;
+		try {
+			const child = new ChildProcess(proc, false);
+			child.attachTimeout(250);
+			const start = performance.now();
+			const text = await child.nothrow().text();
+			const match = /^token (\d+)$/.exec(text.trim());
+			orphanPid = match ? Number.parseInt(match[1], 10) : undefined;
+			expect(match, `stdout was: ${text}`).not.toBeNull();
+			expect(performance.now() - start).toBeLessThan(5_000);
+		} finally {
+			if (orphanPid) Process.fromPid(orphanPid)?.killTree(9);
+		}
+	});
+});
+
+describe("ptree abort with inherited output pipes", () => {
+	/** Spawn a root that leaves a pipe-holding descendant behind, then let its exit and stderr EOF settle. */
+	async function spawnPipeHolder(detached: boolean, controller: AbortController) {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ptree-abort-output-"));
+		const pidFile = path.join(dir, "pid");
+		const child = spawn(["/bin/sh", "-c", `${BLOCK_FOREVER} 2>/dev/null & echo $! > '${pidFile}'; echo token`], {
+			detached,
+			signal: controller.signal,
+		});
+		await child.exited;
+		const orphan = Process.fromPid(Number.parseInt(await Bun.file(pidFile).text(), 10));
+		if (!orphan) throw new Error("the fixture must expose its pipe-holding descendant");
+		const nextTurn = Promise.withResolvers<void>();
+		setImmediate(nextTurn.resolve);
+		await nextTurn.promise;
+		return { child, orphan, dir };
+	}
+
+	test.each([false, true])("aborts a read started after the root exits (detached: %s)", async detached => {
+		const controller = new AbortController();
+		const { child, orphan, dir } = await spawnPipeHolder(detached, controller);
+		let outcome: Promise<ExecResult> | undefined;
+		try {
+			// The root exit and stderr EOF have detached the signal listener; the read must re-arm cancellation for
+			// inherited pipes. Without a detached group, reader cutoff alone must release wait().
+			outcome = child.wait({ allowAbort: true });
+			controller.abort("abort inherited output");
+			expect(child.exitReason).toBeInstanceOf(AbortError);
+
+			const result = await outcome;
+			expect(result.exitError).toBeInstanceOf(AbortError);
+			expect(result.stdout).toBe("token\n");
+			if (detached) {
+				expect(await orphan.waitForExit(), "the detached descendant must be terminated").toBe(true);
+			}
+		} finally {
+			orphan.killTree(9);
+			await orphan.waitForExit();
+			child.kill();
+			await outcome?.catch(() => {});
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("aborts wait() when cancelled after root exit and stderr closure before wait() starts", async () => {
+		const controller = new AbortController();
+		const { child, orphan, dir } = await spawnPipeHolder(true, controller);
+		let outcome: Promise<ExecResult> | undefined;
+		try {
+			// Cancel while no pipe reader is active, then start wait(): the retained registration must re-arm the
+			// listener for the new read.
+			controller.abort("abort before wait starts");
+			outcome = child.wait({ allowAbort: true });
+			expect(child.exitReason).toBeInstanceOf(AbortError);
+
+			const result = await outcome;
+			expect(result.exitError).toBeInstanceOf(AbortError);
+			expect(await orphan.waitForExit(), "the detached descendant must be terminated").toBe(true);
+		} finally {
+			orphan.killTree(9);
+			await orphan.waitForExit();
+			child.kill();
+			await outcome?.catch(() => {});
+			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
 });
