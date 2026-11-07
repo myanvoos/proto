@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Keenable as a web search engine (`web/keenable`). It uses `KEENABLE_API_KEY` or a stored `keenable` credential when present; an explicit selection without a key uses Keenable's keyless public endpoint
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
