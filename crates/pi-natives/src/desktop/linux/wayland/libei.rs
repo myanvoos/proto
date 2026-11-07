@@ -18,6 +18,7 @@ use crate::desktop::{
 	backend::{Modifiers, MouseButton, PointerEvent},
 	error::{CoreResult, DesktopError},
 	keys::KeyName,
+	linux::pace_clicks,
 };
 
 const DEVICE_DISCOVERY_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
@@ -340,14 +341,27 @@ impl Libei {
 						MouseButton::Right => 0x111,
 						MouseButton::Middle => 0x112,
 					};
-					for _ in 0..count.max(1) {
-						button_interface.button(code, ei::button::ButtonState::Press);
+					// Each press, release and the frame carrying it goes out on
+					// its own flush: a compositor reads frames in the order they
+					// arrive, and a click held 12 ms then released is what a
+					// double click needs to be seen as one.
+					let context = &self.context;
+					pace_clicks(count, |pressed| {
+						time = Self::timestamp().max(time);
+						button_interface.button(
+							code,
+							if pressed {
+								ei::button::ButtonState::Press
+							} else {
+								ei::button::ButtonState::Released
+							},
+						);
 						device.device.device().frame(device.serial, time);
 						time = time.saturating_add(1);
-						button_interface.button(code, ei::button::ButtonState::Released);
-						device.device.device().frame(device.serial, time);
-						time = time.saturating_add(1);
-					}
+						context
+							.flush()
+							.map_err(|err| DesktopError::input_failed(format!("libei flush: {err}")))
+					})?;
 					if let Some(keyboard) = keyboard {
 						Self::send_modifiers(keyboard, modifiers, false, &mut time)?;
 					}

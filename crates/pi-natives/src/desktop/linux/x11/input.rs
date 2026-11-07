@@ -32,10 +32,10 @@ use crate::desktop::{
 	backend::{DeliveryMode, Modifiers, MouseButton, PointerEvent},
 	error::{CoreResult, DesktopError},
 	keys::KeyName,
+	linux::{CLICK_DELAY, MULTI_CLICK_GAP, pace_clicks},
 	types::Target,
 };
 
-const CLICK_DELAY: Duration = Duration::from_millis(12);
 const MPX_SETTLE: Duration = Duration::from_millis(100);
 
 pub struct X11Input {
@@ -194,19 +194,18 @@ impl X11Input {
 			PointerEvent::Click { x, y, button, count, modifiers } => {
 				let (root_x, root_y, event_x, event_y) = self.coordinates(window, *x, *y)?;
 				let detail = button_detail(*button);
-				let mut state = modifier_mask(*modifiers);
-				for _ in 0..(*count).max(1) {
-					self.send_button(window, detail, true, root_x, root_y, event_x, event_y, state)?;
+				let mut held = modifier_mask(*modifiers);
+				pace_clicks(*count, |pressed| {
+					self.send_button(window, detail, pressed, root_x, root_y, event_x, event_y, held)?;
 					if let Some(mask) = button_mask(detail) {
-						state |= mask;
+						held = if pressed {
+							held | mask
+						} else {
+							KeyButMask::from(u16::from(held) & !u16::from(mask))
+						};
 					}
-					thread::sleep(CLICK_DELAY);
-					self.send_button(window, detail, false, root_x, root_y, event_x, event_y, state)?;
-					if let Some(mask) = button_mask(detail) {
-						state = KeyButMask::from(u16::from(state) & !u16::from(mask));
-					}
-					thread::sleep(CLICK_DELAY);
-				}
+					Ok(())
+				})?;
 			},
 			PointerEvent::Move { x, y } => {
 				let (root_x, root_y, event_x, event_y) = self.coordinates(window, *x, *y)?;
@@ -246,11 +245,7 @@ impl X11Input {
 				let (x, y) = validate_xtest_point(*x, *y)?;
 				self.xtest_motion(x, y)?;
 				let detail = button_detail(*button);
-				for _ in 0..(*count).max(1) {
-					self.xtest_button(detail, true)?;
-					thread::sleep(CLICK_DELAY);
-					self.xtest_button(detail, false)?;
-				}
+				pace_clicks(*count, |pressed| self.xtest_button(detail, pressed))?;
 			},
 			PointerEvent::Move { x, y } => {
 				let (x, y) = validate_xtest_point(*x, *y)?;
@@ -297,7 +292,11 @@ impl X11Input {
 				let (x, y) = validate_xtest_point(*x, *y)?;
 				session.warp(x, y)?;
 				session.grab_button(window, button_detail(*button))?;
-				for _ in 0..(*count).max(1) {
+				let count = (*count).max(1);
+				for index in 0..count {
+					if index > 0 {
+						thread::sleep(MULTI_CLICK_GAP);
+					}
 					session.emit_button(button_detail(*button), true)?;
 					thread::sleep(CLICK_DELAY);
 					session.replay(window)?;
