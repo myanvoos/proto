@@ -45,6 +45,18 @@ export const BROWSER_PROTOCOL_TIMEOUT_MS = 60_000;
 const ENABLE_AUTOMATION_FLAG = "--enable-automation";
 export const DISABLE_AUTOMATION_CONTROLLED_ARG = "--disable-blink-features=AutomationControlled";
 
+/**
+ * Chromium switches that keep every renderer at normal scheduling priority. On macOS, Chromium up
+ * to M152 moves the renderers of background tabs and spare processes into the Darwin background
+ * band (priority 4) behind `MacAllowBackgroundingRenderProcesses`, ignoring Puppeteer's
+ * `--disable-renderer-backgrounding`. On a busy host the kernel then barely runs them: Tracing.start
+ * waits out Chromium's 10s ack timeout for them, and CDP calls into a tab opened beside another
+ * stall. Unknown feature names are ignored, so builds without the feature are unaffected; Puppeteer
+ * merges every `--disable-features` switch it is given.
+ */
+export const RENDERER_PRIORITY_ARGS: readonly string[] =
+	process.platform === "darwin" ? ["--disable-features=MacAllowBackgroundingRenderProcesses"] : [];
+
 const STEALTH_IGNORE_DEFAULT_ARGS = [
 	ENABLE_AUTOMATION_FLAG,
 	"--disable-extensions",
@@ -476,6 +488,7 @@ function buildHeadlessLaunchArgs(viewport: { width: number; height: number }): s
 		"--allow-file-access-from-files",
 		DISABLE_AUTOMATION_CONTROLLED_ARG,
 		`--window-size=${viewport.width},${viewport.height}`,
+		...RENDERER_PRIORITY_ARGS,
 	];
 	const proxy = process.env.PUPPETEER_PROXY;
 	if (proxy) {
