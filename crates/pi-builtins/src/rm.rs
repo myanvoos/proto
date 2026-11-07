@@ -825,7 +825,8 @@ fn remove_dir_with_special_cases(
 
 /// Helper function to remove a directory and handle results
 fn remove_dir_with_feedback(host: &mut Host, path: &Path, options: &Options) -> bool {
-	match fs::remove_dir(host.resolve(path)) {
+	let path_fs = host.resolve(path);
+	match remove_empty_dir(host, &path_fs) {
 		Ok(_) => {
 			verbose_removed_directory(host, path, options);
 			false
