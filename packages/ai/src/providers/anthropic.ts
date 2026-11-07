@@ -2114,10 +2114,14 @@ const streamAnthropicOnce = (
 					extraBetas.push(COMPACTION_BETA);
 				}
 				const isOAuth = options?.isOAuth ?? isAnthropicOAuthToken(apiKey);
+				// Routes that honor `ttl: "1h"` without the beta (Vertex rawPredict)
+				// reject it, so the URL gates the header even when a first-party
+				// model is rerouted there through `ANTHROPIC_BASE_URL`.
 				if (
 					!isOAuth &&
 					!dropCacheControl &&
 					!dropCacheControlOptions &&
+					!isVertexRawPredictUrl(baseUrl) &&
 					getCacheControl(model, options?.cacheRetention, isOAuth).cacheControl?.ttl === "1h" &&
 					!extraBetas.includes(extendedCacheTtlBeta)
 				) {

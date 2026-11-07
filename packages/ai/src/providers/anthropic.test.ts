@@ -964,6 +964,19 @@ it("sends explicit thinking-off for Haiku 5.5 instead of low adaptive thinking",
 	expect(headers.get("anthropic-beta") ?? "").not.toContain("thinking-binding-controls");
 });
 
+it("withholds the extended-cache beta when ANTHROPIC_BASE_URL reroutes a first-party model to Vertex", async () => {
+	const previous = Bun.env.ANTHROPIC_BASE_URL;
+	Bun.env.ANTHROPIC_BASE_URL =
+		"https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-5-5@default:streamRawPredict";
+	try {
+		const { headers } = await capturedRequest(streamContext, { cacheRetention: "long" });
+		expect(headers.get("anthropic-beta") ?? "").not.toContain("extended-cache-ttl-2025-04-11");
+	} finally {
+		if (previous === undefined) delete Bun.env.ANTHROPIC_BASE_URL;
+		else Bun.env.ANTHROPIC_BASE_URL = previous;
+	}
+});
+
 describe("Anthropic provider recovery dependencies", () => {
 	it("preserves short-lived caching when only ttl or scope is refused", async () => {
 		const transport = captureRequests(body =>
