@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes

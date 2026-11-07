@@ -309,6 +309,17 @@ export function supportsSharedPromptCache(
 	return model.api === "openai-completions" && (id === "deepseek-v4-pro" || id === "omen-alpha");
 }
 
+/**
+ * Prompt-cache lookback in block positions: how far back from a cache breakpoint the provider checks for an earlier
+ * request's entry. Claude looks back 20 block positions on every host; other lines have no known bound.
+ */
+export function resolvePromptCacheLookback(
+	model: Pick<ModelSpec, "provider" | "api" | "id" | "requestModelId">,
+): number | undefined {
+	const id = model.requestModelId ?? model.id;
+	return parseAnthropicModel(bareModelId(id)) ? 20 : undefined;
+}
+
 /** Native Codex subscription caches have no TTL; proxies cannot inherit this promise. */
 export function isPromptCachePersistent(model: Pick<ModelSpec, "provider" | "baseUrl">): boolean {
 	return model.provider === "openai-codex" && isOfficialCodexApiUrl(model.baseUrl);

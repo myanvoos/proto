@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Expose Claude's 20-position prompt-cache lookback so warm-cache pruning stays inside the provider's reachable window.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes

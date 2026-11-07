@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Compact a fixed compaction trigger that sits past the window's prompt budget before the next request overflows.
+- Keep user-initiated custom prompts in provider-native retained history, and count retained images at their estimate instead of their base64 size.
+- Bound warm-cache tool-result pruning to the provider's prompt-cache lookback window.
+
 ## [19.2.1] - 2026-11-03
 
 ### Added

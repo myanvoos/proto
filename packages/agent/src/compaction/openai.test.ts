@@ -5,6 +5,7 @@ import { Tokenizer } from "../tokenizer";
 import {
 	assertRemoteCompactionInputFits,
 	buildOpenAiNativeHistory,
+	countResponsesHistoryTokens,
 	shouldUseOpenAiRemoteCompaction,
 	trimRemoteCompactionInputToContextWindow,
 } from "./openai";
@@ -202,5 +203,25 @@ describe("remote compaction fit check", () => {
 		expect(result.fits).toBe(true);
 		expect(result.rewrittenOutputs).toBe(0);
 		expect(result.input).toEqual(input);
+	});
+
+	test("counts retained history images at their estimate instead of base64 text", () => {
+		// Regression: serializing the native history charged a retained screenshot's whole base64 payload,
+		// projecting far more context than the provider bills.
+		const dataUrl = `data:image/png;base64,${Buffer.alloc(300_000, 7).toString("base64")}`;
+		const items = [
+			{
+				type: "message",
+				role: "user",
+				content: [{ type: "input_image", image_url: dataUrl, detail: "auto" }],
+			},
+		];
+		const tokenizer = new Tokenizer();
+
+		const tokens = countResponsesHistoryTokens(items, tokenizer);
+
+		// The image is charged at its patch estimate, not as the base64 payload the JSON would carry.
+		expect(tokens).toBeGreaterThan(0);
+		expect(tokens).toBeLessThan(tokenizer.countTokens(dataUrl) / 4);
 	});
 });

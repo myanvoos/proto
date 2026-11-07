@@ -71,13 +71,13 @@ interface RemoteEstimateParts {
 	imageTokens: number;
 }
 
-function collectRemoteCompactionEstimate(value: unknown, parts: RemoteEstimateParts): void {
+function collectRemoteCompactionEstimate(value: unknown, parts: RemoteEstimateParts, dropEncrypted: boolean): void {
 	if (typeof value === "string") {
 		if (value) parts.fragments.push(value);
 		return;
 	}
 	if (Array.isArray(value)) {
-		for (const item of value) collectRemoteCompactionEstimate(item, parts);
+		for (const item of value) collectRemoteCompactionEstimate(item, parts, dropEncrypted);
 		return;
 	}
 	if (value === null || typeof value !== "object") {
@@ -99,10 +99,22 @@ function collectRemoteCompactionEstimate(value: unknown, parts: RemoteEstimatePa
 		return;
 	}
 	for (const [key, item] of Object.entries(record)) {
-		if (item === undefined || (key === "encrypted_content" && typeof item === "string")) continue;
+		if (item === undefined || (dropEncrypted && key === "encrypted_content" && typeof item === "string")) continue;
 		parts.framing.push(key);
-		collectRemoteCompactionEstimate(item, parts);
+		collectRemoteCompactionEstimate(item, parts, dropEncrypted);
 	}
+}
+
+/**
+ * Tokens of stored Responses replacement history. Retained `input_image` parts
+ * count at their image estimate rather than as base64 text; everything else,
+ * opaque compaction state included, counts as decoded text.
+ */
+export function countResponsesHistoryTokens(items: unknown[], tokenizer: Tokenizer): number {
+	const parts: RemoteEstimateParts = { fragments: [], framing: [], imageTokens: 0 };
+	collectRemoteCompactionEstimate(items, parts, false);
+	if (parts.framing.length > 0) parts.fragments.push(parts.framing.join(" "));
+	return (parts.fragments.length === 0 ? 0 : tokenizer.countTokens(parts.fragments)) + parts.imageTokens;
 }
 
 export interface TrimRemoteCompactionInputResult {
@@ -129,7 +141,7 @@ function probeRemoteCompactionInputBudget(
 	contextWindow: number | null | undefined,
 ): RemoteCompactionBudgetProbe {
 	const parts: RemoteEstimateParts = { fragments: [], framing: [], imageTokens: 0 };
-	collectRemoteCompactionEstimate({ instructions, input, ...(tools ? { tools } : {}) }, parts);
+	collectRemoteCompactionEstimate({ instructions, input, ...(tools ? { tools } : {}) }, parts, true);
 	if (parts.framing.length > 0) parts.fragments.push(parts.framing.join(" "));
 	const flatTokens = parts.imageTokens + REMOTE_COMPACTION_REQUEST_OVERHEAD_TOKENS;
 	if (!contextWindow || contextWindow <= 0) {
