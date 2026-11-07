@@ -159,6 +159,26 @@ test("list observes a settled job without consuming its automatic delivery", asy
 	expect(delivered).toEqual([job.id]);
 });
 
+test("a wait woken by one job collects a sibling that settles within the settle window", async () => {
+	const { manager, run } = harness();
+	const first = pendingJob(manager);
+	const second = pendingJob(manager);
+	const waiting = run({
+		op: "wait",
+		targets: [
+			{ kind: "job", id: first.id },
+			{ kind: "job", id: second.id },
+		],
+		timeoutMs: 5_000,
+	});
+	first.finish.resolve("first done");
+	await Bun.sleep(20);
+	second.finish.resolve("second done");
+	const result = await waiting;
+	expect(result.details?.jobs?.map(job => job.ref.id)).toEqual([first.id, second.id]);
+	expect(result.details?.jobs?.every(job => job.status === "completed")).toBe(true);
+});
+
 test("back-to-back idle waits climb the smart ladder and remind the agent to work from the 10s rung", async () => {
 	vi.useFakeTimers();
 	const { manager, run } = harness();
