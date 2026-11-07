@@ -64,6 +64,8 @@ export type WorkerInitPayload =
 			browserWSEndpoint: string;
 			safeDir: string;
 			page: AttachPage;
+			/** An explicit viewport the open asked for; a window omp does not size keeps its own device scale. */
+			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
 			timeoutMs: number;
 

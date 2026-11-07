@@ -259,7 +259,9 @@ async function acquireTabImpl(
 			} else {
 				const reuseSteps: string[] = [];
 				if (opts.viewport && browser.kind.kind !== "cmux") {
-					const dsf = opts.viewport.deviceScaleFactor;
+					// Only a hidden headless tab has an emulated scale to fall back on; other windows keep their own (0).
+					const ownScale = browser.kind.kind === "headless" && browser.kind.headless ? undefined : 0;
+					const dsf = opts.viewport.deviceScaleFactor ?? ownScale;
 					reuseSteps.push(
 						`await page.setViewport({ width: ${opts.viewport.width}, height: ${opts.viewport.height}, deviceScaleFactor: ${dsf === undefined ? "undefined" : String(dsf)} });`,
 					);
@@ -896,6 +898,7 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 		browserWSEndpoint,
 		safeDir,
 		page,
+		viewport: opts.viewport,
 		dialogs: opts.dialogs,
 		timeoutMs: opts.timeoutMs,
 	};
