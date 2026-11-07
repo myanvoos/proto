@@ -29,6 +29,7 @@ interface FileInputElement extends Element {
 const chromium = await ensureChromiumExecutable();
 const browserTest = chromium ? test : test.skip;
 let browser: Browser;
+let wsEndpoint: string;
 let profile: string | undefined;
 const pages: Page[] = [];
 const names: string[] = [];
@@ -39,6 +40,7 @@ beforeAll(async () => {
 	if (!chromium) return;
 	const launched = await launchHeadlessBrowser({ headless: true });
 	browser = launched.browser;
+	wsEndpoint = launched.wsEndpoint;
 	profile = launched.userDataDir;
 });
 afterEach(async () => {
@@ -59,7 +61,7 @@ async function pageWith(html: string): Promise<Page> {
 async function connectedTab(target: string): Promise<string> {
 	const name = `runtime-sync-${crypto.randomUUID()}`;
 	names.push(name);
-	const endpoint = new URL(browser.wsEndpoint());
+	const endpoint = new URL(wsEndpoint);
 	const handle = await acquireBrowser({ kind: "connected", cdpUrl: `http://${endpoint.host}` }, { cwd: os.tmpdir() });
 	await acquireTab(name, handle, { target, timeoutMs: 10_000 });
 	return name;
@@ -220,7 +222,7 @@ browserTest("a fresh attached-browser tab is created in the background and only 
 			payload: {
 				mode: "attach",
 				page: { kind: "create" },
-				browserWSEndpoint: browser.wsEndpoint(),
+				browserWSEndpoint: wsEndpoint,
 				safeDir: getPuppeteerDir(),
 				timeoutMs: 5000,
 			},

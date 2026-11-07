@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { isCompiledBinary, logger, untilAborted, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { isCompiledBinary, logger, untilAborted, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
 import { ToolAbortError, ToolError } from "../tool-errors";
@@ -8,6 +8,7 @@ import type { CmuxKind } from "./cmux/rpc";
 import { CmuxSocketClient } from "./cmux/socket-client";
 import {
 	BROWSER_PROTOCOL_TIMEOUT_MS,
+	closeLaunchedBrowser,
 	connectPuppeteer,
 	DEFAULT_VIEWPORT,
 	launchHeadlessBrowser,
@@ -31,8 +32,6 @@ export type BrowserKind = PuppeteerBrowserKind | CmuxKind;
 
 export type BrowserKindTag = BrowserKind["kind"];
 
-const HEADLESS_CLOSE_TIMEOUT_MS = 5_000;
-
 interface BrowserHandleCommon {
 	key: string;
 	kind: BrowserKind;
@@ -42,6 +41,8 @@ interface BrowserHandleCommon {
 export interface PuppeteerBrowserHandle extends BrowserHandleCommon {
 	kind: PuppeteerBrowserKind;
 	browser: Browser;
+	/** Browser-level WebSocket endpoint tab workers attach through. */
+	wsEndpoint: string;
 	cdpUrl?: string;
 	pid?: number;
 
@@ -172,7 +173,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		if (isCompiledBinary() || workerHostEntry() !== null) {
 			return await openSharedHeadlessHandle(kind, opts);
 		}
-		const { browser, userDataDir } = await launchHeadlessBrowser({
+		const { browser, wsEndpoint, userDataDir } = await launchHeadlessBrowser({
 			headless: kind.headless,
 			viewport: opts.viewport,
 		});
@@ -180,6 +181,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint,
 			userDataDir,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
@@ -198,6 +200,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint: browser.wsEndpoint(),
 			cdpUrl,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
@@ -245,6 +248,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint: browser.wsEndpoint(),
 			cdpUrl,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
@@ -305,6 +309,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		key: browserKey(kind),
 		kind,
 		browser,
+		wsEndpoint: browser.wsEndpoint(),
 		cdpUrl,
 		pid,
 		subprocess,
@@ -341,15 +346,7 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: ReleaseBrowserO
 			}
 			return;
 		}
-		if (handle.browser.connected) {
-			const proc = handle.browser.process();
-			try {
-				await withTimeout(handle.browser.close(), HEADLESS_CLOSE_TIMEOUT_MS, "Timed out closing headless browser");
-			} catch (err) {
-				logger.debug("Failed to close headless browser; force-killing", { error: (err as Error).message });
-				if (proc?.pid !== undefined) await gracefulKillTreeOnce(proc.pid).catch(() => undefined);
-			}
-		}
+		if (handle.browser.connected) await closeLaunchedBrowser(handle.browser);
 
 		if (handle.userDataDir) await removeUserDataDir(handle.userDataDir);
 		return;
@@ -413,6 +410,7 @@ async function openSharedHeadlessHandle(
 			key: browserKey(kind),
 			kind,
 			browser,
+			wsEndpoint: shared.wsEndpoint,
 			sharedDaemon: { name: shared.daemonName, projectDir: shared.projectDir },
 			refCount: 0,
 			stealth: { browserSession: null, override: null },

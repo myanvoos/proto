@@ -119,6 +119,7 @@ interface AcquireTabOptions {
 export interface AcquireTabResult {
 	tab: TabSession;
 	created: boolean;
+	/** What the open recovered from, for its result. */
 	note?: string;
 }
 
@@ -152,6 +153,15 @@ const DEFAULT_TAB_CLOSE_TIMEOUT_MS = 5_000;
 class RecoverableWorkerError extends ToolError {}
 class RendererCrashedError extends ToolError {}
 class NavigationTimeoutError extends ToolError {}
+/** The relay detach interrupted a call, but the same page is usable on a replacement worker. */
+class DebuggerReattachedError extends ToolError {
+	constructor(
+		message: string,
+		readonly when: "before-run" | "during-run",
+	) {
+		super(message);
+	}
+}
 class DebuggerDetachedError extends ToolError {
 	constructor(
 		message: string,
@@ -249,12 +259,14 @@ async function acquireTabImpl(
 			} else {
 				const reuseSteps: string[] = [];
 				if (opts.viewport && browser.kind.kind !== "cmux") {
-					const dsf = opts.viewport.deviceScaleFactor;
+					// Only a hidden headless tab has an emulated scale to fall back on; other windows keep their own (0).
+					const ownScale = browser.kind.kind === "headless" && browser.kind.headless ? undefined : 0;
+					const dsf = opts.viewport.deviceScaleFactor ?? ownScale;
 					reuseSteps.push(
 						`await page.setViewport({ width: ${opts.viewport.width}, height: ${opts.viewport.height}, deviceScaleFactor: ${dsf === undefined ? "undefined" : String(dsf)} });`,
 					);
 				}
-				const reuse = async (): Promise<void> => {
+				const reuse = async (): Promise<string | undefined> => {
 					if (reuseSteps.length) {
 						await runInTabWithSnapshot(
 							name,
@@ -266,11 +278,12 @@ async function acquireTabImpl(
 							{ cwd: getProjectDir() },
 						);
 					}
-					if (opts.url) await navigateOpenedTab(name, existing, opts, startedAt, false);
+					if (opts.url) return await navigateOpenedTab(name, existing, opts, startedAt, false);
 				};
 				let recoveredRenderer = false;
+				let navigationNote: string | undefined;
 				try {
-					await reuse();
+					navigationNote = await reuse();
 				} catch (error) {
 					if (
 						!(error instanceof RendererCrashedError) ||
@@ -279,7 +292,7 @@ async function acquireTabImpl(
 					)
 						throw error;
 					recoveredRenderer = true;
-					await reuse();
+					navigationNote = await reuse();
 				}
 				const reused = tabs.get(name)!;
 				const note =
@@ -287,6 +300,7 @@ async function acquireTabImpl(
 						recoveredRenderer
 							? "The renderer had crashed; the tab was reattached and its page reloaded."
 							: undefined,
+						navigationNote,
 						reused.backend === "worker" ? reused.workerExitNotice : undefined,
 					]
 						.filter(Boolean)
@@ -379,8 +393,8 @@ async function acquireTabImpl(
 	// Durable ownership lets another live process reap this page if this one dies before closing it.
 	const scope = sharedScopeOf(browser);
 	if (scope) void recordSharedTarget(scope, info.targetId);
-	if (opts.url) await navigateOpenedTab(name, tab, opts, startedAt, true);
-	return { tab, created: true };
+	const note = opts.url ? await navigateOpenedTab(name, tab, opts, startedAt, true) : undefined;
+	return { tab, created: true, note };
 }
 
 async function navigateOpenedTab(
@@ -389,7 +403,7 @@ async function navigateOpenedTab(
 	opts: AcquireTabOptions,
 	startedAt: number,
 	created: boolean,
-): Promise<void> {
+): Promise<string | undefined> {
 	try {
 		const remainingMs = Math.max(1, opts.timeoutMs - Math.round(performance.now() - startedAt));
 		await runInTabWithSnapshot(
@@ -413,7 +427,15 @@ async function navigateOpenedTab(
 				`${error.message}\nTab ${JSON.stringify(name)} stays open on what loaded; use action:"run" with this name to inspect or continue it.`,
 			);
 		}
-		if (created && tabs.get(name) === tab) await releaseTab(name, { kill: false }).catch(() => undefined);
+		// A detach that interrupted the navigation left the same page usable on a new worker: keep the tab and
+		// report the recovery instead of closing what the open just reattached.
+		if (error instanceof DebuggerReattachedError && error.when === "during-run" && !opts.signal?.aborted) {
+			return error.message;
+		}
+		// A recovered tab stays available through a later open even when the navigation never ran.
+		if (created && tabs.get(name) === tab && !(error instanceof DebuggerReattachedError)) {
+			await releaseTab(name, { kill: false }).catch(() => undefined);
+		}
 		throw error;
 	}
 }
@@ -654,8 +676,9 @@ async function runInTabWithSnapshot(
 						snapshot,
 					);
 				}
-				throw new ToolError(
+				throw new DebuggerReattachedError(
 					`${error.message}${landed}. The tab was reattached without reloading; run globals and element IDs were reset. Retry the call only if its earlier actions are safe to repeat.`,
+					error.when,
 				);
 			}
 			const runTimedOut =
@@ -838,8 +861,7 @@ function isLastSurfaceCloseError(err: unknown): boolean {
 
 async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTabOptions): Promise<WorkerInitPayload> {
 	const safeDir = getPuppeteerDir();
-	const browserWSEndpoint = browser.browser.wsEndpoint();
-	if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
+	const browserWSEndpoint = browser.wsEndpoint;
 	if (browser.kind.kind === "headless") {
 		return {
 			mode: "headless",
@@ -876,6 +898,7 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 		browserWSEndpoint,
 		safeDir,
 		page,
+		viewport: opts.viewport,
 		dialogs: opts.dialogs,
 		timeoutMs: opts.timeoutMs,
 	};
@@ -1052,8 +1075,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 	holdBrowser(tab.browser);
 	try {
 		await oldWorker.terminate().catch(() => undefined);
-		const browserWSEndpoint = tab.browser.browser.wsEndpoint();
-		if (!browserWSEndpoint) throw new ToolError("Browser websocket endpoint is unavailable");
+		const browserWSEndpoint = tab.browser.wsEndpoint;
 		const payload: WorkerInitPayload = {
 			mode: "attach",
 			userDriven: tab.kindTag === "connected" || tab.kindTag === "relay",

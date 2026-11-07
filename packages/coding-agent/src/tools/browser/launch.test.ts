@@ -5,7 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { daemonClientForProject } from "../../launch/client";
 import { daemonRuntimeDir } from "../../launch/paths";
+import { findFreeCdpPort, gracefulKillTreeOnce } from "./attach";
 import {
+	closeLaunchedBrowser,
 	ensureChromiumExecutable,
 	isSnapChromiumExecutable,
 	launchHeadlessBrowser,
@@ -15,6 +17,9 @@ import {
 	resolveSharedBrowserLaunchSpec,
 } from "./launch";
 import { ensureSharedBrowser } from "./shared-daemon";
+
+const HEADLESS_OWNER = path.resolve(import.meta.dir, "../../../test/fixtures/headless-browser-owner.ts");
+const CHROMIUM_AVAILABLE = (await ensureChromiumExecutable()) !== undefined;
 
 test("Puppeteer evaluation tolerates a missing caller stack frame", async () => {
 	const { withSourcePuppeteerURLIfNone, getSourcePuppeteerURLIfAvailable } = await import(
@@ -53,6 +58,68 @@ describe("Chromium launch flags", () => {
 		if (!launch) return;
 		expect(launch.args).toContain("--allow-file-access-from-files");
 	});
+});
+
+describe.skipIf(!CHROMIUM_AVAILABLE)("process-local headless launch", () => {
+	test("keeps a debugging port the caller picked and publishes a pipe launch's own endpoint", async () => {
+		const port = await findFreeCdpPort();
+		const picked = await launchHeadlessBrowser({ headless: true, args: [`--remote-debugging-port=${port}`] });
+		try {
+			expect(new URL(picked.wsEndpoint).port).toBe(String(port));
+		} finally {
+			await closeLaunchedBrowser(picked.browser);
+			if (picked.userDataDir) await removeUserDataDir(picked.userDataDir);
+		}
+
+		const piped = await launchHeadlessBrowser({ headless: true });
+		try {
+			// Port 0 leaves Chromium to bind a free port, published in DevToolsActivePort.
+			expect(Number(new URL(piped.wsEndpoint).port)).toBeGreaterThan(0);
+			const page = await piped.browser.newPage();
+			await page.goto("data:text/html,<title>pipe-endpoint</title>");
+			expect(await page.title()).toBe("pipe-endpoint");
+			await page.close();
+		} finally {
+			await closeLaunchedBrowser(piped.browser);
+			if (piped.userDataDir) await removeUserDataDir(piped.userDataDir);
+		}
+	}, 60_000);
+
+	// SIGKILL and process groups are POSIX semantics; Windows never detached Chromium.
+	test.skipIf(process.platform === "win32")(
+		"exits with the process that launched it, even when that process is SIGKILLed",
+		async () => {
+			const owner = Bun.spawn([process.execPath, HEADLESS_OWNER], {
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "inherit",
+			});
+			let output = "";
+			const decoder = new TextDecoder();
+			for await (const chunk of owner.stdout) {
+				output += decoder.decode(chunk, { stream: true });
+				if (output.includes("\n")) break;
+			}
+			const { wsEndpoint, userDataDir }: { wsEndpoint: string; userDataDir: string } = JSON.parse(output);
+			try {
+				const puppeteer = await loadPuppeteer();
+				const observer = await puppeteer.connect({ browserWSEndpoint: wsEndpoint });
+				const disconnected = Promise.withResolvers<void>();
+				observer.once("disconnected", () => disconnected.resolve());
+				owner.stdin.write("kill\n");
+				await owner.stdin.flush();
+				await owner.exited;
+				expect(owner.signalCode).toBe("SIGKILL");
+				// Chromium closing its DevTools socket is it exiting; a survivor keeps this pending.
+				await disconnected.promise;
+				expect(observer.connected).toBe(false);
+			} finally {
+				await gracefulKillTreeOnce(owner.pid).catch(() => undefined);
+				await removeUserDataDir(userDataDir);
+			}
+		},
+		30_000,
+	);
 });
 
 describe.skipIf(process.platform !== "linux")("Snap Chromium profile paths", () => {

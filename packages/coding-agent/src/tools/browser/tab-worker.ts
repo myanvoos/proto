@@ -2896,6 +2896,15 @@ export class WorkerCore {
 					childClient.on("PROTO.debuggerDetached", this.#onDebuggerDetached);
 			});
 			await installCancelledReleaseGuard(this.#page);
+			// A window omp does not size (visible, attached, relay) takes a viewport only when the open asks for one,
+			// after the steps that can fail, so a failed open leaves a borrowed tab at its own size. Without `scale` it
+			// keeps the window's own device scale (0).
+			if (payload.mode === "attach" && payload.viewport) {
+				await this.#page.setViewport({
+					...payload.viewport,
+					deviceScaleFactor: payload.viewport.deviceScaleFactor ?? 0,
+				});
+			}
 			this.#targetId = await targetIdForPage(this.#page);
 			const info = await this.#currentReadyInfo();
 			if (this.#crashed || this.#stopped) return;

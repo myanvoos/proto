@@ -58,6 +58,16 @@
 - A skill from an opted-out provider no longer hides the same-named skill from an active source in the extension dashboard.
 - Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling.
 - When extensions register one shortcut in different spellings (`alt+ctrl+x` and `ctrl+alt+x`, or `?` and `shift+?`), only the last one loaded is bound instead of the first silently winning.
+- macOS browser launches keep renderers at normal scheduling priority, so CDP calls and traces into background tabs no longer wait out Chromium's 10-second ack timeout.
+
+### Fixed
+
+- A process-local headless Chrome now exits when the process that launched it is killed, instead of outliving it with its temporary profile.
+- A caller's own `--remote-debugging-port` on a process-local headless launch is kept, and a stale `DevToolsActivePort` left in a reused profile is ignored.
+- Browser `open({ viewport })` now sizes the page the first time it opens a relay tab, an `app.cdp_url` or `app.path` browser, or a visible (`headed`) Chromium; without `scale` those pages keep their own device scale.
+- An open whose navigation Chrome detaches the debugger from now keeps the tab it reattached to and reports the recovery instead of closing it.
+- SEC EDGAR filing and filing-document URLs open the requested document instead of the company profile.
+- The computer tool prompt now says a screenshot's saved path holds the capped frame, so agents call `zoom` instead of cropping that file.
 
 ## [20.1.2] - 2026-11-04
 

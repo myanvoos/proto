@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { configureCredentialRedaction } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import { configureProviderMaxInFlightRequests } from "@oh-my-pi/pi-ai/stream";
 import { resolveHyperlinkPolicy, setTerminalHyperlinks } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
+	expandTilde,
 	getAgentDbPath,
 	getAgentDir,
 	getLastChangelogVersionPath,
@@ -278,10 +278,6 @@ type PathScopedStringArrayEntry = {
 	models?: unknown;
 	providers?: unknown;
 };
-
-function expandTilde(p: string): string {
-	return p === "~" ? os.homedir() : p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
-}
 
 function normalizePathPrefix(prefix: string): string {
 	return path.resolve(expandTilde(prefix));

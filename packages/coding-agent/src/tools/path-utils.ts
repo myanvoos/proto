@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import { glob } from "@oh-my-pi/pi-natives";
 import { hasFsCode, isEnoent, isEnotdir } from "@oh-my-pi/pi-utils/fs-error";
+import { expandTilde } from "@oh-my-pi/pi-utils/path";
 import { detectLanguageId } from "../utils/lang-from-path";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
@@ -131,14 +131,7 @@ export async function realPathWithinRoot(candidate: string, root: string): Promi
 	return real === realRoot || real.startsWith(prefix) ? real : null;
 }
 
-export function expandTilde(filePath: string, home?: string): string {
-	const h = home ?? os.homedir();
-	if (filePath === "~") return h;
-	if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
-		return h + filePath.slice(1);
-	}
-	return filePath;
-}
+export { expandTilde };
 
 export function expandPath(filePath: string): string {
 	const deColoned = /^:(?=[/\\~]|\.\.?[/\\]|[A-Za-z]:)/.test(filePath) ? filePath.slice(1) : filePath;
