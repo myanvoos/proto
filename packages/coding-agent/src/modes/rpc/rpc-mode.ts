@@ -50,6 +50,7 @@ import type {
 	RpcHostUriCancelRequest,
 	RpcHostUriRequest,
 	RpcHostUriResult,
+	RpcReadyFrame,
 	RpcResponse,
 	RpcSessionState,
 	RpcSubagentSubscriptionLevel,
@@ -745,7 +746,8 @@ export async function runRpcMode(
 			supportedProtocolVersions: [1, 2],
 			maxFrameBytes: MAX_RPC_FRAME_BYTES,
 			maxReassembledFrameBytes: MAX_RPC_REASSEMBLED_BYTES,
-		}),
+			supportsBashExcludeFromContext: true,
+		} satisfies RpcReadyFrame),
 	);
 	const output = (obj: RpcResponse | RpcExtensionUIRequest | object) => {
 		writeFrames(frameEncoder.encodeFrames(obj));
@@ -1120,7 +1122,6 @@ export async function runRpcMode(
 			case "get_state": {
 				const state: RpcSessionState = {
 					model: session.model,
-					supportsBashExcludeFromContext: true,
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,

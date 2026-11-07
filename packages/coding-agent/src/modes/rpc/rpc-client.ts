@@ -251,6 +251,7 @@ export class RpcClient {
 	#pendingHostToolCalls = new Map<string, { controller: AbortController }>();
 	#requestId = 0;
 	#protocolVersion: RpcProtocolVersion = 1;
+	#supportsBashExcludeFromContext = false;
 	#extensionUiListeners: Set<(req: RpcExtensionUIRequest) => void> = new Set();
 	#abortController = new AbortController();
 
@@ -266,6 +267,7 @@ export class RpcClient {
 
 		this.#abortController = new AbortController();
 		this.#protocolVersion = 1;
+		this.#supportsBashExcludeFromContext = false;
 
 		const cliPath = this.options.cliPath ?? "dist/cli.js";
 		const args = ["--mode", "rpc"];
@@ -318,6 +320,7 @@ export class RpcClient {
 			for await (const line of lines) {
 				if (!readySettled && isRecord(line) && line.type === "ready") {
 					protocolV2Supported = supportsRpcProtocolV2(line);
+					this.#supportsBashExcludeFromContext = line.supportsBashExcludeFromContext === true;
 					readySettled = true;
 					readyResolve();
 					continue;
@@ -652,7 +655,7 @@ export class RpcClient {
 	 * Excluded commands require an explicitly advertised runtime capability.
 	 */
 	async bash(command: string, options?: { excludeFromContext?: boolean }): Promise<BashResult> {
-		if (options?.excludeFromContext === true && (await this.getState()).supportsBashExcludeFromContext !== true) {
+		if (options?.excludeFromContext === true && !this.#supportsBashExcludeFromContext) {
 			throw new Error("RPC runtime does not support bash context exclusion");
 		}
 		const response = await this.#send({ type: "bash", command, excludeFromContext: options?.excludeFromContext });

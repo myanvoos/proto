@@ -84,8 +84,6 @@ export interface RpcAbortAndRestoreQueueResult {
 
 export interface RpcSessionState {
 	model?: Model;
-	/** `bash` accepts `excludeFromContext`; require exactly `true` before sending excluded commands. */
-	supportsBashExcludeFromContext?: boolean;
 	thinkingLevel: ThinkingLevel | undefined;
 	isStreaming: boolean;
 	isCompacting: boolean;
@@ -107,6 +105,16 @@ export interface RpcSessionState {
 	dumpTools?: Array<{ name: string; description: string; parameters: unknown; examples?: readonly ToolExample[] }>;
 
 	contextUsage?: ContextUsage;
+}
+
+export interface RpcReadyFrame {
+	type: "ready";
+	protocolVersion: 1;
+	supportedProtocolVersions: [1, 2];
+	maxFrameBytes: number;
+	maxReassembledFrameBytes: number;
+	/** `bash` accepts `excludeFromContext`; older runtimes omit this capability. Require exactly `true`. */
+	supportsBashExcludeFromContext?: boolean;
 }
 
 export interface RpcAvailableSlashCommand {

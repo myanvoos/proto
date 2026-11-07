@@ -4,7 +4,7 @@
 
 ### Added
 
-- RPC clients can run bash commands without adding the execution to model context, matching terminal `!!` behavior ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
+- RPC `bash` accepts `excludeFromContext: true` to keep a run out of model context like terminal `!!`; runtimes advertise support with `supportsBashExcludeFromContext` in the `ready` frame ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
 
 ## [20.1.2] - 2026-11-04
 
