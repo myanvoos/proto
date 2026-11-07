@@ -128,7 +128,7 @@ import type {
 	ResponseStatus,
 	ResponseStreamEvent,
 } from "./openai-responses-wire";
-import { transformMessages } from "./transform-messages";
+import { isMalformedToolCallName, transformMessages } from "./transform-messages";
 import {
 	joinTextWithImagePlaceholder,
 	joinTextWithOmissions,
@@ -1398,6 +1398,46 @@ export function collectKnownCallIds(messages: ResponseInput): Set<string> {
 	return knownCallIds;
 }
 
+/**
+ * Recover executable tool-call blocks omitted from a turn's stored native Responses items.
+ *
+ * Only calls in the final pairing window count as recorded: `call_id` is not unique across a
+ * `dt: false` snapshot, so an earlier round that reused the id must not hide this turn's cut call.
+ */
+export function pickUnrecordedResponsesToolCalls(
+	assistantMsg: AssistantMessage,
+	historyItems: readonly Record<string, unknown>[],
+): ToolCall[] {
+	let hasToolCalls = false;
+	for (const block of assistantMsg.content) {
+		if (block.type !== "toolCall") continue;
+		hasToolCalls = true;
+		break;
+	}
+	if (!hasToolCalls) return [];
+	const recordedIds = new Set<string>();
+	for (let index = historyItems.length - 1; index >= 0; index--) {
+		const item = historyItems[index];
+		if (responsesToolOutputKind(item.type) !== undefined) break;
+		const role = item.role;
+		if ((item.type === "message" || item.type === undefined) && typeof role === "string" && role !== "assistant") {
+			break;
+		}
+		if (responsesToolCallKind(item.type) === undefined || typeof item.call_id !== "string") continue;
+		recordedIds.add(sanitizeCodexCallId(item.call_id));
+	}
+	const missing: ToolCall[] = [];
+	for (const block of assistantMsg.content) {
+		if (block.type !== "toolCall") continue;
+		if (recordedIds.has(sanitizeCodexCallId(block.id))) continue;
+		if (block.providerMetadata?.type !== "computer" && isMalformedToolCallName(block.customWireName ?? block.name)) {
+			continue;
+		}
+		missing.push(block);
+	}
+	return missing;
+}
+
 export function collectCustomCallIds(messages: ResponseInput): Set<string> {
 	const customCallIds = new Set<string>();
 	for (const item of messages) {
@@ -1971,25 +2011,46 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 						supportsComputerUse: options.model.supportsComputerUse === true,
 					},
 				);
-				const sanitizedHistoryItems = rawSanitizedHistoryItems
-					? ensureRequiredResponsesReasoningReplay(
-							adaptResponsesReplayItemsForModel(
-								rawSanitizedHistoryItems,
-								supportsCustomToolCalls,
-								customToolWireNameMap,
-								options.model.supportsComputerUse === true,
-							),
-							assistantMsg.stopReason,
-							options.requiresReasoningReplayForAllTurns ?? false,
-							options.requiresReasoningReplayForToolCalls ?? false,
-						)
-					: undefined;
 				const replayNativeItems =
 					nativeReplayEnabled ||
 					(options.nativeHistory !== undefined &&
 						rawSanitizedHistoryItems !== undefined &&
 						isColdReplayableResponsesTurn(rawSanitizedHistoryItems));
-				if (replayNativeItems && sanitizedHistoryItems) {
+				if (replayNativeItems && rawSanitizedHistoryItems) {
+					const nativeItems = adaptResponsesReplayItemsForModel(
+						rawSanitizedHistoryItems,
+						supportsCustomToolCalls,
+						customToolWireNameMap,
+						options.model.supportsComputerUse === true,
+					);
+					// Calls cut by the output limit have no native item: rebuild them the way the cold path
+					// encodes calls, and before the required-reasoning repair, so a turn whose only call was
+					// cut still counts as one that calls a tool.
+					const missingCalls = pickUnrecordedResponsesToolCalls(assistantMsg, historyItems);
+					const turnItems =
+						missingCalls.length > 0
+							? [
+									...nativeItems,
+									...convertResponsesAssistantMessage(
+										{ ...assistantMsg, content: missingCalls },
+										options.model,
+										msgIndex,
+										knownCallIds,
+										false,
+										customCallIds,
+										false,
+										supportsCustomToolCalls,
+										customToolWireNameMap,
+										computerCallIds,
+									),
+								]
+							: nativeItems;
+					const sanitizedHistoryItems = ensureRequiredResponsesReasoningReplay(
+						turnItems,
+						assistantMsg.stopReason,
+						options.requiresReasoningReplayForAllTurns ?? false,
+						options.requiresReasoningReplayForToolCalls ?? false,
+					);
 					const wireItems = escapeControlTokens
 						? escapeReplayedControlTokens(sanitizedHistoryItems)
 						: sanitizedHistoryItems;
@@ -2007,7 +2068,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 					msgIndex++;
 					continue;
 				}
-				if (!sanitizedHistoryItems) suppressHiddenEmptyFallback = true;
+				if (!rawSanitizedHistoryItems) suppressHiddenEmptyFallback = true;
 			}
 
 			const convertedOutputItems = convertResponsesAssistantMessage(

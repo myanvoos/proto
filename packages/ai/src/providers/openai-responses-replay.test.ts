@@ -120,7 +120,7 @@ describe("Responses synthesized reasoning replay", () => {
 });
 
 describe("Responses orphan repair ordering", () => {
-	it("keeps a repaired orphan-output note out of another call's call→output batch", () => {
+	it("pairs a call missing from a native snapshot before sending its result (#11473)", () => {
 		// Strict validators (DeepSeek via opencode-go) 400 with "No tool output found" when a message splits the batch.
 		const model = responsesModel({
 			id: "deepseek-v4-flash",
@@ -157,14 +157,20 @@ describe("Responses orphan repair ordering", () => {
 			nativeHistory: { replay: true, filterReasoning: false },
 		}) as WireItem[];
 
-		const noteIndex = items.findIndex(
-			item => item.role === "assistant" && typeof item.content === "string" && item.content.includes("call_00"),
+		// The call omitted from the native snapshot is rebuilt from its assistant block, so
+		// its result pairs instead of surfacing as an orphan note.
+		expect(items).toContainEqual(
+			expect.objectContaining({ type: "function_call", call_id: "call_00", name: "todo" }),
 		);
-		const callIndex = items.findIndex(item => item.type === "function_call" && item.call_id === "call_01");
-		const outputIndex = items.findIndex(item => item.type === "function_call_output" && item.call_id === "call_01");
-		expect(items[noteIndex]?.content).toContain("[Orphan tool result; call_id=call_00]");
-		expect(noteIndex).toBeLessThan(callIndex);
-		expect(outputIndex).toBe(callIndex + 1);
+		expect(
+			items.find(
+				item => item.role === "assistant" && typeof item.content === "string" && item.content.includes("call_00"),
+			),
+		).toBeUndefined();
+		const callIds = items.filter(item => item.type === "function_call").map(item => item.call_id);
+		const outputIds = items.filter(item => item.type === "function_call_output").map(item => item.call_id);
+		expect(callIds.sort()).toEqual(["call_00", "call_01"]);
+		expect(outputIds).toEqual(["call_00", "call_01"]);
 	});
 });
 
@@ -367,6 +373,61 @@ describe("Responses native history warm start", () => {
 		expect(JSON.stringify(warm[0]?.input)).toContain("enc_turn_1");
 		expect(JSON.stringify(closed[0]?.input)).not.toContain("enc_turn_1");
 		expect(JSON.stringify(closed[0]?.input)).toContain("generic assistant that should be rebuilt");
+	});
+});
+
+describe("Responses rebuilt cut tool calls on native replay", () => {
+	const model = responsesModel({ id: "gpt-5-mini", provider: "openai", baseUrl: "https://api.openai.com/v1" });
+
+	function replay(prior: AssistantMessage): WireItem[] {
+		return buildResponsesInput({
+			model,
+			context: { messages: [prior, { role: "user", content: "continue", timestamp: 2 }] },
+			strictResponsesPairing: false,
+			supportsImageDetailOriginal: false,
+			nativeHistory: { replay: true, filterReasoning: false },
+			requiresReasoningReplayForToolCalls: true,
+		}) as WireItem[];
+	}
+
+	it("rebuilds a call cut by the output limit that has no native item", () => {
+		const prior = assistant(model, [
+			{ type: "thinking", thinking: "plan" },
+			{ type: "toolCall", id: "call_cut", name: "bash", arguments: { command: "echo hi" } },
+		]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(model.provider, [
+			{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc" },
+			{ type: "message", role: "assistant", content: [{ type: "output_text", text: "partial" }] },
+		]);
+
+		const items = replay(prior);
+
+		// Without the rebuild the wire lost the only call of the turn and its tool result 400s.
+		expect(items).toContainEqual(expect.objectContaining({ type: "function_call", call_id: "call_cut" }));
+		// The required-reasoning repair runs after the rebuild, so the turn still carries reasoning.
+		expect(reasoningItems(items)).not.toEqual([]);
+	});
+
+	it("does not treat a call id reused in an earlier snapshot round as recorded", () => {
+		const prior = assistant(model, [
+			{ type: "toolCall", id: "call_cut", name: "bash", arguments: { command: "ls" } },
+		]);
+		prior.providerPayload = createOpenAIResponsesHistoryPayload(
+			model.provider,
+			[
+				{ type: "function_call", call_id: "call_cut", name: "old_round", arguments: "{}" },
+				{ type: "message", role: "user", content: "next round" },
+				{ type: "message", role: "assistant", content: [{ type: "output_text", text: "cut" }] },
+			],
+			false,
+		);
+
+		const items = replay(prior);
+
+		// The earlier round's call_id must not hide this turn's cut call.
+		expect(items).toContainEqual(
+			expect.objectContaining({ type: "function_call", call_id: "call_cut", name: "bash" }),
+		);
 	});
 });
 

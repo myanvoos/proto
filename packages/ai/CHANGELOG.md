@@ -8,6 +8,7 @@
 - Treat a 429 or 402 token-cap response as a rate limit instead of context overflow, so throttled turns still retry and walk the fallback chain.
 - Replay the full Codex transcript after a WebSocket reconnect (closed socket, idle eviction, token refresh, routing change, or an `onPayload` hook that drops `previous_response_id`) instead of sending a stale delta.
 - Replay encrypted reasoning on the first request of a resumed Responses session, except on connection-bound hosts such as GitHub Copilot.
+- Rebuild Responses tool calls cut by the output limit that have no stored native item, before the required-reasoning repair and scoped to the current turn.
 
 ## [19.2.1] - 2026-11-03
 
