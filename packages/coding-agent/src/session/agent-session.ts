@@ -104,7 +104,6 @@ import { buildServiceTierByFamily } from "../config/service-tier";
 import type { Settings, SkillsSettings } from "../config/settings";
 import { onAppendOnlyModeChanged, onExtendedContextChanged, onModelRolesChanged } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
-import type { KernelDisplayOutput } from "../eval/py/display";
 import type { PythonResult } from "../eval/py/executor";
 import type { BashResult } from "../exec/bash-executor";
 import type { TtsrManager } from "../export/ttsr";
@@ -213,7 +212,7 @@ import {
 	buildAsyncResultBatchMessage,
 	formatAsyncJobTextForContext,
 } from "./async-job-delivery";
-import { BashRunner, type BashRunnerHost } from "./bash-runner";
+import { type BashExecuteOptions, BashRunner, type BashRunnerHost } from "./bash-runner";
 import {
 	checkpointStartedAtFromEntry,
 	completedRewindFromEntry,
@@ -245,7 +244,7 @@ import {
 } from "./codex-auto-reset";
 import { recordCredentialPin, seedCredentialPins } from "./credential-pin";
 import { detachedSessionHolder } from "./detached-session-holder";
-import { EvalRunner, type EvalRunnerHost } from "./eval-runner";
+import { EvalRunner, type EvalRunnerHost, type PythonExecuteOptions } from "./eval-runner";
 import {
 	collectPendingToolCalls,
 	createInterruptedToolResults,
@@ -6974,15 +6973,17 @@ export class AgentSession {
 		this.#recovery.setAutoRetryEnabled(enabled, persist);
 	}
 
-	executeBash(
-		command: string,
-		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; useUserShell?: boolean },
-	): Promise<BashResult> {
+	/**
+	 * Run a user `!` command.
+	 *
+	 * @param onChunk Optional streaming callback for output
+	 * @param options.onRecorded Receives the `bashExecution` message the run is recorded as, once it is persisted or queued; a throw is logged
+	 */
+	executeBash(command: string, onChunk?: (chunk: string) => void, options?: BashExecuteOptions): Promise<BashResult> {
 		return this.#bash.executeBash(command, onChunk, options);
 	}
 
-	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
+	recordBashResult(command: string, result: BashResult, options?: BashExecuteOptions): void {
 		this.#bash.recordBashResult(command, result, options);
 	}
 
@@ -6998,13 +6999,15 @@ export class AgentSession {
 		return this.#bash.hasPendingMessages;
 	}
 
+	/**
+	 * Run a user `$` cell.
+	 *
+	 * @param options.onRecorded Receives the `pythonExecution` message the cell is recorded as, once it is persisted or queued; a throw is logged
+	 */
 	executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
-		options?: {
-			excludeFromContext?: boolean;
-			onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
-		},
+		options?: PythonExecuteOptions,
 	): Promise<PythonResult> {
 		return this.#eval.executePython(code, onChunk, options);
 	}

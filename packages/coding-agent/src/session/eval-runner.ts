@@ -20,6 +20,13 @@ import type { PythonExecutionMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 import { captureSessionState, stageSessionStateOnResume } from "./state-manifest";
 
+export interface PythonExecuteOptions {
+	excludeFromContext?: boolean;
+	onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
+	/** Receives the `pythonExecution` message the cell is recorded as, once it is persisted or queued for a mid-turn flush. */
+	onRecorded?: (message: PythonExecutionMessage) => void;
+}
+
 export interface EvalRunnerHost {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -51,10 +58,7 @@ export class EvalRunner {
 	async executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
-		options?: {
-			excludeFromContext?: boolean;
-			onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
-		},
+		options?: PythonExecuteOptions,
 	): Promise<PythonResult> {
 		const excludeFromContext = options?.excludeFromContext === true;
 		const cwd = this.#host.sessionManager.getCwd();
@@ -121,14 +125,7 @@ export class EvalRunner {
 		return execution;
 	}
 
-	recordPythonResult(
-		code: string,
-		result: PythonResult,
-		options?: {
-			excludeFromContext?: boolean;
-			onDisplay?: (output: KernelDisplayOutput) => Promise<void> | void;
-		},
-	): void {
+	recordPythonResult(code: string, result: PythonResult, options?: PythonExecuteOptions): void {
 		const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
 		const message: PythonExecutionMessage = {
 			role: "pythonExecution",
@@ -147,6 +144,12 @@ export class EvalRunner {
 			this.#pendingMessages.push(message);
 		} else {
 			this.#host.appendSessionMessage(message);
+		}
+		// A throwing callback must not cost the cell its record; it is already persisted or queued.
+		try {
+			options?.onRecorded?.(message);
+		} catch (error) {
+			logger.error("python onRecorded callback failed", { error: String(error) });
 		}
 	}
 

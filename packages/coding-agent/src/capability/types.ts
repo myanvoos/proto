@@ -39,6 +39,9 @@ export interface LoadOptions<T = unknown> {
 
 	includeDisabled?: boolean;
 
+	/** Classify listed sources that would be inactive at runtime so they cannot shadow active rows. */
+	isSourceDisabled?: (source: SourceMeta) => boolean;
+
 	disabledExtensions?: string[];
 
 	filter?(item: T & { _source: SourceMeta }): boolean;

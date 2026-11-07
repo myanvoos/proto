@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- A skill from an opted-out provider no longer hides the same-named skill from an active source in the extension dashboard.
 - Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling.
 - When extensions register one shortcut in different spellings (`alt+ctrl+x` and `ctrl+alt+x`, or `?` and `shift+?`), only the last one loaded is bound instead of the first silently winning.
 

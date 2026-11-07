@@ -4,6 +4,7 @@ import { Settings } from "../config/settings";
 import * as bashExecutor from "../exec/bash-executor";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import { BashRunner, type BashRunnerHost } from "./bash-runner";
+import type { BashExecutionMessage } from "./messages";
 import { SessionManager } from "./session-manager";
 
 test("idle BashRunner disposal retires its shell owner so late commands cannot start orphan shells", async () => {
@@ -146,6 +147,53 @@ test("aborting a user-bash hook rejects its late result without persistence", as
 		expect(
 			sessionManager.getBranch().filter(entry => entry.type === "message" && entry.message.role === "bashExecution"),
 		).toHaveLength(0);
+	} finally {
+		await runner.dispose();
+		await sessionManager.close();
+	}
+});
+
+test("onRecorded receives the recorded ! run even when the callback throws", async () => {
+	const sessionManager = SessionManager.inMemory();
+	const host: BashRunnerHost = {
+		agent: { appendMessage: () => {} } as unknown as Agent,
+		sessionManager,
+		settings: Settings.isolated({}),
+		extensionRunner: () =>
+			({
+				hasHandlers: (event: string) => event === "user_bash",
+				emitUserBash: async () => ({
+					result: {
+						output: "hooked",
+						exitCode: 0,
+						cancelled: false,
+						truncated: false,
+						totalLines: 1,
+						totalBytes: 6,
+						outputLines: 1,
+						outputBytes: 6,
+					},
+				}),
+			}) as unknown as ExtensionRunner,
+		isStreaming: () => false,
+	};
+	const runner = new BashRunner(host);
+	try {
+		const recorded: BashExecutionMessage[] = [];
+		await runner.executeBash("true", undefined, {
+			onRecorded: message => {
+				recorded.push(message);
+				throw new Error("presenter redraw failed");
+			},
+		});
+
+		// The callback's throw must not cost the run its record.
+		const persisted = sessionManager
+			.getBranch()
+			.flatMap(entry => (entry.type === "message" && entry.message.role === "bashExecution" ? [entry.message] : []));
+		expect(persisted).toHaveLength(1);
+		expect(recorded.map(message => message.output)).toEqual(["hooked"]);
+		expect(persisted[0]).toEqual(recorded[0]!);
 	} finally {
 		await runner.dispose();
 		await sessionManager.close();

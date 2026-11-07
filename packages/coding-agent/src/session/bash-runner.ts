@@ -33,6 +33,13 @@ interface PendingBashMessage {
 	message: BashExecutionMessage;
 }
 
+export interface BashExecuteOptions {
+	excludeFromContext?: boolean;
+	useUserShell?: boolean;
+	/** Receives the `bashExecution` message the run is recorded as, once it is persisted or queued for a mid-turn flush. */
+	onRecorded?: (message: BashExecutionMessage) => void;
+}
+
 interface BashSessionTransition {
 	oldTarget: BashSessionTarget;
 	newTarget: BashSessionTarget;
@@ -75,7 +82,7 @@ export class BashRunner {
 	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; useUserShell?: boolean },
+		options?: BashExecuteOptions,
 	): Promise<BashResult> {
 		const target = this.#captureSessionTarget();
 		let targetTransferred = false;
@@ -122,11 +129,12 @@ export class BashRunner {
 		}
 	}
 
-	recordBashResult(command: string, result: BashResult, options?: { excludeFromContext?: boolean }): void {
+	recordBashResult(command: string, result: BashResult, options?: BashExecuteOptions): void {
 		const target = this.#captureSessionTarget();
 		const message = this.#createMessage(command, result, options);
 		if (this.#host.isStreaming() && target === this.#sessionTarget) {
 			this.#pendingMessages.push({ target, message });
+			this.#notifyRecorded(message, options);
 			return;
 		}
 		if (target.destination) {
@@ -135,11 +143,24 @@ export class BashRunner {
 			} finally {
 				void this.#releaseSessionTarget(target);
 			}
+			this.#notifyRecorded(message, options);
 			return;
 		}
-		void this.#appendOwnedMessage(target, message).catch(error => {
-			logger.error("Failed to record bash result in its owning session", { error: String(error) });
-		});
+		void this.#appendOwnedMessage(target, message).then(
+			() => this.#notifyRecorded(message, options),
+			error => {
+				logger.error("Failed to record bash result in its owning session", { error: String(error) });
+			},
+		);
+	}
+
+	/** A throwing callback must not cost the run its record; it is already persisted or queued. */
+	#notifyRecorded(message: BashExecutionMessage, options?: BashExecuteOptions): void {
+		try {
+			options?.onRecorded?.(message);
+		} catch (error) {
+			logger.error("bash onRecorded callback failed", { error: String(error) });
+		}
 	}
 
 	abort(): void {
@@ -352,13 +373,15 @@ export class BashRunner {
 		target: BashSessionTarget,
 		command: string,
 		result: BashResult,
-		options?: { excludeFromContext?: boolean },
+		options?: BashExecuteOptions,
 	): Promise<void> {
 		const message = this.#createMessage(command, result, options);
 		if (this.#host.isStreaming() && target === this.#sessionTarget) {
 			this.#pendingMessages.push({ target, message });
+			this.#notifyRecorded(message, options);
 			return;
 		}
 		await this.#appendOwnedMessage(target, message);
+		this.#notifyRecorded(message, options);
 	}
 }
