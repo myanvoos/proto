@@ -76,6 +76,37 @@ describe("reviewed catalog policies", () => {
 		expect(calculateUncachedInputCost(model.cost, 1_000_000, Date.UTC(2026, 10, 2, 1))).toBe(1.32);
 	});
 
+	it("caps Antigravity Claude 4.x output tokens and discovered per-SKU caps at 64K", () => {
+		const capped = buildModel({
+			...spec("claude-sonnet-4-6", "google-antigravity", "google-gemini-cli"),
+			maxTokens: 65_536,
+			antigravityWireProfiles: {
+				"claude-sonnet-4-6": { modelEnum: "MODEL_TEST", maxOutputTokens: 65_536 },
+			},
+		});
+		expect(capped.maxTokens).toBe(64_000);
+		expect(capped.antigravityWireProfiles?.["claude-sonnet-4-6"]).toEqual({
+			modelEnum: "MODEL_TEST",
+			maxOutputTokens: 64_000,
+		});
+
+		// Claude 5.x accepts the roster's larger cap.
+		const claude5 = buildModel({
+			...spec("claude-sonnet-5-5", "google-antigravity", "google-gemini-cli"),
+			maxTokens: 128_000,
+			antigravityWireProfiles: { "claude-sonnet-5-5": { maxOutputTokens: 128_000 } },
+		});
+		expect(claude5.maxTokens).toBe(128_000);
+		expect(claude5.antigravityWireProfiles?.["claude-sonnet-5-5"]).toEqual({ maxOutputTokens: 128_000 });
+
+		// An unknown cap stays unknown.
+		const unknown = buildModel({
+			...spec("claude-opus-4-6", "google-antigravity", "google-gemini-cli"),
+			maxTokens: null,
+		});
+		expect(unknown.maxTokens).toBeNull();
+	});
+
 	it("honors a wire-stable advertised effort alias without following a second remap", () => {
 		const model = {
 			...spec("fixture", "custom"),

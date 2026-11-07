@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { modelImageLimits } from "@oh-my-pi/pi-catalog/build";
+import { bareModelId, parseAnthropicModel, semverGte } from "@oh-my-pi/pi-catalog/identity/classify";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
 	ensureAntigravityVersion,
@@ -341,8 +342,30 @@ function isClaudeModel(modelId: string): boolean {
 	return modelId.toLowerCase().includes("claude");
 }
 
+/**
+ * The interleaved-thinking beta gated Claude 4.x thinking on Antigravity. The
+ * native 2.26.0 client sends no beta for Claude 5.x, whose thinking streams
+ * without it, so only revisions below 5 opt in.
+ */
 function needsClaudeThinkingBetaHeader(model: Model<"google-gemini-cli">): boolean {
-	return model.provider === "google-antigravity" && model.id.startsWith("claude-") && model.reasoning;
+	if (model.provider !== "google-antigravity" || !model.id.startsWith("claude-") || !model.reasoning) return false;
+	const parsed = parseAnthropicModel(bareModelId(model.id));
+	return parsed !== null && !semverGte(parsed.version, "5");
+}
+
+/**
+ * Whether the routed wire id is one of a collapsed row's effort-routed tier
+ * SKUs. A tier SKU fixes its own thinking strength; a plain model keeps the
+ * effort the caller asked for even when discovery advertises a level/budget.
+ */
+function isTierVariantWireId(model: Model<"google-gemini-cli">, wireModelId: string): boolean {
+	const routing = model.thinking?.effortRouting;
+	if (routing === undefined) return false;
+	const tiers = new Set<string>();
+	for (const [effort, target] of Object.entries(routing)) {
+		if (effort !== "off" && target !== undefined) tiers.add(target);
+	}
+	return tiers.size > 1 && tiers.has(wireModelId);
 }
 
 const optionalCredentialString = type("unknown").pipe(raw => {
@@ -1336,7 +1359,12 @@ export function buildRequest(
 	if (isAntigravity) {
 		const profile = getAntigravityModelWireProfile(wireModelId, model.antigravityWireProfiles);
 		if (profile?.maxOutputTokens !== undefined) generationConfig.maxOutputTokens = profile.maxOutputTokens;
-		if (profile && generationConfig.thinkingConfig && options.thinking?.enabled) {
+		if (
+			profile &&
+			generationConfig.thinkingConfig &&
+			options.thinking?.enabled &&
+			isTierVariantWireId(model, wireModelId)
+		) {
 			if (profile.thinkingLevel !== undefined)
 				generationConfig.thinkingConfig = {
 					includeThoughts: generationConfig.thinkingConfig.includeThoughts,

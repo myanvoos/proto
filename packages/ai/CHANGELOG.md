@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Align Antigravity requests with the 2.26.0 client: withhold the interleaved-thinking beta from Claude 5.x and pin routed tier SKUs to their advertised thinking strength instead of the caller's effort.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes

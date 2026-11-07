@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Cap Antigravity Claude 4.x output tokens at 64K, including discovered per-SKU caps the transport sends verbatim.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
