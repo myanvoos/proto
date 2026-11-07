@@ -2,29 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Gate standard Responses WebSockets to the official OpenAI Responses endpoint, with model and request opt-in both required.
+- Added the `supportsMessageThreads` Anthropic compat axis, enabled for Claude 4.5 and newer on the first-party provider.
+- Added the `toolNamePrefix` Responses compat axis for hosts that reject certain declared tool names; Muse Code sets it to `_`.
+- Expose Claude's 20-position prompt-cache lookback so warm-cache pruning stays inside the provider's reachable window.
+- Add the `toolNamePrefix` Responses compat field, set to `_` for Muse Code.
+
 ### Changed
 
 - Treat GitHub Copilot as connection-bound for native Responses history so resumed sessions rebuild prior turns instead of replaying items minted on an earlier connection.
+
 ### Fixed
 
 - Cap Antigravity Claude 4.x output tokens at 64K, including discovered per-SKU caps the transport sends verbatim.
 - Own Ollama thinking replay compatibility in the catalog: Ollama Cloud strips assistant thinking history except the verified GLM-5.2 wire ids, and a model `compat` override can flip either way.
-### Added
-
-- Gate standard Responses WebSockets to the official OpenAI Responses endpoint, with model and request opt-in both required.
-### Added
-
-- Added the `supportsMessageThreads` Anthropic compat axis, enabled for Claude 4.5 and newer on the first-party provider.
-- Added the `toolNamePrefix` Responses compat axis for hosts that reject certain declared tool names; Muse Code sets it to `_`.
-### Added
-
-- Expose Claude's 20-position prompt-cache lookback so warm-cache pruning stays inside the provider's reachable window.
-### Added
-
-- Add the `toolNamePrefix` Responses compat field, set to `_` for Muse Code.
-
-### Fixed
-
 - Keep newly published Azure models with runtime-resolved endpoints after a catalog refresh.
 - Keep only chat-capable Mistral models in discovery and read their context, vision and reasoning from the row's capabilities.
 - Price Devin SWE-2 Flash and SWE-2 Fast separately from SWE-2 and cover their raw effort uids.

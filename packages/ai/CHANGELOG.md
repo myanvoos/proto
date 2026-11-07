@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Opt into catalog-gated WebSockets for standard OpenAI Responses with `preferWebsockets`; socket-local continuation reuses `previous_response_id` anchors without forcing stored responses.
+- Preserve the Codex server-held prefix when an `onPayload` hook drops the chain.
+- Continue Anthropic conversations as server-held message threads, so long sessions upload their history once and later turns send only new messages.
+- Adopt the Devin CLI's saved Windsurf seat key as a stored `devin` account with the `devin-cli` login; API-key logins now honor a provider's `store-as` target.
+- Sign in with a Windsurf Enterprise seat through the `devin-windsurf` login, which exchanges the code for the seat's raw API key and stores it as a `devin` account.
+- Expose whether chat-completions requests drop a model's own prior thinking, and which thinking signatures still replay.
+- Recognize out-of-credit balances as billing caps rather than quota windows that reopen on a clock.
+
 ### Fixed
 
 - Several processes that share one OAuth login no longer disable it when they race to refresh: a 401 recovery adopts a peer's freshly rotated token instead of exchanging the refresh token again, and a token already exchanged is saved through a busy database instead of being dropped.
@@ -25,28 +35,9 @@
 - ChatGPT Pro Max (`promax`) now counts as Pro for Codex account routing, so a blocked Pro account no longer wins over an open Pro Max account
 - Fixed `auth-gateway` rejecting providers whose catalog policy allows a missing API key (for example AWS-authenticated Bedrock Mantle); keyless requests no longer attempt credential rotation
 - Fixed Gemini and Vertex `MALFORMED_RESPONSE` finishes showing as "Unhandled stop reason" and dropping that turn's token usage; they now surface as a retryable error stop
-### Added
-
-- Opt into catalog-gated WebSockets for standard OpenAI Responses with `preferWebsockets`; socket-local continuation reuses `previous_response_id` anchors without forcing stored responses.
-- Preserve the Codex server-held prefix when an `onPayload` hook drops the chain.
-
-### Fixed
-
 - Keep a WebSocket generation from being replayed as HTTP/SSE after it was sent, and bound stale-anchor and connect failures per logical session.
-### Added
-
-- Continue Anthropic conversations as server-held message threads, so long sessions upload their history once and later turns send only new messages.
-- Adopt the Devin CLI's saved Windsurf seat key as a stored `devin` account with the `devin-cli` login; API-key logins now honor a provider's `store-as` target.
-- Sign in with a Windsurf Enterprise seat through the `devin-windsurf` login, which exchanges the code for the seat's raw API key and stores it as a `devin` account.
-
-### Fixed
-
 - Keep prompt-cache reads across long Anthropic thread turns, and cap retained thread chains per endpoint and model.
 - Send Muse Code function tools under a `_` prefix so subscription sessions no longer fail with `403 client_attestation_denied`; calls return under their own names and 64-character names stay valid.
-### Added
-
-- Expose whether chat-completions requests drop a model's own prior thinking, and which thinking signatures still replay.
-- Recognize out-of-credit balances as billing caps rather than quota windows that reopen on a clock.
 
 ## [19.2.1] - 2026-11-03
 
