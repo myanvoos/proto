@@ -1,5 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
-import { clearAnthropicFastModeFallback } from "../providers/anthropic";
+import { clearAnthropicFastModeFallback, resetAnthropicThreads } from "../providers/anthropic";
 import { resetOpenAIResponsesAccountScopedState } from "../providers/openai-responses";
 import type { Api, Context, Model, ProviderSessionState } from "../types";
 
@@ -44,13 +44,15 @@ interface RetainedSession {
 
 /**
  * Resets what a provider learned about the *account* while keeping what it
- * learned about the endpoint: Anthropic's fast-mode entitlement and the OpenAI
- * Responses `previous_response_id` chain. Codex already sub-keys its transport
- * by account and bearer; GitLab Duo's live workflow stays on its own close path.
+ * learned about the endpoint: Anthropic's fast-mode entitlement and message
+ * thread chains, and the OpenAI Responses `previous_response_id` chain. Codex
+ * already sub-keys its transport by account and bearer; GitLab Duo's live
+ * workflow stays on its own close path.
  */
 function resetAccountScopedProviderSessionState(states: Map<string, ProviderSessionState>): void {
 	if (states.size === 0) return;
 	clearAnthropicFastModeFallback(states);
+	resetAnthropicThreads(states);
 	resetOpenAIResponsesAccountScopedState(states);
 }
 

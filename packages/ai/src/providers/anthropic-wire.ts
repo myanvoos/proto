@@ -243,6 +243,13 @@ export type ContextManagement = {
 	edits: Array<{ type: "clear_thinking_20251015"; keep: "all" } | CompactionEdit>;
 };
 
+/**
+ * Message threads beta (`message-threads-2026-08-12`): `create` stores the
+ * conversation under the response id; `continue` appends to the conversation
+ * stored under `previous_message_id` and omits everything sent before.
+ */
+export type ThreadParam = { type: "create" } | { type: "continue"; previous_message_id: string };
+
 export type MessageCreateParams = {
 	model: string;
 	messages: MessageParam[];
@@ -266,6 +273,9 @@ export type MessageCreateParams = {
 	anthropic_beta?: string[];
 
 	fallbacks?: FallbackParam[];
+
+	/** Message threads beta: start or continue a server-held conversation. */
+	thread?: ThreadParam;
 };
 
 export type MessageCreateParamsStreaming = MessageCreateParams & { stream: true };

@@ -97,6 +97,7 @@ import { spillToDescription } from "../utils/schema/spill";
 import { notifyRawSseEvent } from "../utils/sse-debug";
 import { parseToolCallArguments } from "../utils/tool-call-arguments";
 import { isForcedToolChoice } from "../utils/tool-choice";
+import { normalizeExtraBetas } from "./anthropic-betas";
 import {
 	AnthropicConnectionTimeoutError,
 	type AnthropicFetchOptions,
@@ -106,6 +107,12 @@ import {
 } from "./anthropic-client";
 import { prepareAnthropicImageContext } from "./anthropic-images";
 import { servedModelFromAnthropicSignature } from "./anthropic-signature";
+import {
+	type AnthropicThreadChains,
+	AnthropicThreadTurn,
+	anthropicThreadChain,
+	wantsAnthropicThreads,
+} from "./anthropic-threads";
 import {
 	type ToolInputSchema as AnthropicToolInputSchema,
 	type Tool as AnthropicWireTool,
@@ -227,6 +234,8 @@ const fastModeBeta = "fast-mode-2026-02-01";
 const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
+/** Gates the request `thread` field (see `anthropic-threads.ts`); rides only on requests that carry it. */
+const messageThreadsBeta = "message-threads-2026-08-12";
 
 function carriesThinkingBinding(thinking: MessageCreateParamsStreaming["thinking"]): boolean {
 	return thinking !== undefined && "block_binding" in thinking && thinking.block_binding !== undefined;
@@ -425,6 +434,7 @@ function withoutDisabledExperimentalBetas(model: Model<"anthropic-messages">): M
 			supportsContextManagement: false,
 			supportsThinkingBindingControls: false,
 			supportsServerCompaction: false,
+			supportsMessageThreads: false,
 			disableStrictTools: true,
 			supportsEagerToolInputStreaming: false,
 			supportsMidConversationToolChanges: false,
@@ -520,6 +530,12 @@ type AnthropicProviderSessionState = ProviderSessionState & {
 	reportedPrefixDroppedThinking: Set<string>;
 	controlStates: Map<string, AnthropicControlState>;
 	pendingControlStates: Map<string, AnthropicControlState>;
+	/**
+	 * Message-thread chains per routing session. Account-scoped: a thread
+	 * belongs to the credential that created it. Released per session and
+	 * cleared on session close.
+	 */
+	threads: AnthropicThreadChains;
 };
 
 function createAnthropicControlState(): AnthropicControlState {
@@ -548,6 +564,10 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 		reportedPrefixDroppedThinking: new Set(),
 		controlStates: new Map(),
 		pendingControlStates: new Map(),
+		threads: new Map(),
+		releaseSession: sessionId => {
+			state.threads.delete(sessionId);
+		},
 		close: () => {
 			state.strictToolsDisabled = false;
 			state.fastModeDisabled = false;
@@ -559,6 +579,7 @@ function createAnthropicProviderSessionState(): AnthropicProviderSessionState {
 			state.reportedPrefixDroppedThinking.clear();
 			state.controlStates.clear();
 			state.pendingControlStates.clear();
+			state.threads.clear();
 		},
 	};
 	return state;
@@ -626,6 +647,7 @@ function getAnthropicProviderSessionState(
 		existing.reportedPrefixDroppedThinking ??= new Set();
 		existing.controlStates ??= new Map();
 		existing.pendingControlStates ??= new Map();
+		existing.threads ??= new Map();
 		return existing;
 	}
 	const created = createAnthropicProviderSessionState();
@@ -647,6 +669,21 @@ export function clearAnthropicFastModeFallback(
 	const anchor = providerSessionState.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY);
 	if (anchor && "fastModeRearmGeneration" in anchor && typeof anchor.fastModeRearmGeneration === "number") {
 		anchor.fastModeRearmGeneration++;
+	}
+}
+
+/**
+ * Forget every Anthropic message thread in `providerSessionState`: a thread
+ * belongs to the credential that created it, so another account's continue
+ * would only earn a `thread_not_found` 404. Also re-arms chains a refusal
+ * disabled, since that refusal may have been the old account's organization
+ * setting.
+ */
+export function resetAnthropicThreads(providerSessionState: Map<string, ProviderSessionState>): void {
+	const prefix = `${ANTHROPIC_PROVIDER_SESSION_STATE_KEY}:`;
+	for (const [key, value] of providerSessionState) {
+		if (!key.startsWith(prefix)) continue;
+		if ("threads" in value && value.threads instanceof Map) value.threads.clear();
 	}
 }
 
@@ -1079,6 +1116,9 @@ export interface AnthropicOptions extends StreamOptions {
 	client?: AnthropicMessagesClientLike;
 
 	fallbacks?: FallbackParam[];
+
+	/** Server-side turn chaining (message threads); unset follows the model policy and endpoint. */
+	statefulResponses?: boolean;
 }
 
 export type AnthropicClientOptionsArgs = {
@@ -2171,9 +2211,25 @@ const streamAnthropicOnce = (
 				return created;
 			};
 			let { client, isOAuthToken } = resolveClient();
+			// Message threads: only for this provider's own client against a
+			// session. Per-call context messages are rebuilt next request, so a
+			// thread could never continue past them; such requests go without one
+			// and leave the session's thread as it was.
+			const threadSessionId = options?.sessionId;
+			const threadTurn =
+				!options?.client &&
+				providerSessionState &&
+				threadSessionId &&
+				!context.messages.some(message => isPerCallContextMessage(message)) &&
+				wantsAnthropicThreads(model, options?.statefulResponses, baseUrl)
+					? new AnthropicThreadTurn(anthropicThreadChain(providerSessionState.threads, threadSessionId), {
+							resendSystemAndTools: isOAuthToken,
+						})
+					: undefined;
+			let replayResponse: AnthropicResponseReplay | undefined;
 			const preparedContext = await prepareAnthropicImageContext(context, model);
 			const prepareParams = async (): Promise<MessageCreateParamsStreaming> => {
-				let nextParams = buildParams(model, preparedContext, isOAuthToken, options, {
+				const built = buildParams(model, preparedContext, isOAuthToken, options, {
 					compactionSupported,
 					dropCacheControl,
 					dropCacheControlOptions,
@@ -2188,6 +2244,8 @@ const streamAnthropicOnce = (
 					fallbacks,
 					effectiveBaseUrl: baseUrl,
 				});
+				let nextParams = built.params;
+				replayResponse = built.replayResponse;
 				if (disableStrictTools) {
 					dropAnthropicStrictTools(nextParams);
 				}
@@ -2441,15 +2499,35 @@ const streamAnthropicOnce = (
 						perRequestHeaders = { ...perRequestHeaders, ...mergeAnthropicBetaHeader(current, beta) };
 					}
 				}
+				const sentBetaHeader =
+					getHeaderCaseInsensitive(perRequestHeaders ?? {}, "anthropic-beta") ??
+					getHeaderCaseInsensitive(clientDefaultHeaders ?? {}, "anthropic-beta") ??
+					"";
+				// `params` stays the full body every retry rung and the refusal credit
+				// read; only the wire sees the thread shape, with its beta.
+				const threadRequest = threadTurn?.plan(params, sentBetaHeader);
+				const wireParams = threadRequest?.body ?? params;
+				if (threadTurn && rawRequestDump) rawRequestDump.body = wireParams;
+				const requestHeaders = threadRequest
+					? {
+							...perRequestHeaders,
+							...mergeAnthropicBetaHeader(
+								perRequestHeaders?.["anthropic-beta"] !== undefined
+									? perRequestHeaders
+									: (clientDefaultHeaders ?? {}),
+								messageThreadsBeta,
+							),
+						}
+					: perRequestHeaders;
 				const requestOptions = {
 					...createSdkStreamRequestOptions(requestSignal, requestTimeoutMs),
 					maxRetries: 0,
-					...(perRequestHeaders ? { headers: perRequestHeaders } : {}),
+					...(requestHeaders ? { headers: requestHeaders } : {}),
 				};
 				const anthropicRequest: unknown =
 					isOAuthToken && client.beta
-						? client.beta.messages.create({ ...params, stream: true }, requestOptions)
-						: client.messages.create({ ...params, stream: true }, requestOptions);
+						? client.beta.messages.create({ ...wireParams, stream: true }, requestOptions)
+						: client.messages.create({ ...wireParams, stream: true }, requestOptions);
 				let streamedReplayUnsafeContent = false;
 
 				try {
@@ -2991,6 +3069,28 @@ const streamAnthropicOnce = (
 					break;
 				} catch (streamError) {
 					const streamFailure = activeAbortTracker.getLocalAbortReason() ?? streamError;
+					const threadRecovery = firstTokenTime === undefined ? threadTurn?.recover(streamFailure) : undefined;
+					if (threadRecovery) {
+						logger.warn(
+							threadRecovery === "replay"
+								? "anthropic: thread continue refused, replaying the full conversation"
+								: "anthropic: thread refused, resending without thread",
+							{
+								model: model.id,
+								error: streamFailure instanceof Error ? streamFailure.message : String(streamFailure),
+							},
+						);
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.upstreamModel = undefined;
+						output.errorMessage = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						firstTokenTime = undefined;
+						continue;
+					}
 					if (
 						isOAuthToken &&
 						clientArgs &&
@@ -3226,6 +3326,24 @@ const streamAnthropicOnce = (
 						output.stopReason = "stop";
 						continue;
 					}
+					// Undocumented thread rejections arrive as plain 400s; resend once
+					// without the thread before surfacing it.
+					if (firstTokenTime === undefined && threadTurn?.dropAfterUnexplained400(streamFailure)) {
+						logger.warn("anthropic: 400 on a thread request, resending without thread", {
+							model: model.id,
+							error: streamFailureMessage,
+						});
+						output.content.length = 0;
+						output.model = model.id;
+						output.responseId = undefined;
+						output.upstreamModel = undefined;
+						output.errorMessage = undefined;
+						output.providerPayload = undefined;
+						output.usage = createEmptyUsage(copilotDynamicHeaders?.premiumRequests);
+						output.stopReason = "stop";
+						firstTokenTime = undefined;
+						continue;
+					}
 					const isTransientEnvelopeFailure =
 						AIError.isTransientStreamParseError(streamFailure) || AIError.isStreamEnvelopeError(streamFailure);
 					const isLocalIdleTimeout =
@@ -3289,6 +3407,21 @@ const streamAnthropicOnce = (
 				else if (cacheControlOptionRejectionReplayed) providerSessionState.cacheControlOptionsUnsupported = true;
 			}
 			const retained = settleFallbackHandoff();
+			if (threadTurn) {
+				// The server keeps a finished turn from the requested model. A paused or
+				// truncated turn, or one a fallback model wrote, starts a new thread next.
+				const continuable =
+					(output.stopReason === "stop" || output.stopReason === "toolUse") &&
+					output.stopDetails?.type !== "pause_turn" &&
+					output.model === model.id &&
+					!retained.some(block => block.type === "fallback");
+				const messageId = output.responseId;
+				const message =
+					continuable && messageId
+						? replayResponse?.(retained === output.content ? output : { ...output, content: retained })
+						: undefined;
+				threadTurn.settle(messageId && message ? { messageId, message } : undefined);
+			}
 			stream.push({
 				type: "done",
 				reason: output.stopReason,
@@ -3400,11 +3533,7 @@ export function buildAnthropicSystemBlocks(
 	return blocks.length > 0 ? blocks : undefined;
 }
 
-export function normalizeExtraBetas(betas?: string[] | string): string[] {
-	if (!betas) return [];
-	const raw = Array.isArray(betas) ? betas : betas.split(",");
-	return raw.map(beta => beta.trim()).filter(beta => beta.length > 0);
-}
+export { normalizeExtraBetas } from "./anthropic-betas";
 
 export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): AnthropicClientOptionsResult {
 	const {
@@ -4235,6 +4364,18 @@ function materializeAnthropicControlTransitions(
 	return result;
 }
 
+/**
+ * Serializes a response the way the next request's history will, so a message
+ * thread can tell whether that request extends this one.
+ */
+type AnthropicResponseReplay = (message: AssistantMessage) => MessageParam | undefined;
+
+/** A built request body plus what its turn needs after the response. */
+type AnthropicBuiltParams = {
+	params: MessageCreateParamsStreaming;
+	replayResponse: AnthropicResponseReplay;
+};
+
 type AnthropicParamBuildOptions = {
 	disableStrictTools: boolean;
 	dropCacheControl?: boolean;
@@ -4257,7 +4398,7 @@ function buildParams(
 	isOAuthToken: boolean,
 	options: AnthropicOptions | undefined,
 	buildOptions: AnthropicParamBuildOptions,
-): MessageCreateParamsStreaming {
+): AnthropicBuiltParams {
 	const {
 		disableStrictTools,
 		dropCacheControl = false,
@@ -4378,14 +4519,15 @@ function buildParams(
 	if (compactionEdit) contextManagementEdits.push(compactionEdit);
 	const contextManagement = contextManagementEdits.length > 0 ? { edits: contextManagementEdits } : undefined;
 
-	let wireMessages = convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, {
+	const conversion: AnthropicConversionOptions = {
 		serverSideFallbackEnabled: !!fallbacks?.length,
 		replayCompaction: compactionSupported,
 		compactionRequest: compactionSupported && options?.anthropicCompaction !== undefined,
 		dropAllThinking,
 		thinkingEnabled: thinking?.type === "adaptive" || thinking?.type === "enabled",
 		droppedThinkingBlocks,
-	});
+	};
+	let wireMessages = convertAnthropicMessages(context.messages, effectiveModel, isOAuthToken, conversion);
 	const controlState = getAnthropicControlState(providerSessionState, options?.sessionId, systemBlocks, wireMessages);
 	if (controlState) syncAnthropicControlState(controlState, wireMessages);
 	systemBlocks = planStableAnthropicSystem(systemBlocks, controlState, model.compat.supportsMidConversationSystem);
@@ -4498,7 +4640,13 @@ function buildParams(
 	ensureMaxTokensForThinking(params, maxOutputTokens);
 	applyPromptCaching(params, cacheControl);
 
-	return params;
+	return {
+		params,
+		replayResponse: message =>
+			convertAnthropicMessages([message], effectiveModel, isOAuthToken, conversion).find(
+				param => param.role === "assistant",
+			),
+	};
 }
 
 const EMPTY_ERROR_TOOL_RESULT_TEXT = "Tool failed with no output.";
@@ -4602,19 +4750,22 @@ function collapseFallbackSegments(content: AssistantMessage["content"]): Assista
 	return collapsed;
 }
 
+/** History serialization choices {@link convertAnthropicMessages} applies to a request. */
+type AnthropicConversionOptions = {
+	serverSideFallbackEnabled?: boolean;
+	replayCompaction?: boolean;
+	compactionRequest?: boolean;
+	dropAllThinking?: boolean;
+	thinkingEnabled?: boolean;
+	droppedThinkingBlocks?: ReadonlySet<string>;
+	onAssistantMessage?: (source: AssistantMessage, converted: AnthropicMessageParam) => void;
+};
+
 export function convertAnthropicMessages(
 	messages: Message[],
 	model: Model<"anthropic-messages">,
 	isOAuthToken: boolean,
-	opts?: {
-		serverSideFallbackEnabled?: boolean;
-		replayCompaction?: boolean;
-		compactionRequest?: boolean;
-		dropAllThinking?: boolean;
-		thinkingEnabled?: boolean;
-		droppedThinkingBlocks?: ReadonlySet<string>;
-		onAssistantMessage?: (source: AssistantMessage, converted: AnthropicMessageParam) => void;
-	},
+	opts?: AnthropicConversionOptions,
 ): AnthropicMessageParam[] {
 	const developerParams: Array<{ index: number; payload?: AnthropicMessagePayload }> = [];
 	const params: AnthropicMessageParam[] = [];

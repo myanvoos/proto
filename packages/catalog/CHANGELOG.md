@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `supportsMessageThreads` Anthropic compat axis, enabled for Claude 4.5 and newer on the first-party provider.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes

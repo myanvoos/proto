@@ -116,6 +116,18 @@ function supportsAnthropicServerCompaction(parsed: AnthropicModel | null): boole
 	}
 }
 
+/**
+ * Message threads (`message-threads-2026-08-12`) keep the conversation on the
+ * server so later turns send only new messages. Claude 4.5 and newer support
+ * them on the Claude API; the transport checks the effective URL per request
+ * because `ANTHROPIC_BASE_URL` / Foundry reroutes leave this flag stale.
+ * Vertex and Bedrock do not support them.
+ */
+function supportsAnthropicMessageThreads(parsed: AnthropicModel | null, modelId: string): boolean {
+	if (bareModelId(modelId) === "claude-mythos-preview") return true;
+	return parsed !== null && semverGte(parsed.version, "4.5");
+}
+
 export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): ResolvedAnthropicCompat {
 	const baseUrl = spec.baseUrl;
 	const official = isOfficialAnthropicApiUrl(baseUrl);
@@ -141,6 +153,8 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 		signingEndpoint,
 		supportsContextManagement: CONTEXT_MANAGEMENT_UNSUPPORTED_PROVIDERS[spec.provider] !== true,
 		supportsServerCompaction: supportsAnthropicServerCompaction(parsed),
+		supportsMessageThreads:
+			spec.provider === "anthropic" && supportsAnthropicMessageThreads(parsed, bareModelId(spec.id)),
 		firstPartyProvider: spec.provider === "anthropic",
 		disableStrictTools: isAzure,
 		disableAdaptiveThinking: false,

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Continue Anthropic conversations as server-held message threads, so long sessions upload their history once and later turns send only new messages.
+
+### Fixed
+
+- Keep prompt-cache reads across long Anthropic thread turns, and cap retained thread chains per endpoint and model.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
