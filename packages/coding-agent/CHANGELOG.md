@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A provider restart mid-message discards the tool previews it abandoned, so the transcript no longer freezes behind a card that can never receive a result.
+
 ## [20.1.2] - 2026-11-04
 
 ### Breaking Changes
