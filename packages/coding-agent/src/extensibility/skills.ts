@@ -113,6 +113,7 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 		enableAgentsProject = true,
 		customDirectories = [],
 		ignoredSkills = [],
+		manualSkills = [],
 		includeSkills = [],
 		disabledExtensions = [],
 	} = options;
@@ -348,6 +349,16 @@ export async function loadSkills(options: LoadSkillsOptions = {}): Promise<LoadS
 	}
 
 	const skills = Array.from(skillMap.values());
+
+	// Manual-only skills stay invocable by name but are hidden from the model's skill listing.
+	if (manualSkills.length > 0) {
+		const manualGlobs = manualSkills.map(pattern => new Bun.Glob(pattern));
+		for (const skill of skills) {
+			if (manualGlobs.some(glob => glob.match(skill.name))) {
+				skill.hide = true;
+			}
+		}
+	}
 
 	skills.sort((a, b) => compareSkillOrder(a.name, a.filePath, b.name, b.filePath));
 	return {

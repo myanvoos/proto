@@ -44,6 +44,13 @@
 - A provider restart mid-message discards the tool previews it abandoned, so the transcript no longer freezes behind a card that can never receive a result.
 - JSON query truncation notices name the 50KB read budget instead of the bytes the current page happened to show.
 - Cancelling a Python eval cell as it starts now stops it before its code runs, instead of running the cell and discarding the result.
+- Hide skills from the model's skill listing with `skills.manualSkills` patterns while keeping them invocable by name.
+
+### Fixed
+
+- Subagent turns woken by a fleet message or resumed after parking now keep their soft request budget guard instead of running without one.
+- Revived subagents now resolve their per-agent soft request budget by the agent definition name (such as `scout`) instead of the generated task label.
+- Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact.
 
 ## [20.1.2] - 2026-11-04
 

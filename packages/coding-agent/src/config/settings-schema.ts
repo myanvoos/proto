@@ -3578,6 +3578,8 @@ export const SETTINGS_SCHEMA = {
 
 	"skills.ignoredSkills": { type: "array", default: [] as string[] },
 
+	"skills.manualSkills": { type: "array", default: [] as string[] },
+
 	"skills.includeSkills": { type: "array", default: [] as string[] },
 
 	"commands.enableClaudeUser": {
@@ -4440,6 +4442,7 @@ export interface SkillsSettings {
 	enableAgentsProject?: boolean;
 	customDirectories?: string[];
 	ignoredSkills?: string[];
+	manualSkills?: string[];
 	includeSkills?: string[];
 	disabledExtensions?: string[];
 }

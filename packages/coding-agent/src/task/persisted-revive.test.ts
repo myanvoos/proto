@@ -9,9 +9,9 @@ import type { AgentRef } from "../registry/agent-registry";
 import * as sdkModule from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import { getRetryFallbackRole, type RetryFallbackRole } from "../session/retry-fallback-chains";
-import { SessionManager } from "../session/session-manager";
+import { type PersistedSessionInit, SessionManager } from "../session/session-manager";
 import { FileSessionStorage } from "../session/session-storage";
-import { createPersistedSubagentReviverFactory } from "./persisted-revive";
+import { createPersistedSubagentReviverFactory, persistedAgentName } from "./persisted-revive";
 
 // Reviving a parked subagent used to mint a fresh session over a vanished transcript, or replay a truncated one as
 // the agent's memory; either way a zero-history agent answered peers under the original run's identity.
@@ -239,4 +239,22 @@ it("cold revival refuses a model whose current effort floor exceeds its saved ce
 	} as unknown as sdkModule.CreateAgentSessionResult);
 	await expect(revive(ref)).rejects.toThrow("cannot run at or below the saved effort ceiling");
 	expect(disposed).toBe(true);
+});
+
+// A revived ref's label can be a generated task id, so agent-scoped budgets must key on the
+// durable definition name the transcript persisted, not that label.
+describe("persistedAgentName", () => {
+	const init: PersistedSessionInit = { systemPrompt: ["prompt"], task: "task", tools: ["read"] };
+
+	it("uses the durable agent definition name", () => {
+		expect(persistedAgentName("ParkedScout", { ...init, agent: "scout" })).toBe("scout");
+	});
+
+	it("falls back to the label when the transcript predates the agent field", () => {
+		expect(persistedAgentName("ParkedScout", init)).toBe("ParkedScout");
+	});
+
+	it("falls back to the label when the persisted agent name is blank", () => {
+		expect(persistedAgentName("ParkedScout", { ...init, agent: "  " })).toBe("ParkedScout");
+	});
 });

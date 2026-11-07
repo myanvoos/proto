@@ -13,7 +13,12 @@ import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { installRetryFallbackRole } from "../session/retry-fallback-chains";
-import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
+import {
+	extractSessionInit,
+	hasConversationalHistory,
+	type PersistedSessionInit,
+	SessionManager,
+} from "../session/session-manager";
 import { modelSupportsEffortCeiling } from "../thinking";
 import type { EventBus } from "../utils/event-bus";
 import {
@@ -22,6 +27,7 @@ import {
 	createSubagentSettings,
 	followMCPTools,
 	replayRevivedAgentStart,
+	softRequestBudgetFor,
 	subagentRetryFallbackRole,
 } from "./executor";
 import type { AgentDefinition } from "./types";
@@ -33,6 +39,18 @@ interface PersistedSubagentReviveContext {
 	settings: Settings;
 
 	eventBus?: EventBus;
+}
+
+/**
+ * Durable agent definition name (`scout`, `reviewer`, …) of a persisted subagent.
+ * A cold-revived ref may carry a generated task id as its label, so keying
+ * agent-scoped settings such as the soft request budget on the label would
+ * silently drop them. `init.agent` carries the real name; only transcripts
+ * predating that field fall back to the label.
+ */
+export function persistedAgentName(displayName: string, init: PersistedSessionInit): string {
+	const name = init.agent?.trim();
+	return name ? name : displayName;
 }
 
 export function createPersistedSubagentReviverFactory(
@@ -205,6 +223,7 @@ export function createPersistedSubagentReviverFactory(
 				agent: wakeAgent,
 				eventBus: ctx.eventBus,
 				sessionFile,
+				...softRequestBudgetFor(persistedAgentName(ref.label, init), ctx.settings),
 				outputSchema: init.outputSchema,
 				outputSchemaMode: init.outputSchemaMode,
 				artifactsDir: path.dirname(sessionFile),

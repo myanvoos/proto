@@ -127,6 +127,25 @@ export function resolveSoftRequestBudget(
 	return Math.min(normalized, SOFT_REQUEST_BUDGET[agentName] ?? SOFT_REQUEST_BUDGET.default);
 }
 
+/** `agentName`'s soft request budget and notice switch from `settings`: every run, wake, revival and follow-up turn. */
+export function softRequestBudgetFor(
+	agentName: string,
+	settings: Settings,
+): { softRequestBudget: number; softRequestBudgetNotice: boolean } {
+	const configuredDefaultBudget = Math.max(
+		0,
+		Math.trunc(Number(settings.get("orchestrator.softRequestBudget") ?? SOFT_REQUEST_BUDGET.default) || 0),
+	);
+	return {
+		softRequestBudget: resolveSoftRequestBudget(
+			agentName,
+			configuredDefaultBudget,
+			settings.get("orchestrator.agentSoftRequestBudget"),
+		),
+		softRequestBudgetNotice: settings.get("orchestrator.softRequestBudgetNotice") ?? false,
+	};
+}
+
 const BUDGET_STOP_GRACE_REQUESTS = 5;
 
 function buildBudgetNotice(requests: number, budget: number): string {
@@ -2161,6 +2180,8 @@ interface WakeTurnMonitorOptions {
 	sessionFile?: string;
 	fleetRoot?: string;
 	maxRuntimeMs?: number;
+	softRequestBudget?: number;
+	softRequestBudgetNotice?: boolean;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
 	outputSchemaSource?: StructuredSubagentSchemaSource;
@@ -2171,6 +2192,8 @@ export function attachWakeTurnMonitor(session: AgentSession, options: WakeTurnMo
 	const { id, agent } = options;
 	const index = options.index ?? 0;
 	const maxRuntimeMs = options.maxRuntimeMs ?? 0;
+	const softRequestBudget = options.softRequestBudget ?? 0;
+	const softRequestBudgetNotice = options.softRequestBudgetNotice ?? softRequestBudget > 0;
 	session.setWakeTurnObserver(records => {
 		const wakeTask =
 			records
@@ -2209,8 +2232,8 @@ export function attachWakeTurnMonitor(session: AgentSession, options: WakeTurnMo
 			sessionFile,
 			fleetRoot: options.fleetRoot,
 			signal: claim?.signal,
-			softRequestBudget: 0,
-			softRequestBudgetNotice: false,
+			softRequestBudget,
+			softRequestBudgetNotice,
 			maxRuntimeMs,
 		});
 
@@ -2238,7 +2261,9 @@ export function attachWakeTurnMonitor(session: AgentSession, options: WakeTurnMo
 			const lastAssistant = session.getLastAssistantMessage();
 			const yielded = turnMonitor.yieldCalled();
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
-			const aborted = runtimeLimitExceeded || (lastAssistant?.stopReason === "aborted" && !yielded);
+			const budgetExceeded = turnMonitor.abortKind() === "budget";
+			const aborted =
+				runtimeLimitExceeded || budgetExceeded || (lastAssistant?.stopReason === "aborted" && !yielded);
 			const error =
 				lastAssistant?.stopReason === "error"
 					? attributeSubagentError(lastAssistant.errorMessage, lastAssistant)
@@ -2416,6 +2441,9 @@ interface FollowUpTurnOptions {
 	artifactsDir?: string;
 
 	maxRuntimeMs?: number;
+
+	softRequestBudget?: number;
+	softRequestBudgetNotice?: boolean;
 }
 
 export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Promise<SingleResult> {
@@ -2453,6 +2481,8 @@ async function runAdmittedFollowUpTurn(options: FollowUpTurnOptions): Promise<Si
 	const ref = AgentRegistry.global().get(id);
 	const sessionFile = ref?.sessionFile ?? undefined;
 	const fleetRoot = ref?.fleetRoot ?? options.fleetRoot;
+	const softRequestBudget = options.softRequestBudget ?? 0;
+	const softRequestBudgetNotice = options.softRequestBudgetNotice ?? softRequestBudget > 0;
 
 	const monitor = createSubagentRunMonitor({
 		index,
@@ -2468,8 +2498,8 @@ async function runAdmittedFollowUpTurn(options: FollowUpTurnOptions): Promise<Si
 		detached: true,
 		sessionFile,
 		fleetRoot,
-		softRequestBudget: 0,
-		softRequestBudgetNotice: false,
+		softRequestBudget,
+		softRequestBudgetNotice,
 		maxRuntimeMs: options.maxRuntimeMs ?? 0,
 	});
 
@@ -2749,16 +2779,7 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 	);
 
 	const agentIdleTtlMs = Math.trunc(Number(settings.get("orchestrator.agentIdleTtlMs") ?? 60_000) || 0);
-	const configuredDefaultBudget = Math.max(
-		0,
-		Math.trunc(Number(settings.get("orchestrator.softRequestBudget") ?? SOFT_REQUEST_BUDGET.default) || 0),
-	);
-	const softRequestBudget = resolveSoftRequestBudget(
-		agent.name,
-		configuredDefaultBudget,
-		settings.get("orchestrator.agentSoftRequestBudget"),
-	);
-	const softRequestBudgetNotice = settings.get("orchestrator.softRequestBudgetNotice") ?? false;
+	const { softRequestBudget, softRequestBudgetNotice } = softRequestBudgetFor(agent.name, settings);
 	const parentDepth = options.taskDepth ?? 0;
 	const childDepth = parentDepth + 1;
 	const atMaxDepth = maxRecursionDepth >= 0 && childDepth > maxRecursionDepth;
@@ -2822,6 +2843,8 @@ async function runAdmittedSubprocess(options: ExecutorOptions): Promise<SingleRe
 		sessionFile: subtaskSessionFile,
 		fleetRoot,
 		maxRuntimeMs,
+		softRequestBudget,
+		softRequestBudgetNotice,
 		outputSchema,
 		outputSchemaMode: options.outputSchemaMode,
 		outputSchemaSource: options.outputSchemaSource,
