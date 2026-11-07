@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `expandTilde(path, home?)` (`@oh-my-pi/pi-utils/path`), which expands a leading `~` to the home directory; `@oh-my-pi/pi-coding-agent/tools/path-utils` re-exports it.
+
 ## [20.1.2] - 2026-11-04
 
 ### Added
