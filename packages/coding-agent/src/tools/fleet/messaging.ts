@@ -27,16 +27,17 @@ function formatIncoming(msg: IrcMessage): string {
 	return `[${msg.id}] ${msg.from}${replyTag}: ${msg.body}`;
 }
 
+/** Takes every message buffered in `senderId`'s session inbox before automatic injection; with `ifAny`, none unless one satisfies it. */
 export function drainPendingInbox(
 	registry: AgentRegistry,
 	senderId: string,
-	from?: string,
+	ifAny?: (msg: IrcMessage) => boolean,
 	fleetRoot?: string,
-): IrcMessage | undefined {
+): IrcMessage[] {
 	const session = fleetRoot ? registry.getInFleet(senderId, fleetRoot)?.session : registry.get(senderId)?.session;
 	return typeof session?.drainPendingIrcInboxMessages === "function"
-		? session.drainPendingIrcInboxMessages(senderId, { from, limit: 1 })[0]
-		: undefined;
+		? session.drainPendingIrcInboxMessages(senderId, ifAny ? { ifAny } : undefined)
+		: [];
 }
 
 export async function executeList(
@@ -122,7 +123,16 @@ export async function executeMessage(
 	const targets = isBroadcast ? registry.listVisibleTo(senderId, fleetRoot).map(ref => ref.id) : [to];
 	const receipts = await Promise.all(
 		targets.map(target =>
-			bus.send({ from: senderId, to: target, body: message, replyTo: params.replyTo }, { fleetRoot }),
+			bus.send(
+				{
+					from: senderId,
+					to: target,
+					body: message,
+					replyTo: params.replyTo,
+					...(isBroadcast ? { broadcast: true } : {}),
+				},
+				{ fleetRoot },
+			),
 		),
 	);
 

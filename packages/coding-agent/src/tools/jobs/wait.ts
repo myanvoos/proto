@@ -2,7 +2,7 @@ import { type AgentToolUpdateCallback, TOOL_INTERRUPT_ABORT_REASON } from "@oh-m
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobEvent, AsyncJobManager } from "../../async";
 import { sessionProjectCwd } from "../../eval/bridge-cwd";
-import { IrcBus, type IrcMessage } from "../../irc/bus";
+import { IrcBus, type IrcMessage, ircWaitAccepts } from "../../irc/bus";
 import type { JobsWaitRequest, ProcessRef, WaitParticipant } from "../../jobs/contracts";
 import { withJobWait } from "../../jobs/wait";
 import { daemonClientForProject } from "../../launch/client";
@@ -22,6 +22,8 @@ const WAIT_DURATION_MS: Record<string, number> = {
 	"5m": 5 * 60_000,
 };
 const PROGRESS_INTERVAL_MS = 500;
+/** After one watched job settles, keep collecting briefly so near-simultaneous completions share one wait result. */
+const WAIT_SETTLE_WINDOW_MS = 1_500;
 export const MAX_WAIT_TARGETS = 32;
 
 interface Mailbox {
@@ -46,18 +48,33 @@ function mailboxFor(session: ToolSession, from: string | undefined): Mailbox | u
 	return { registry, agentId, fleetRoot: session.getAgentFleetRoot?.(), from: from?.trim() || undefined };
 }
 
-function takeQueuedMessage(mailbox: Mailbox): IrcMessage | undefined {
-	return (
-		drainPendingInbox(mailbox.registry, mailbox.agentId, mailbox.from, mailbox.fleetRoot) ??
-		IrcBus.global().take(mailbox.agentId, mailbox.from, mailbox.fleetRoot)
-	);
+function takeQueuedMessages(mailbox: Mailbox, woke?: IrcMessage): IrcMessage[] {
+	const bus = IrcBus.global();
+	const queued = woke ? [woke] : [];
+	let next = bus.take(mailbox.agentId, mailbox.from, mailbox.fleetRoot);
+	while (next !== undefined) {
+		queued.push(next);
+		next = bus.take(mailbox.agentId, mailbox.from, mailbox.fleetRoot);
+	}
+	// Without a wake, take the session inbox only when it holds a message that
+	// ends a wait: broadcast legs alone stay queued and inject as asides after
+	// the wait returns. Mailbox mail reaches the caller only through here.
+	const ifAny = queued.length > 0 ? undefined : (msg: IrcMessage) => ircWaitAccepts({ directOnly: true }, msg);
+	queued.push(...drainPendingInbox(mailbox.registry, mailbox.agentId, ifAny, mailbox.fleetRoot));
+	// Bus ids are snowflakes: they order messages sent within one millisecond.
+	return queued.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
-function messageResult(message: IrcMessage, jobs: JobsDetails["jobs"]): JobsResult {
-	const reply = message.replyTo ? ` (reply to ${message.replyTo})` : "";
+function messageResult(messages: IrcMessage[], jobs: JobsDetails["jobs"]): JobsResult {
+	const text = messages
+		.map(message => {
+			const reply = message.replyTo ? ` (reply to ${message.replyTo})` : "";
+			return `Message [${message.id}] from ${message.from}${reply}: ${message.body}`;
+		})
+		.join("\n\n");
 	return {
-		content: [{ type: "text", text: `Message [${message.id}] from ${message.from}${reply}: ${message.body}` }],
-		details: { op: "wait", message, ...(jobs?.length ? { jobs } : {}) },
+		content: [{ type: "text", text }],
+		details: { op: "wait", messages, ...(jobs?.length ? { jobs } : {}) },
 	};
 }
 
@@ -136,8 +153,8 @@ export async function executeWait(
 
 	// Deliverable immediately: a queued message, retained watch events, or an already settled target.
 	if (useMailbox && mailbox) {
-		const queued = takeQueuedMessage(mailbox);
-		if (queued) return messageResult(queued, undefined);
+		const queued = takeQueuedMessages(mailbox);
+		if (queued.length > 0) return messageResult(queued, undefined);
 	}
 	const hasEvents = watchIds.some(id =>
 		manager!.getJob(id)?.events?.some(event => !manager!.isEventAcknowledged(event)),
@@ -174,13 +191,14 @@ export async function executeWait(
 		running.length > 0;
 	const legs = new AbortController();
 	const cancelled = new Error("jobs wait settled");
-	const racers: Promise<unknown>[] = running.map(job => job.promise);
-	if (manager && watchIds.length > 0) racers.push(manager.waitForEvents(watchIds, legs.signal));
+	const jobRaces = running.map(job => job.promise.then(() => "job" as const));
+	const otherRacers: Promise<unknown>[] = [];
+	if (manager && watchIds.length > 0) otherRacers.push(manager.waitForEvents(watchIds, legs.signal));
 
 	const mailboxLeg =
 		useMailbox && mailbox
 			? IrcBus.global()
-					.wait(mailbox.agentId, { from: mailbox.from }, 0, legs.signal, {
+					.wait(mailbox.agentId, { from: mailbox.from, directOnly: true }, 0, legs.signal, {
 						fleetRoot: mailbox.fleetRoot,
 						...(running.length === 0 && processes.length === 0
 							? { liveness: { registry: mailbox.registry, senderId: mailbox.agentId } }
@@ -194,11 +212,11 @@ export async function executeWait(
 						}),
 					)
 			: undefined;
-	if (mailboxLeg) racers.push(mailboxLeg);
+	if (mailboxLeg) otherRacers.push(mailboxLeg);
 
 	const exits: ProcessExit[] = [];
 	for (const ref of processes) {
-		racers.push(
+		otherRacers.push(
 			client!
 				.request(
 					{
@@ -230,12 +248,12 @@ export async function executeWait(
 
 	const timeout = Promise.withResolvers<void>();
 	const timer = windowMs > 0 ? setTimeout(timeout.resolve, windowMs) : undefined;
-	if (timer) racers.push(timeout.promise);
+	if (timer) otherRacers.push(timeout.promise);
 	const aborted = Promise.withResolvers<void>();
 	const onAbort = () => aborted.resolve();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	if (signal?.aborted) onAbort();
-	racers.push(aborted.promise);
+	otherRacers.push(aborted.promise);
 
 	const progress = onUpdate
 		? setInterval(
@@ -246,13 +264,29 @@ export async function executeWait(
 	onUpdate?.({ content: [{ type: "text", text: "" }], details: { op: "wait", jobs: snapshot() } });
 
 	const race = async (): Promise<JobsResult> => {
-		await Promise.race(racers);
+		const first = await Promise.race([...jobRaces, ...otherRacers]);
+		// One job settling usually means its siblings are about to: collect for a
+		// short window so near-simultaneous completions share one result.
+		if (first === "job" && running.some(job => job.status === "running")) {
+			const settle = Promise.withResolvers<void>();
+			const settleTimer = setTimeout(settle.resolve, WAIT_SETTLE_WINDOW_MS);
+			try {
+				await Promise.race([Promise.all(running.map(job => job.promise)), settle.promise, ...otherRacers]);
+			} finally {
+				clearTimeout(settleTimer);
+			}
+		}
 		legs.abort(cancelled);
 		// A message that reached the mailbox leg before it was cancelled is the winner; job results
 		// that settled in the same instant stay unconsumed for automatic delivery.
 		const settledMailbox = mailboxLeg ? await mailboxLeg : undefined;
-		if (settledMailbox?.message) return messageResult(settledMailbox.message, manager ? snapshot() : undefined);
+		if (settledMailbox?.message && mailbox)
+			return messageResult(takeQueuedMessages(mailbox, settledMailbox.message), manager ? snapshot() : undefined);
 		if (signal?.aborted) {
+			// A direct message queued in the session inbox (it missed the bus
+			// waiter) is returned here rather than injected after the wait.
+			const queued = mailbox ? takeQueuedMessages(mailbox) : [];
+			if (queued.length > 0) return messageResult(queued, manager ? snapshot() : undefined);
 			return {
 				content: [{ type: "text", text: "Wait interrupted; nothing was consumed." }],
 				details: { op: "wait", jobs: manager ? snapshot() : [] },

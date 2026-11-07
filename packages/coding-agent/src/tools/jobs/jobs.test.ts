@@ -183,11 +183,11 @@ test("a message and a job settling together are each reported exactly once", asy
 	await manager.drainDeliveries({ timeoutMs: 1_000 });
 	const jobReports =
 		(result.details?.jobs?.some(snapshot => snapshot.ref.id === job.id && snapshot.status === "completed") &&
-		!result.details?.message
+		!result.details?.messages?.length
 			? 1
 			: 0) + delivered.filter(id => id === job.id).length;
 	const messageReports =
-		(result.details?.message?.body === "hello" ? 1 : 0) +
+		(result.details?.messages?.some(message => message.body === "hello") ? 1 : 0) +
 		IrcBus.global()
 			.inbox("Main", { fleetRoot: FLEET_ROOT })
 			.filter(message => message.body === "hello").length;

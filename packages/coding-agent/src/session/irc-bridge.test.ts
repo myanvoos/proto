@@ -6,6 +6,31 @@ import { IRC_STREAM_BACKLOG_MAX_MESSAGES, IrcBridge, type IrcBridgeHost } from "
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
+test("a broadcast leg queues without interrupting a streaming turn and never satisfies a direct-only drain", async () => {
+	const host = {
+		agent: { steer: () => {} } as unknown as Agent,
+		sessionManager: { getSessionId: () => "streaming-session" } as unknown as SessionManager,
+		settings: { get: () => false } as unknown as Settings,
+		isDisposed: () => false,
+		isStreaming: () => true,
+		emitSessionEvent: async () => {},
+		wakeForIrc: () => {},
+		runEphemeralTurn: async () => ({ replyText: "" }),
+	} satisfies IrcBridgeHost;
+	const bridge = new IrcBridge(host);
+	await bridge.deliver({ id: "broadcast-1", from: "peer", to: "worker", body: "all-hands", ts: 1, broadcast: true });
+
+	expect(bridge.hasPending()).toBe(true);
+	expect(bridge.hasInterrupts()).toBe(false);
+	expect(bridge.drainInboxMessages("worker", { ifAny: message => message.broadcast !== true })).toEqual([]);
+	expect(bridge.hasPending()).toBe(true);
+	expect(bridge.drainInboxMessages("worker")).toMatchObject([{ id: "broadcast-1", broadcast: true }]);
+	expect(bridge.hasPending()).toBe(false);
+
+	await bridge.deliver({ id: "direct-1", from: "peer", to: "worker", body: "for you", ts: 2 });
+	expect(bridge.hasInterrupts()).toBe(true);
+});
+
 test("a session switch clears queued IRC and suppresses a late auto-reply", async () => {
 	let sessionId = "previous-session";
 	const reply = Promise.withResolvers<{ replyText: string }>();

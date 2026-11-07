@@ -83,6 +83,9 @@ running and nothing falls back to name-only control.
 
 - Bare `wait`: the caller's running jobs and watches, plus its mailbox when messaging is
   available.
+- A direct peer message ends the wait and returns every message queued by then, oldest first.
+  Broadcast legs never end a wait: they inject as asides after it returns and do not interrupt a
+  running turn.
 - Explicit `targets` (≤ 32 job/watch/process refs) and `mailbox` (`{from?}`) never add other
   sources. Unknown, foreign or stale targets fail before waiting.
 - The wait holds a lease on its job ids (`withJobWait`), so automatic delivery skips them; the

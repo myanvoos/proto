@@ -718,7 +718,7 @@ export const jobsToolRenderer = {
 					options,
 					uiTheme,
 					title,
-					details.op === "wait" && !details.timedOut && !details.message,
+					details.op === "wait" && !details.timedOut && !details.messages?.length,
 				),
 			);
 		}
@@ -733,17 +733,10 @@ export const jobsToolRenderer = {
 				),
 			);
 		}
-		if (details?.message) {
-			const header = renderStatusLine(
-				{ icon: "info", title: `${title}: message from ${details.message.from}` },
-				uiTheme,
-			);
+		for (const message of details?.messages ?? []) {
+			const header = renderStatusLine({ icon: "info", title: `${title}: message from ${message.from}` }, uiTheme);
 			parts.push(
-				new Text(
-					[header, uiTheme.fg("toolOutput", replaceTabs(sanitizeText(details.message.body)))].join("\n"),
-					0,
-					0,
-				),
+				new Text([header, uiTheme.fg("toolOutput", replaceTabs(sanitizeText(message.body)))].join("\n"), 0, 0),
 			);
 		}
 		if (parts.length === 0) {
