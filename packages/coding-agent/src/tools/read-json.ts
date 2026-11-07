@@ -12,7 +12,13 @@ import {
 } from "@oh-my-pi/pi-utils";
 import { peekFile } from "@oh-my-pi/pi-utils/peek-file";
 import type { ToolSession } from "../sdk";
-import { DEFAULT_MAX_LINES, truncateHead, truncateMiddle, truncateTail } from "../session/streaming-output";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	truncateHead,
+	truncateMiddle,
+	truncateTail,
+} from "../session/streaming-output";
 import { quotePosixPath as quotePosixArgument } from "../ssh/utils";
 import { resolveReadPath } from "./path-utils";
 import type { ReadToolDetails } from "./read";
@@ -489,7 +495,8 @@ export async function readJson(
 	if (resource) resultBuilder.sourceInternal(resource.url);
 	else if (file) resultBuilder.sourcePath(file.absolutePath);
 	if (truncation.truncated) {
-		resultBuilder.truncation(truncation, { direction: "head" });
+		// The notice names the read budget, not the bytes this query happened to show.
+		resultBuilder.truncation(truncation, { direction: "head", maxBytes: DEFAULT_MAX_BYTES });
 	}
 
 	return resultBuilder.done();

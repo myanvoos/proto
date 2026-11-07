@@ -154,6 +154,9 @@ export class EventController {
 	#compactionOwnsProgress = false;
 
 	#pendingMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined = undefined;
+	// Provider replay resets are not cumulative: retain the boundary even when
+	// the empty restart snapshot is replaced by a later delta before painting.
+	#pendingMessageRestart = false;
 	#messageUpdateTimer: NodeJS.Timeout | undefined = undefined;
 
 	#dispatchTail: Promise<void> = Promise.resolve();
@@ -392,6 +395,28 @@ export class EventController {
 		this.#clearReadToolCall(toolCallId);
 	}
 
+	/**
+	 * A provider replay abandons the tool calls it streamed before restarting the
+	 * message. No result will ever settle those preview cards, so leaving one pins
+	 * transcript retirement: every later block stays live behind an unfinished card.
+	 * Calls whose execution already started keep their card; their result still
+	 * arrives.
+	 */
+	#retractAbandonedToolPreviews(): void {
+		for (const [toolCallId, component] of Array.from(this.ctx.pendingTools.entries())) {
+			if (this.#executionStartedCallIds.has(toolCallId)) continue;
+			this.#toolArgsReveal.finish(toolCallId);
+			this.#retractToolCardEntry(toolCallId, component);
+			const segment = this.#postToolAssistantComponents.get(toolCallId);
+			if (segment) {
+				this.ctx.chatContainer.disposeAndRemoveChild(segment);
+				segment.markTranscriptBlockFinalized();
+				this.#postToolAssistantComponents.delete(toolCallId);
+			}
+		}
+		this.#resetReadGroup();
+	}
+
 	#detachToolCardForRendererMigration(toolCallId: string, component: ToolExecutionHandle): number | undefined {
 		const componentIndex = this.ctx.chatContainer.children.indexOf(component);
 		const replacementIndex = componentIndex >= 0 ? componentIndex : undefined;
@@ -612,6 +637,7 @@ export class EventController {
 	): void {
 		if (this.#disposed || transcriptAnchor !== this.#transcriptAnchor) return;
 		this.#pendingMessageUpdate = event;
+		this.#pendingMessageRestart ||= event.assistantMessageEvent?.type === "start";
 		if (this.#messageUpdateTimer) return;
 		const timer = setTimeout(() => {
 			if (this.#messageUpdateTimer !== timer) return;
@@ -638,6 +664,11 @@ export class EventController {
 		const event = this.#pendingMessageUpdate;
 		if (!event) return;
 		this.#pendingMessageUpdate = undefined;
+		const restarted = this.#pendingMessageRestart;
+		this.#pendingMessageRestart = false;
+		// The start snapshot was coalesced away; the restart still has to drop the
+		// previews it abandoned before this delta paints over them.
+		if (restarted && event.assistantMessageEvent?.type !== "start") this.#retractAbandonedToolPreviews();
 		await this.handleEvent(event, transcriptAnchor);
 	}
 
@@ -682,6 +713,7 @@ export class EventController {
 			this.#messageUpdateTimer = undefined;
 		}
 		this.#pendingMessageUpdate = undefined;
+		this.#pendingMessageRestart = false;
 		this.#resetReadGroup();
 		this.#resetStreamingAssistantState();
 		this.#renderedCustomMessages.clear();
@@ -1245,6 +1277,11 @@ export class EventController {
 
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
+		// A provider restart reopens the message with a fresh snapshot; previews
+		// streamed by the abandoned attempt will never execute.
+		if (event.assistantMessageEvent?.type === "start" && event.message.role === "assistant") {
+			this.#retractAbandonedToolPreviews();
+		}
 		if (this.ctx.streamingComponent && event.message.role === "assistant") {
 			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(event.message);
 			if (unlockedThinkingVisibility) {

@@ -752,3 +752,61 @@ test("an inbound user message from an extension leaves the composer draft alone"
 		controller.dispose();
 	}
 });
+
+// A provider replay reopens the assistant message with a `start` snapshot. Tool
+// calls streamed by the abandoned attempt will never execute, so their preview
+// cards must go: one unfinalized card pins every later transcript block.
+test("a provider replay start retracts previews the abandoned attempt never executed", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	const preview = snapshot([toolCallBlock("abandoned-preview")]);
+	try {
+		await controller.handleEvent({ type: "message_start", message: { ...preview, content: [] } });
+		await controller.handleEvent({ type: "message_update", message: preview } as AgentSessionEvent);
+		const card = context.pendingTools.get("abandoned-preview");
+		expect(card).toBeInstanceOf(ToolExecutionComponent);
+
+		const restarted = snapshot([]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: restarted,
+			assistantMessageEvent: { type: "start", partial: restarted },
+		} as AgentSessionEvent);
+
+		expect(context.pendingTools.has("abandoned-preview")).toBe(false);
+		expect(chatContainer.children).not.toContain(card);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});
+
+// The replay snapshot only abandons calls that had not started; a running call's
+// result still arrives and its card must keep receiving it.
+test("a provider replay start keeps a preview whose execution already started", async () => {
+	const { chatContainer, context } = createContext();
+	const controller = new EventController(context);
+	const preview = snapshot([toolCallBlock("running-call")]);
+	try {
+		await controller.handleEvent({ type: "message_start", message: { ...preview, content: [] } });
+		await controller.handleEvent({ type: "message_update", message: preview } as AgentSessionEvent);
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "running-call",
+			toolName: "bash",
+			args: { command: "ls" },
+		});
+
+		const restarted = snapshot([]);
+		await controller.handleEvent({
+			type: "message_update",
+			message: restarted,
+			assistantMessageEvent: { type: "start", partial: restarted },
+		} as AgentSessionEvent);
+
+		expect(context.pendingTools.has("running-call")).toBe(true);
+	} finally {
+		controller.dispose();
+		chatContainer.dispose();
+	}
+});

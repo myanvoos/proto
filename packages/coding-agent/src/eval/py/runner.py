@@ -1575,6 +1575,11 @@ def _handle_request(req: dict) -> dict:
 
         _begin_exec_sigint()
         try:
+            # A cancel can land after the queued check above but before the SIGINT
+            # handler is installed, when it names no running cell. It still names
+            # this cell, so interrupt it here instead of running its code.
+            if rid in _STATE.cancelled_request_ids:
+                raise KeyboardInterrupt
             _emit({"type": "started", "id": rid})
             _emit_status("kernel-state", generation=_KERNEL_GENERATION, language="python", executionCount=execution_count)
             _exec_source(transformed, _STATE.user_ns)

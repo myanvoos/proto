@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Settings } from "../config/settings";
 import type { ToolSession } from "../sdk";
+import { wrapToolWithMetaNotice } from "./output-meta";
+import { ReadTool } from "./read";
 import { executeJsonQuery, parseJsonSelector, resolveJsonReadPath } from "./read-json";
 
 const roots: string[] = [];
@@ -58,4 +61,28 @@ test("JSONL debug diagnostics stay visible beside successful values without term
 test("large jq error values preserve the diagnostic reason", async () => {
 	const { file } = await fixture(JSON.stringify({ value: "x".repeat(20_000) }));
 	await expect(executeJsonQuery(file, parseJsonSelector("q=.value[]")!)).rejects.toThrow(/iterate|Cannot|cannot/);
+});
+
+// The truncation notice names the cap that produced it. A JSON query is capped
+// by the read budget, so reporting the bytes this page happened to show would
+// understate the limit and mislead a follow-up `:N` read.
+test("a truncated JSON query notice names the read byte budget, not the bytes shown", async () => {
+	const { root, file } = await fixture(
+		`${JSON.stringify({ id: 0, text: "x".repeat(60_000) })}\n${JSON.stringify({ id: 1, text: "short" })}\n`,
+		"large-events.jsonl",
+	);
+	const session = {
+		cwd: root,
+		hasUI: false,
+		settings: Settings.isolated({}),
+		getSessionFile: () => null,
+	} as unknown as ToolSession;
+	const result = await wrapToolWithMetaNotice(new ReadTool(session)).execute("call_large_pretty", {
+		path: `${file}?q=.&limit=8`,
+	});
+	const text = result.content
+		.filter((block): block is { type: "text"; text: string } => block.type === "text")
+		.map(block => block.text)
+		.join("");
+	expect(text).toContain("(50.0KB limit)");
 });
