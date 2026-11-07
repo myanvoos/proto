@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import type {
 	AssistantMessage,
 	DeveloperMessage,
+	Model,
 	ProviderPayload,
 	ToolResultMessage,
 	UserMessage,
@@ -225,5 +226,65 @@ describe("native tokenizer encoding skew", () => {
 		expect(() => new Tokenizer({ tokenizer: "deepseek-v3" }).countTokens("hello world", "strict")).toThrow(
 			"native tokenizer exploded",
 		);
+	});
+});
+
+describe("own-turn chat-completions reasoning accounting", () => {
+	function completionsModel(provider: string): Model {
+		return {
+			id: "glm-5",
+			name: "GLM-5",
+			api: "openai-completions",
+			provider,
+			baseUrl: "https://fixture.test/v1",
+			reasoning: true,
+			input: ["text"],
+			contextWindow: 200_000,
+			maxTokens: 8_192,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			// No replay arm: convertMessages drops this model's own prior thinking.
+			compat: { replayReasoningContent: false },
+		} as Model;
+	}
+
+	function thinkingTurn(provider: string, signature: string): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [
+				{ type: "thinking", thinking: "x".repeat(4_000), thinkingSignature: signature },
+				{ type: "text", text: "ok" },
+			],
+			api: "openai-completions",
+			provider,
+			model: "glm-5",
+			usage: {
+				input: 0,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 1,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp,
+		};
+	}
+
+	test("drops the model's own prior thinking text but charges a foreign turn", () => {
+		// Regression: counting dropped thinking inflated the stored estimate, so compaction fired far
+		// below the threshold on chat-completions models.
+		const own = new Tokenizer(completionsModel("fixture"));
+		const ownTurn = thinkingTurn("fixture", "reasoning_content");
+		const foreignTurn = thinkingTurn("other", "reasoning_content");
+
+		expect(own.countMessage(ownTurn)).toBeLessThan(own.countMessage(foreignTurn));
+	});
+
+	test("charges a raw LiteLLM thinking_blocks signature, which still replays", () => {
+		const own = new Tokenizer(completionsModel("fixture"));
+		const replayed = thinkingTurn("fixture", "SIG_litellm_block");
+		const dropped = thinkingTurn("fixture", "reasoning_content");
+
+		expect(own.countMessage(replayed)).toBeGreaterThan(own.countMessage(dropped));
 	});
 });

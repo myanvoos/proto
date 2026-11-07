@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Expose whether chat-completions requests drop a model's own prior thinking, and which thinking signatures still replay.
+
 ## [19.2.1] - 2026-11-03
 
 ### Breaking Changes
