@@ -5,6 +5,10 @@
 ### Changed
 
 - Treat GitHub Copilot as connection-bound for native Responses history so resumed sessions rebuild prior turns instead of replaying items minted on an earlier connection.
+### Fixed
+
+- Cap Antigravity Claude 4.x output tokens at 64K, including discovered per-SKU caps the transport sends verbatim.
+- Own Ollama thinking replay compatibility in the catalog: Ollama Cloud strips assistant thinking history except the verified GLM-5.2 wire ids, and a model `compat` override can flip either way.
 
 ## [19.2.1] - 2026-11-03
 

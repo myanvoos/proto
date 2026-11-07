@@ -19,6 +19,9 @@
 - Treat an in-band Anthropic `error` frame inside an open message as a retryable stream truncation, while deterministic rejections stay terminal.
 - Replay demoted DeepSeek thinking as `reasoning_content` instead of an empty field the API rejects.
 - Log one warning per request instead of one per dropped thinking block on Anthropic and Bedrock.
+- Align Antigravity requests with the 2.26.0 client: withhold the interleaved-thinking beta from Claude 5.x and pin routed tier SKUs to their advertised thinking strength instead of the caller's effort.
+- Resolve Ollama assistant-thinking replay from catalog compatibility, so Ollama Cloud models can opt in or out through model `compat` instead of a hardcoded provider check.
+- Withhold the extended-cache TTL beta when `ANTHROPIC_BASE_URL` reroutes a first-party Anthropic model to Vertex rawPredict.
 
 ## [19.2.1] - 2026-11-03
 

@@ -2,6 +2,7 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { buildAnthropicCompat } from "./compat/anthropic";
 import { buildBedrockCompat } from "./compat/bedrock";
 import { buildDevinCompat } from "./compat/devin";
+import { buildOllamaCompat } from "./compat/ollama";
 import { buildOpenAICompat, buildOpenAIResponsesCompat, buildOpenRouterCompat } from "./compat/openai";
 import { bareModelId, parseOpenAIModel, semverGte } from "./identity/classify";
 import { hasOpus47ApiRestrictions, isClaudeModelId, isOpenAISamplingRestrictedModelId } from "./identity/family";
@@ -111,6 +112,8 @@ export function buildCompat(spec: ModelSpec<Api>): CompatOf<Api> {
 			return buildBedrockCompat(spec as ModelSpec<"bedrock-converse-stream">);
 		case "devin-agent":
 			return buildDevinCompat(spec as ModelSpec<"devin-agent">);
+		case "ollama-chat":
+			return buildOllamaCompat(spec as ModelSpec<"ollama-chat">);
 		default:
 			return undefined;
 	}

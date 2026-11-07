@@ -2,13 +2,39 @@ import { Effort } from "./effort";
 import { bareModelId, parseAnthropicModel, parseGeminiModel, parseOpenAIModel, semverGte } from "./identity/classify";
 import { isKimiK3ModelId } from "./identity/family";
 import { applyNewProviderPolicy } from "./provider-models/new-providers";
-import type { Api, ModelCost, ModelSpec, TokenCost } from "./types";
+import type { AntigravityModelWireProfile, Api, ModelCost, ModelSpec, TokenCost } from "./types";
 import { isOfficialCodexApiUrl } from "./wire/codex";
 
 const FIVE_EFFORTS = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max] as const;
+/**
+ * Cloud Code Assist rejects Claude 4.x requests over 64,000 output tokens with
+ * a 400 (`Request contains an invalid argument`) even when the roster
+ * advertises 65,536. The ceiling also lowers the discovered per-SKU wire caps
+ * the transport sends verbatim.
+ */
+const ANTIGRAVITY_CLAUDE_OUTPUT_CEILING = 64_000;
 const HAIKU_COST: TokenCost = { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 };
 const ARGON_INTRO: TokenCost = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 0 };
 const ARGON_LIST: TokenCost = { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 0 };
+
+/**
+ * Lower per-SKU Antigravity output caps to the host's ceiling. The transport
+ * sends a profile's `maxOutputTokens` verbatim, so a roster value above the
+ * ceiling must be corrected here as the row's `maxTokens` is.
+ */
+function capAntigravityWireProfiles(
+	profiles: Readonly<Record<string, AntigravityModelWireProfile>> | undefined,
+	ceiling: number,
+): Readonly<Record<string, AntigravityModelWireProfile>> | undefined {
+	if (profiles === undefined) return undefined;
+	let capped: Record<string, AntigravityModelWireProfile> | undefined;
+	for (const [wireId, profile] of Object.entries(profiles)) {
+		if (profile.maxOutputTokens === undefined || profile.maxOutputTokens <= ceiling) continue;
+		capped ??= { ...profiles };
+		capped[wireId] = { ...profile, maxOutputTokens: ceiling };
+	}
+	return capped ?? profiles;
+}
 
 function tier(cost: TokenCost, inputThreshold: number, multiplier: number, outputMultiplier = multiplier): ModelCost {
 	return {
@@ -38,6 +64,15 @@ export function applyModelPolicy<TApi extends Api>(source: ModelSpec<TApi>): Mod
 	const claude = parseAnthropicModel(id);
 	const gemini = parseGeminiModel(id);
 	const openai = parseOpenAIModel(id);
+	if (model.provider === "google-antigravity" && claude !== null && !semverGte(claude.version, "5")) {
+		if (model.maxTokens !== null && model.maxTokens > ANTIGRAVITY_CLAUDE_OUTPUT_CEILING) {
+			model.maxTokens = ANTIGRAVITY_CLAUDE_OUTPUT_CEILING;
+		}
+		model.antigravityWireProfiles = capAntigravityWireProfiles(
+			model.antigravityWireProfiles,
+			ANTIGRAVITY_CLAUDE_OUTPUT_CEILING,
+		);
+	}
 	if (claude?.kind === "haiku" && semverGte(claude.version, "5.5")) {
 		model.reasoning = true;
 		if (!model.input.includes("image")) model.input = ["text", "image"];
