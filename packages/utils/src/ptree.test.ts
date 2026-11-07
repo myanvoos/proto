@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
-import { AbortError, type ExecResult, exec, spawn, TimeoutError, terminateProcess } from "./ptree";
+import { AbortError, ChildProcess, type ExecResult, exec, spawn, TimeoutError, terminateProcess } from "./ptree";
 
 // Real subprocess timing throughout: fake timers cannot drive child processes or pipe EOF.
 
@@ -118,6 +118,31 @@ console.log("probe-done");`;
 			expect(Process.fromPid(descendantPid)?.status()).not.toBe(ProcessStatus.Running);
 		} finally {
 			Process.fromPid(descendantPid)?.killTree(9);
+		}
+	});
+
+	test("applies the deadline when the root exited before the timeout was attached", async () => {
+		// Bun can reap the root before spawn() returns, so attachTimeout() sees `proc.killed`; the orphan still holds
+		// stdout and only the deadline's cutoff ends the read.
+		const proc = Bun.spawn(["sh", "-c", "sleep 30 & echo token $!"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		await proc.exited;
+		expect(proc.killed).toBe(true);
+		let orphanPid: number | undefined;
+		try {
+			const child = new ChildProcess(proc, false);
+			child.attachTimeout(250);
+			const start = performance.now();
+			const text = await child.nothrow().text();
+			const match = /^token (\d+)$/.exec(text.trim());
+			orphanPid = match ? Number.parseInt(match[1], 10) : undefined;
+			expect(match, `stdout was: ${text}`).not.toBeNull();
+			expect(performance.now() - start).toBeLessThan(5_000);
+		} finally {
+			if (orphanPid) Process.fromPid(orphanPid)?.killTree(9);
 		}
 	});
 });
