@@ -61,6 +61,8 @@
 | `dialogs` | `"accept" \| "dismiss"` | No | Installs a page `dialog` handler that auto-accepts or auto-dismisses dialogs. Omitted means no handler. |
 | `app` | `{ path?: string; cdp_url?: string; relay?: boolean; args?: string[]; target?: string }` | No | Selects browser kind. Explicit `app.cdp_url` wins, then `app.path`, then relay selection. `app.relay: true` opts into the PROTO Browser Relay; `app.relay: false` suppresses relay settings for this call. With no explicit app kind, `browser.relay` (overridden by `PI_BROWSER_RELAY`) precedes `browser.cdpUrl`, then cmux when available, then `browser.headless`. `browser.relayUrl` defaults to `http://127.0.0.1:9224`. `args` apply only to spawned `app.path`; `target` selects an attached/spawned/relay page by exact CDP target id first, then URL/title substring. Without a target, relay and fresh Chromium profiles open a tool-owned background page; other connected apps borrow a usable page. |
 
+If Chrome detaches the relay during an open's navigation and proto reattaches to the same page, the open returns that tab with a recovery notice instead of closing it. Check its current page before repeating the navigation; reattachment does not reload it or retry input that may already have landed. If reattachment uses up the budget before navigation starts, the open still fails but keeps the recovered tab available through a later open.
+
 ### `action: "close"`
 
 | Field | Type | Required | Description |

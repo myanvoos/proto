@@ -7,7 +7,10 @@ import { acquireTab, getTab, releaseTab, runInTab } from "./tab-supervisor";
 
 const names: string[] = [];
 const restoreWorkerConstructors: Array<() => void> = [];
+/** Makes the first worker detach the debugger during any open navigation. */
+let detachNavigations = false;
 afterEach(async () => {
+	detachNavigations = false;
 	await Promise.all(names.splice(0).map(name => releaseTab(name).catch(() => undefined)));
 	for (const restore of restoreWorkerConstructors.splice(0).reverse()) restore();
 });
@@ -37,7 +40,20 @@ class FakeWorker extends EventTarget {
 		} else if (message.type === "run") {
 			this.codes.push(message.code);
 			queueMicrotask(() => {
-				if (this.first && ["renderer", "before-detach", "during-detach"].includes(message.code)) {
+				if (this.first && detachNavigations && message.code.includes("tab.goto(")) {
+					this.emit({
+						type: "result",
+						id: message.id,
+						ok: false,
+						error: {
+							name: "ToolError",
+							message: "Chrome detached the debugger",
+							isToolError: true,
+							isAbort: false,
+							debuggerDetached: { when: "during-run", reason: "target_closed" },
+						},
+					});
+				} else if (this.first && ["renderer", "before-detach", "during-detach"].includes(message.code)) {
 					this.emit({
 						type: "result",
 						id: message.id,
@@ -161,6 +177,16 @@ test("a tab closed during reattachment stays closed when the replacement worker 
 	await recovery;
 	expect(getTab(name)).toBeUndefined();
 	expect(workers[1]?.terminated).toBe(true);
+});
+
+test("an open whose navigation the debugger detaches keeps the reattached tab and reports it", async () => {
+	detachNavigations = true;
+	const { name, browser } = fixture();
+	const opened = await acquireTab(name, browser, { url: "https://example.com/report", timeoutMs: 1000 });
+	expect(opened.created).toBe(true);
+	expect(opened.note).toContain("reattached");
+	expect(getTab(name)).toBe(opened.tab);
+	expect(opened.tab.state).toBe("alive");
 });
 
 test("a renderer crash is recovered in the failing call without replaying its code", async () => {
