@@ -6,6 +6,7 @@
 
 - A provider restart mid-message discards the tool previews it abandoned, so the transcript no longer freezes behind a card that can never receive a result.
 - JSON query truncation notices name the 50KB read budget instead of the bytes the current page happened to show.
+- Cancelling a Python eval cell as it starts now stops it before its code runs, instead of running the cell and discarding the result.
 
 ## [20.1.2] - 2026-11-04
 
