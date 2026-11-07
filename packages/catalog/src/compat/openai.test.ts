@@ -60,4 +60,19 @@ describe("Muse Spark replay policy", () => {
 		expect(sibling.includeEncryptedReasoning).toBe(true);
 		expect(sibling.filterReasoningHistory).toBe(false);
 	});
+
+	test("prefixes Muse Code function-tool names but not Meta pay-as-you-go names", () => {
+		// Muse Code subscription keys 403 `client_attestation_denied` for certain
+		// exact declared tool names; Meta API keys are not attested.
+		expect(
+			buildOpenAIResponsesCompat(responsesSpec("muse-code", "muse-spark-1.3", "https://api.meta.ai/v1"))
+				.toolNamePrefix,
+		).toBe("_");
+		expect(
+			buildOpenAIResponsesCompat(responsesSpec("meta", "muse-spark-1.3", "https://api.meta.ai/v1")).toolNamePrefix,
+		).toBeUndefined();
+		expect(
+			buildOpenAIResponsesCompat(responsesSpec("openai", "gpt-5", "https://api.openai.com/v1")).toolNamePrefix,
+		).toBeUndefined();
+	});
 });

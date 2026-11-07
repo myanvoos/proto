@@ -526,6 +526,14 @@ export interface ResolvedOpenAIResponsesCompat extends ResolvedOpenAISharedCompa
 	statefulResponses?: boolean;
 	/** `configuration_update` input items may change reasoning effort mid-conversation (GPT-6 Astra only; others 400). */
 	supportsConfigurationUpdate: boolean;
+	/**
+	 * Prefix the `openai-responses` handler puts on every function-tool name it
+	 * declares or replays, and strips from returned calls through the request's
+	 * wire-name table. Rule-owned: hosts that reject requests declaring certain
+	 * exact tool names (Muse Code). Unset sends names unchanged. Other
+	 * Responses-family handlers do not read it.
+	 */
+	toolNamePrefix?: string;
 	streamIdleTimeoutMs?: number;
 	vercelGatewayRouting?: OpenAICompat["vercelGatewayRouting"];
 
