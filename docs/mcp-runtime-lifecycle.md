@@ -24,6 +24,7 @@ This document describes how MCP servers are discovered, connected, exposed as to
 
 - **Headless/SDK** (no UI, no provided manager): awaits `discoverAndLoadMCPTools(cwd, { ... })` and merges the returned tools into the startup `customTools` set. Print mode (`-p`) then calls `MCPManager.waitForStartup()` before the first prompt, bounded by the MCP request timeout (`PROTO_MCP_TIMEOUT_MS`, else 30s; `0` waits until settled), refreshes the session's MCP tools, and warns on stderr about servers still not ready.
 - **Interactive/TUI** (`hasUI: true`, no provided manager): constructs `MCPManager` immediately (with cache + auth storage), defers `discoverAndConnect()` to a background task started after the session exists, then binds tools via `session.refreshMCPTools(...)` (disconnecting the manager if the session was torn down mid-connect).
+  The first UI/RPC turn waits up to 1.5 s for this MCP startup, so its system prompt includes servers connected by then; slower servers register later and change the next turn's prompt.
 
 Both paths:
 
