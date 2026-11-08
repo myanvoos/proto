@@ -534,6 +534,25 @@ export class FileSessionStorage implements SessionStorage {
 		fs.renameSync(source, target);
 	}
 
+	/**
+	 * Rename `replacement` over the session file `fpath` under the cross-process
+	 * publish lock that serializes appends and rewrites, when `unchanged` still
+	 * accepts the file there. Returns whether it renamed. Throws
+	 * {@link SessionStorageLockError} while another writer holds the lock.
+	 */
+	replaceSessionFileSync(fpath: string, replacement: string, unchanged: () => boolean): boolean {
+		fpath = sessionPublishTarget(fpath);
+		const lock = tryAcquireFileLockSync(fpath);
+		if (!lock) throw new SessionStorageLockError(fpath);
+		try {
+			if (!unchanged()) return false;
+			this.renameSync(replacement, fpath);
+			return true;
+		} finally {
+			lock.release();
+		}
+	}
+
 	#discardTemp(tempPath: string, targetPath: string): void {
 		try {
 			fs.unlinkSync(tempPath);

@@ -16,9 +16,11 @@ export default class Gc extends Command {
 				blobs: flags.blobs,
 				archive: flags.archive,
 				wal: flags.wal,
+				compress: flags.compress,
 				coldArchiveAfterDays: flags["cold-archive-after-days"],
 				retainNewestGlobal: flags["retain-newest-global"],
 				retainNewestPerCwd: flags["retain-newest-per-cwd"],
+				compressAfterDays: flags["compress-after-days"],
 			},
 		};
 		const result = await runGcCommand(cmd);

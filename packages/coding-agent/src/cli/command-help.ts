@@ -396,9 +396,11 @@ export const gcHelp = {
 		blobs: Flags.boolean({ description: "Sweep unreferenced blobs" }),
 		archive: Flags.boolean({ description: "Archive cold sessions" }),
 		wal: Flags.boolean({ description: "Checkpoint history/model database WAL files" }),
+		compress: Flags.boolean({ description: "Compress cold sessions in place with APFS compression" }),
 		"cold-archive-after-days": Flags.integer({ description: "Minimum session age before archiving" }),
 		"retain-newest-global": Flags.integer({ description: "Always keep this many newest sessions active" }),
 		"retain-newest-per-cwd": Flags.integer({ description: "Always keep this many newest sessions per cwd" }),
+		"compress-after-days": Flags.integer({ description: "Minimum session age before compressing" }),
 	},
 } satisfies CommandMetadata;
 

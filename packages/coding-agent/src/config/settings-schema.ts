@@ -4348,6 +4348,12 @@ export const SETTINGS_SCHEMA = {
 
 	"gc.retainNewestPerCwd": { type: "number", default: 10 },
 
+	// Opt-in: rewrites cold session files in place through the filesystem's
+	// transparent compression (APFS), so it needs an explicit request.
+	"gc.compress": { type: "boolean", default: false },
+
+	"gc.compressAfterDays": { type: "number", default: 7 },
+
 	"thinkingBudgets.minimal": { type: "number", default: 1024 },
 
 	"thinkingBudgets.low": { type: "number", default: 2048 },

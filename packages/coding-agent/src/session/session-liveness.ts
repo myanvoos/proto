@@ -120,6 +120,16 @@ function ownershipLockKey(sessionFile: string): string {
 }
 
 /**
+ * Takes the ownership lock {@link claimSessionOwnership} uses without becoming
+ * this process's session, for callers that must exclude a running owner while
+ * rewriting the file (gc compression). Returns null while another process owns
+ * the session.
+ */
+export function tryAcquireSessionOwnershipLease(sessionFile: string): FileLockHandle | null {
+	return tryAcquireFileLockSync(ownershipLockKey(sessionFile));
+}
+
+/**
  * Claims this process as the owner of `sessionFile`, replacing any previous
  * claim. Returns false when another live process already owns it.
  */
