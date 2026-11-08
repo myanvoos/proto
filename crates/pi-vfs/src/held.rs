@@ -53,7 +53,7 @@ impl HeldFiles {
 			let stat = unsafe { stat.assume_init() };
 			if stat.st_mode & libc::S_IFMT == libc::S_IFREG {
 				by_inode
-					.entry((stat.st_dev as u64, stat.st_ino))
+					.entry((device_id(stat.st_dev), stat.st_ino))
 					.or_insert(fd);
 			}
 		}
@@ -92,6 +92,14 @@ impl HeldFiles {
 	pub fn check_metadata(&self, _path: &Path, _metadata: &Metadata) -> std::io::Result<()> {
 		Ok(())
 	}
+}
+
+#[cfg(unix)]
+/// `dev_t` is `i32` on macOS and `u64` on Linux; the cast is only redundant on
+/// Linux.
+#[allow(clippy::unnecessary_cast, reason = "dev_t differs by platform")]
+const fn device_id(dev: libc::dev_t) -> u64 {
+	dev as u64
 }
 
 /// Whether `path` is a SQLite database or `-shm` index this process currently

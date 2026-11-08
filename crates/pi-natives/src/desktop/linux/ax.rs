@@ -66,7 +66,7 @@ pub(crate) fn resolve_focus(
 /// The id [`AtSpiAx::windows`] gives a frame, so a listed window can be
 /// matched back to its AT-SPI object.
 fn window_id(frame: &ObjectRefOwned) -> String {
-	let name = frame.name().map(ToString::to_string).unwrap_or_default();
+	let name = frame.name().map_or_default(ToString::to_string);
 	format!("atspi:{name}:{}", frame.path())
 }
 

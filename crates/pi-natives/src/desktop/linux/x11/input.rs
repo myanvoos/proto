@@ -678,8 +678,7 @@ impl X11Input {
 			.get_property(false, window, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1024)
 			.ok()
 			.and_then(|cookie| cookie.reply().ok())
-			.map(|reply| String::from_utf8_lossy(&reply.value).to_ascii_lowercase())
-			.unwrap_or_default();
+			.map_or_default(|reply| String::from_utf8_lossy(&reply.value).to_ascii_lowercase());
 		["gtk", "gdk", "qt", "chrome", "chromium", "firefox", "mozilla"]
 			.iter()
 			.any(|needle| class.contains(needle))
