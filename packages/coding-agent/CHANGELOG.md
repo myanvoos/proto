@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- A piped `protolens` call shows the device's own output on its card, while the shell card keeps what the pipe made of it.
 - Keep a protofs checkout record when removal cannot be confirmed, so `proto worktree clear` can retry it instead of losing the checkout.
 - Fixed `proto gc --compress` taking minutes on large session histories: live-transcript detection reads only each artifact's header line, skips non-JSON artifacts before probing, and leases each session id once.
 - Fixed `proto gc --compress --apply` copying and verifying every idle session on volumes where compression does not shrink files (e.g. macOS 27); it probes first and reports `compress skipped: <reason>`.

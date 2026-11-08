@@ -707,38 +707,43 @@ test("the shell deadline aborts an in-flight protolens dispatch instead of orpha
 
 test("native protolens bridge keeps stdin and pipe purity separate from status records", async () => {
 	const shell = new Shell();
-	const chunks: string[] = [];
-	let request: { stdin?: string } | undefined;
-	const result = await shell.run(
-		{
-			command: "printf input | protolens probe | rg '^out$'",
-			cwd: process.cwd(),
-			protolensCallId: "protolens-stream",
-		},
-		(error, chunk) => {
-			if (!error) chunks.push(chunk);
-		},
-		async raw => {
-			request = JSON.parse(raw) as { stdin?: string };
-			return JSON.stringify({ stdout: "out\n", stderr: "not-piped\n", exitCode: 0, record: '{"kind":"probe"}' });
-		},
-	);
-	expect(request?.stdin).toBe("input");
-	expect(chunks.join("")).toContain("out\n");
-	expect(chunks.join("")).toContain("not-piped");
-	expect(result.exitCode).toBe(0);
-	expect(result.protolensDispatches).toEqual(['{"kind":"probe"}']);
+	const stderrShell = new Shell();
+	try {
+		const chunks: string[] = [];
+		let request: { stdin?: string } | undefined;
+		const result = await shell.run(
+			{
+				command: "printf input | protolens probe | rg '^out$'",
+				cwd: process.cwd(),
+				protolensCallId: "protolens-stream",
+			},
+			(error, chunk) => {
+				if (!error) chunks.push(chunk);
+			},
+			async raw => {
+				request = JSON.parse(raw) as { stdin?: string };
+				return JSON.stringify({ stdout: "out\n", stderr: "not-piped\n", exitCode: 0, record: '{"kind":"probe"}' });
+			},
+		);
+		expect(request?.stdin).toBe("input");
+		expect(chunks.join("")).toContain("out\n");
+		expect(chunks.join("")).toContain("not-piped");
+		expect(result.exitCode).toBe(0);
+		expect(result.protolensDispatches).toEqual(['{"kind":"probe"}']);
 
-	const stderrOnly = await new Shell().run(
-		{
-			command: "printf input | protolens probe | rg '^not-piped$'",
-			cwd: process.cwd(),
-			protolensCallId: "protolens-stderr",
-		},
-		undefined,
-		async () => JSON.stringify({ stdout: "out\n", stderr: "not-piped\n", exitCode: 0, record: "{}" }),
-	);
-	expect(stderrOnly.exitCode).toBe(1);
+		const stderrOnly = await stderrShell.run(
+			{
+				command: "printf input | protolens probe | rg '^not-piped$'",
+				cwd: process.cwd(),
+				protolensCallId: "protolens-stderr",
+			},
+			undefined,
+			async () => JSON.stringify({ stdout: "out\n", stderr: "not-piped\n", exitCode: 0, record: "{}" }),
+		);
+		expect(stderrOnly.exitCode).toBe(1);
+	} finally {
+		await Promise.all([shell.close(), stderrShell.close()]);
+	}
 });
 
 test("protolens help keeps full docs for the model but renders a compact card in TUI", async () => {
@@ -1035,7 +1040,10 @@ test("device results retain typed payloads outside pipelines and correlate to na
 		const device = result.details?.deviceResults?.[0];
 		expect(device?.stageIndex).toBeNumber();
 		expect(device?.xdev).toMatchObject({ tool: "probe", inner: { answer: 42, nested: { ready: false } } });
-		expect(result.details?.execution?.stages?.[device!.stageIndex!]?.route).toBe("protolens");
+		// `stageIndex` is the engine's command sequence number, and each stage
+		// record carries that same `index`; the array is dense, not indexed by it.
+		const stage = result.details?.execution?.stages?.find(candidate => candidate.index === device!.stageIndex);
+		expect(stage?.route).toBe("protolens");
 		expect(textOf(result)).toContain("probe:structured");
 	});
 });

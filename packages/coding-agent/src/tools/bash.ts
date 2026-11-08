@@ -6,7 +6,16 @@ import type { ImageContent, UserContent } from "@oh-my-pi/pi-ai";
 import { supportsLanguage } from "@oh-my-pi/pi-natives";
 import { ImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import type { Component } from "@oh-my-pi/pi-tui/tui";
-import { getProjectDir, isEnoent, isRecord, logger, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	getProjectDir,
+	isEnoent,
+	isRecord,
+	logger,
+	prompt,
+	sanitizeText,
+	truncateHeadBytes,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import {
 	AsyncJobFailure,
 	DEFAULT_AUTO_BACKGROUND_THRESHOLD_MS,
@@ -302,7 +311,17 @@ export interface ProtolensDispatchRecord {
 	recordError?: string;
 	content?: unknown[];
 	isError?: boolean;
+	/** The device's own text output, kept for a dispatch whose bytes never reached the shell's stage capture. */
+	text?: string;
+	textTruncated?: boolean;
 }
+
+/**
+ * Most device text one dispatch record keeps. The engine captures at most
+ * 16 KiB per stage stream; a device whose output went into a pipe has no stage
+ * capture, so the record supplies it under the same bound.
+ */
+const PROTOLENS_RECORD_TEXT_LIMIT = 16 * 1024;
 
 function parseProtolensDispatches(dispatches: readonly string[] | undefined): {
 	records: ProtolensDispatchRecord[];
@@ -325,6 +344,8 @@ function parseProtolensDispatches(dispatches: readonly string[] | undefined): {
 				recordError: typeof parsed.recordError === "string" ? parsed.recordError : undefined,
 				content: Array.isArray(parsed.content) ? parsed.content : undefined,
 				isError: parsed.isError === true,
+				text: typeof parsed.text === "string" ? parsed.text : undefined,
+				textTruncated: parsed.textTruncated === true,
 			});
 		} catch (error) {
 			return {
@@ -967,6 +988,11 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			const text = joinedText.length > 0 && !joinedText.endsWith("\n") ? `${joinedText}\n` : joinedText;
 			const nonText = result.content.filter(block => block.type !== "text");
 			const isError = result.isError === true;
+			// The engine captures a device's bytes only when they reach the
+			// shell's visible stdout/stderr. A piped call consumes them before
+			// that, so the record carries the device's own output for its card.
+			const bounded = truncateHeadBytes(text, PROTOLENS_RECORD_TEXT_LIMIT);
+			const textTruncated = Buffer.byteLength(text, "utf-8") > bounded.bytes;
 			let record: string | undefined;
 			try {
 				record = JSON.stringify({
@@ -975,6 +1001,8 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 					details: result.details,
 					content: nonText,
 					isError,
+					text: bounded.text,
+					...(textTruncated ? { textTruncated: true } : {}),
 				});
 			} catch {
 				record = JSON.stringify({
@@ -1264,8 +1292,26 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			softExit: softExit || undefined,
 		};
 
+		const protolensResult = parseProtolensDispatches(options.protolensDispatches ?? readProtolensDispatches(result));
 		if ("stageRecords" in result && result.stageRecords?.length) {
 			execution.stages = result.stageRecords.map(raw => JSON.parse(raw) as ExecutionStageMetadata);
+			// A device whose output went into a pipe never reached the shell's
+			// stage capture; the dispatch record carries its own output instead.
+			for (const record of protolensResult.records) {
+				if (record.stageIndex === undefined || record.text === undefined) continue;
+				const stage = execution.stages.find(candidate => candidate.index === record.stageIndex);
+				if (!stage) continue;
+				const stream = record.isError ? stage.stderr : stage.stdout;
+				if (stream?.text) continue;
+				const capture = {
+					text: record.text,
+					bytes: Buffer.byteLength(record.text, "utf-8"),
+					truncated: record.textTruncated === true,
+					complete: true,
+				};
+				if (record.isError) stage.stderr = capture;
+				else stage.stdout = capture;
+			}
 			for (const stage of execution.stages) {
 				if (isTimeout && stage.state !== "exited") stage.timeout = executionTimeout;
 				for (const stream of ["stdout", "stderr"] as const) {
@@ -1275,7 +1321,6 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				}
 			}
 		}
-		const protolensResult = parseProtolensDispatches(options.protolensDispatches ?? readProtolensDispatches(result));
 		const protolensMedia: UserContent[] = [];
 		const protolensJsonOutputs: unknown[] = [];
 		const protolensValues: unknown[] = [];
