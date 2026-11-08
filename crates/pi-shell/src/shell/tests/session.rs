@@ -779,6 +779,39 @@ async fn live_background_job_count_tracks_external_background_jobs() {
 	shell.abort().await;
 }
 
+/// A background job that runs only in-engine work (`sleep 30 &`, the
+/// process builtin) must be counted too: the shell cannot be dropped while it
+/// runs, or the job would end silently. A finished job stops counting.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn live_background_job_count_tracks_in_process_background_jobs() {
+	let _guard = shell_test_lock().lock().await;
+	let shell = Shell::new(None);
+	shell
+		.run(
+			ShellRunOptions { command: "sleep 30 &".into(), ..Default::default() },
+			None,
+			None,
+			None,
+			CancelToken::default(),
+		)
+		.await
+		.expect("run background sleep");
+	assert_eq!(shell.live_background_job_count().await, 1);
+	shell
+		.run(
+			ShellRunOptions { command: "kill %1; wait %1".into(), ..Default::default() },
+			None,
+			None,
+			None,
+			CancelToken::default(),
+		)
+		.await
+		.expect("kill background sleep");
+	assert_eq!(shell.live_background_job_count().await, 0);
+	shell.abort().await;
+}
+
 /// An exited `&` child must be waited on while the persistent shell is
 /// idle, not only when the host submits another command. Keep its status
 /// for a later explicit `wait` after the OS process has disappeared.

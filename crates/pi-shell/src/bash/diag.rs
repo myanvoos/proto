@@ -547,6 +547,9 @@ pub struct DiagSite<'a> {
 	pub line:       u32,
 	/// The locale is UTF-8 (which bytes print as they are in names).
 	pub utf8:       bool,
+	/// Report a missing command as `command not found: name` (pi's shell)
+	/// rather than bash's `name: command not found`.
+	pub proto:      bool,
 }
 
 /// The full stderr line for `diag` printed at `site`, newline included.
@@ -591,7 +594,7 @@ pub fn render(diag: &Diag, site: DiagSite<'_>) -> Vec<u8> {
 	out.extend_from_slice(b": line ");
 	out.extend_from_slice(site.line.format_into(&mut fmt::NumBuffer::new()).as_bytes());
 	out.extend_from_slice(b": ");
-	message(diag, site.utf8, &mut out);
+	message(diag, site.utf8, site.proto, &mut out);
 	out.push(b'\n');
 	out
 }
@@ -724,12 +727,17 @@ fn zsh_message(diag: &Diag, utf8: bool, out: &mut Vec<u8>) {
 /// The text of `diag`. A command name prints as bash's `printable_filename`
 /// shows it (`$'…'` when it has bytes the locale cannot print), byte for
 /// byte otherwise.
-fn message(diag: &Diag, utf8: bool, out: &mut Vec<u8>) {
+fn message(diag: &Diag, utf8: bool, proto: bool, out: &mut Vec<u8>) {
 	use std::io::Write;
 
 	if let Diag::CommandNotFound { name } = diag {
+		if proto {
+			out.extend_from_slice(b"command not found: ");
+		}
 		out.extend_from_slice(&crate::bash::vm::quote::printable_filename(name, utf8, false));
-		out.extend_from_slice(b": command not found");
+		if !proto {
+			out.extend_from_slice(b": command not found");
+		}
 		return;
 	}
 	write!(out, "{diag}").expect("writing to a Vec cannot fail");

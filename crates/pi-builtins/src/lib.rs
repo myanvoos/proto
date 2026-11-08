@@ -15,6 +15,13 @@ mod fsmeta;
 mod host;
 #[cfg(unix)]
 pub use host::read_process_umask;
+/// Argv routing shared by the JavaScript kernel-cell builtins and the static
+/// code scanner.
+pub mod kernel_route;
+#[cfg(all(feature = "util.node", unix))]
+mod kernel_cell;
+#[cfg(all(feature = "util.node", unix))]
+mod node;
 mod openfile;
 mod stdio;
 /// The shell's locale categories, shared by the locale-aware utilities.

@@ -597,6 +597,7 @@ pub fn shell_init(
 		startup,
 		zsh_params: zsh_params(args),
 		profile: Profile::User,
+		proto_errors: false,
 	}
 }
 

@@ -224,6 +224,8 @@ default = ["utils"]
 "util.ts" = []
 "util.mv" = []
 "util.nl" = ["util.bre"]
+# JavaScript kernel-cell builtins (`node`, `nodejs`, `bun`): unix only.
+"util.node" = []
 "util.nproc" = []
 "util.od" = []
 "util.paste" = []
@@ -312,6 +314,7 @@ utils = [
   "util.ts",
   "util.mv",
   "util.nl",
+  "util.node",
   "util.nproc",
   "util.od",
   "util.paste",

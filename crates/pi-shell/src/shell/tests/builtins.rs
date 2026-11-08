@@ -322,6 +322,7 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		"base32",
 		"base64",
 		"basename",
+		"bun",
 		"cat",
 		#[cfg(unix)]
 		"chmod",
@@ -358,6 +359,8 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		"mktemp",
 		"mv",
 		"nl",
+		"node",
+		"nodejs",
 		"nproc",
 		"od",
 		"paste",
@@ -412,6 +415,12 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		assert_eq!(exit_code(&exec), 0, "type -t {name} found nothing");
 		let kind = std::fs::read_to_string(tmp.join("type.txt")).expect("type.txt");
 		assert_eq!(kind, "builtin\n", "{name} is not a session builtin");
+
+		// A kernel builtin's `--help` is the real interpreter's, reached by
+		// the fall-through path; only its registration is the shell's.
+		if matches!(name, "node" | "nodejs" | "bun") {
+			continue;
+		}
 
 		let exec = session
 			.run_test(format!("PATH= {name} --help > help.txt 2> err.txt"), &params)

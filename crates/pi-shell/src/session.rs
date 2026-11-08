@@ -62,7 +62,7 @@ use std::{
 	time::Duration,
 };
 
-use bstr::{BString, ByteSlice};
+use bstr::{BStr, BString, ByteSlice};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -70,7 +70,7 @@ use crate::{
 	bash::{
 		Budget, CallId, Cx, Engine, EngineConfig, EventMask, EventSink, Fs, MemStore, PipeTap,
 		Profile, RunId, Script, Shell, ShellError, ShellInit, Signal, Step, ToolCall, VprocSel,
-		store::{Key, MiscKey, Record},
+		store::{Key, MiscKey, Record, Var, VarValue},
 	},
 	host::{PiHost, SpawnObserver, TERM_GRACE},
 	sys::OutputDecoding,
@@ -332,7 +332,13 @@ impl Session {
 		let engine = Engine::new(EngineConfig { end_orphan_jobs: true, ..EngineConfig::default() });
 		let mut store = MemStore::new();
 		// A program's shell: no history, line editor or completion system.
-		let init = ShellInit { env, cwd, profile: Profile::Tool, ..ShellInit::default() };
+		let init = ShellInit {
+			env,
+			cwd,
+			profile: Profile::Tool,
+			proto_errors: true,
+			..ShellInit::default()
+		};
 		let mut shell = Shell::create(&engine, &mut Cx { host: &mut host, store: &mut store }, init)
 			.map_err(SessionError::Create)?;
 		// Nothing observes events: skip building them.
@@ -361,6 +367,27 @@ impl Session {
 		let (reply_tx, reply_rx) = flume::bounded(1);
 		jobs
 			.send(Request::LiveJobs(reply_tx))
+			.map_err(|_| SessionError::Closed)?;
+		self.waker.wake_by_ref();
+		reply_rx
+			.recv_async()
+			.await
+			.map_err(|_| SessionError::Closed)
+	}
+
+	/// Number of background jobs (`cmd &`) still running, in-engine work
+	/// included (`sleep 30 &`, a loop): what a host retaining the shell for
+	/// its background work must see, since dropping the session ends that
+	/// work. 0 when the session is closed.
+	///
+	/// # Errors
+	///
+	/// [`SessionError::Closed`] when the session is closed.
+	pub async fn live_background_jobs(&self) -> Result<usize, SessionError> {
+		let jobs = self.jobs.as_ref().ok_or(SessionError::Closed)?;
+		let (reply_tx, reply_rx) = flume::bounded(1);
+		jobs
+			.send(Request::LiveBackgroundJobs(reply_tx))
 			.map_err(|_| SessionError::Closed)?;
 		self.waker.wake_by_ref();
 		reply_rx
@@ -516,6 +543,7 @@ enum Request {
 	Run(Job),
 	/// Count the background jobs running an external.
 	LiveJobs(flume::Sender<usize>),
+	LiveBackgroundJobs(flume::Sender<usize>),
 }
 
 /// One command for the driver.
@@ -550,6 +578,9 @@ impl Driver {
 				Ok(Request::LiveJobs(reply)) => {
 					let _ = reply.send(self.shell.live_external_jobs());
 				},
+				Ok(Request::LiveBackgroundJobs(reply)) => {
+					let _ = reply.send(self.shell.live_background_jobs());
+				},
 				Err(flume::TryRecvError::Disconnected) => break,
 				Err(flume::TryRecvError::Empty) => self.idle_turn().await,
 			}
@@ -575,6 +606,9 @@ impl Driver {
 		let Job { options, stdio, cancel, token, reply } = job;
 		let RunOptions { command, env, cwd, pipe_tap, reported_error, text_capture, events } =
 			options;
+		// A Python harness run names its package root; the shell turns it into
+		// this command's `PYTHONPATH` instead of exporting the capability.
+		let env = with_python_path(env, self.shell_python_path());
 		self.host.set_pipe_tap(pipe_tap);
 		self.host.set_cancel(Some(token));
 		// A command owns its observer generation, even when successive
@@ -682,6 +716,15 @@ impl Driver {
 
 	/// Put back the variables a run's env overlay replaced, newest first so
 	/// a name given twice ends at its original value.
+	/// The shell's current `PYTHONPATH`, which a harness run's injected path
+	/// extends.
+	fn shell_python_path(&self) -> Option<BString> {
+		match self.store.record(Key::Var(BStr::new(b"PYTHONPATH"))) {
+			Some(Record::Var(Var { value: VarValue::Str(path), .. })) => Some(path.clone()),
+			_ => None,
+		}
+	}
+
 	fn restore_overlay(&mut self, saved: Vec<(BString, Option<Record>)>) {
 		for (name, record) in saved.into_iter().rev() {
 			let key = Key::Var(name.as_bstr());
@@ -753,6 +796,45 @@ impl Driver {
 			}
 		}
 	}
+}
+
+/// The run's environment with the Python harness package root folded into
+/// `PYTHONPATH`.
+///
+/// `PI_PYTHON_HARNESS_PATH` is a shell-local capability, not a variable a
+/// program inherits ([`crate::host`] strips it from every spawn). Python
+/// programs still need the harness package on their import path, so the shell
+/// exports `PYTHONPATH` for the command instead: the root first, then the
+/// command's own `PYTHONPATH` or the shell's current one.
+fn with_python_path(
+	env: Vec<(BString, BString)>,
+	shell_path: Option<BString>,
+) -> Vec<(BString, BString)> {
+	let Some(root) = env
+		.iter()
+		.find(|(name, _)| crate::host::is_python_harness_env_var(name.as_bytes()))
+		.map(|(_, value)| value.clone())
+	else {
+		return env;
+	};
+	let prior = env
+		.iter()
+		.find(|(name, _)| name.as_slice() == b"PYTHONPATH")
+		.map(|(_, value)| value.clone())
+		.or(shell_path);
+	let mut path = root;
+	if let Some(prior) = prior.filter(|prior| !prior.is_empty()) {
+		path.push(if cfg!(windows) { b';' } else { b':' });
+		path.extend_from_slice(&prior);
+	}
+	let mut env: Vec<(BString, BString)> = env
+		.into_iter()
+		.filter(|(name, _)| {
+			!crate::host::is_python_harness_env_var(name.as_bytes()) && name.as_slice() != b"PYTHONPATH"
+		})
+		.collect();
+	env.push((BString::from("PYTHONPATH"), path));
+	env
 }
 
 #[cfg(all(test, unix))]
@@ -1609,7 +1691,8 @@ mod tests {
 		assert_eq!(sh(&mut s, "false").await.outcome.status, 1);
 		let c = sh(&mut s, "nosuchcmd").await;
 		assert_eq!(c.outcome.status, 127);
-		assert!(c.stderr.contains("nosuchcmd: command not found"), "stderr: {:?}", c.stderr);
+		// The agent's shell reports pi's word order (line numbers unchanged).
+		assert!(c.stderr.contains("command not found: nosuchcmd"), "stderr: {:?}", c.stderr);
 	}
 
 	#[tokio::test(flavor = "multi_thread")]

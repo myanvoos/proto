@@ -73,6 +73,9 @@ macro_rules! for_each_extra {
 			utility [feature = "util.mktemp"] "mktemp" mktemp::Mktemp;
 			utility [feature = "util.mv"] "mv" mv::Mv;
 			utility [feature = "util.nl"] "nl" nl::Nl;
+			utility [all(feature = "util.node", unix)] "node" node::Node;
+			utility [all(feature = "util.node", unix)] "nodejs" node::Node;
+			utility [all(feature = "util.node", unix)] "bun" node::Bun;
 			utility [feature = "util.nproc"] "nproc" nproc::Nproc;
 			utility [feature = "util.od"] "od" od::Od;
 			utility [feature = "util.paste"] "paste" paste::Paste;

@@ -26,9 +26,9 @@ use parking_lot::Mutex;
 
 use crate::{
 	bash::{
-		Deadline, Event, ExitStatus, ExtProc, FdRef, File, FileKind, Fs, IntrinsicId, Invocation,
-		ModeId, NativeRef, OsHandle, ResolveCtx, Resolved, Rlimit, Signal, SpawnFuture, SpawnSpec,
-		StdFd, StdioSpec, SystemTimeLike, Task, Timer, TtyInfo, UserInfo, Verdict,
+		Deadline, EnvView, Event, ExitStatus, ExtProc, FdRef, File, FileKind, Fs, IntrinsicId,
+		Invocation, ModeId, NativeRef, OsHandle, ResolveCtx, Resolved, Rlimit, Signal, SpawnFuture,
+		SpawnSpec, StdFd, StdioSpec, SystemTimeLike, Task, Timer, TtyInfo, UserInfo, Verdict,
 	},
 	output_decode,
 	sys::{End, Exits, NativeSpawner, OutputDecoding, Relays, Sessions, SpawnConfig, StdFile},
@@ -40,6 +40,28 @@ mod urls;
 /// Time between TERM and KILL when a running external is abandoned (a cancel
 /// unwinds the command that waits for it): pi's `TERM_GRACE`.
 pub const TERM_GRACE: Duration = Duration::from_secs(1);
+
+/// The kernel-shell bridge capability: shell variables an in-process cell
+/// reads to reach the host, and never child-process environment.
+///
+/// They must stay visible to the shell (and to the extras, which receive the
+/// exported environment) so `node -e …` can become a cell, but a program the
+/// shell spawns must not inherit the bridge: it could then impersonate the
+/// cell, and the capability would outlive the run that granted it.
+pub(crate) fn is_session_bridge_env_var(key: &[u8]) -> bool {
+	matches!(key, b"PI_KERNEL_BRIDGE_ADDR" | b"PI_KERNEL_BRIDGE_TOKEN" | b"PI_KERNEL_FLEET_ROOT")
+}
+
+/// The Python harness package root: folded into a command's `PYTHONPATH`
+/// ([`crate::session`]) instead of being exported as a variable.
+pub(crate) fn is_python_harness_env_var(key: &[u8]) -> bool {
+	key == b"PI_PYTHON_HARNESS_PATH"
+}
+
+/// Whether a spawned child must not inherit `key`.
+fn is_shell_local_var(key: &[u8]) -> bool {
+	is_session_bridge_env_var(key) || is_python_harness_env_var(key)
+}
 
 /// Told about every external a [`PiHost`] spawns, from the engine thread.
 ///
@@ -406,7 +428,56 @@ impl Launcher {
 
 	/// Start the external `spec` names, now. Text routing and the observer
 	/// see a spawn only once it succeeded.
-	fn launch(&self, mut spec: SpawnSpec<'_>) -> io::Result<Box<dyn ExtProc>> {
+	fn launch(&self, spec: SpawnSpec<'_>) -> io::Result<Box<dyn ExtProc>> {
+		// Shell-local capabilities reach the extras, never a spawned program:
+		// a cell's bridge address and token, and the Python harness package
+		// root, stay inside the shell process.
+		let SpawnSpec {
+			path,
+			argv,
+			env,
+			cwd,
+			stdio,
+			extra_fds,
+			pgroup,
+			tag,
+			vpid,
+			umask,
+			sigmask_ign,
+			rlimits,
+			lineage,
+			redirs,
+			ctty,
+		} = spec;
+		let filtered = env.iter().any(|(name, _)| is_shell_local_var(name)).then(|| {
+			EnvView::new(
+				env
+					.iter()
+					.filter(|(name, _)| !is_shell_local_var(name))
+					.map(|(name, value)| {
+						(BString::from(name.as_bytes()), BString::from(value.as_bytes()))
+					})
+					.collect(),
+			)
+		});
+		let env = filtered.as_ref().unwrap_or(env);
+		let mut spec = SpawnSpec {
+			path,
+			argv,
+			env,
+			cwd,
+			stdio,
+			extra_fds,
+			pgroup,
+			tag,
+			vpid,
+			umask,
+			sigmask_ign,
+			rlimits,
+			lineage,
+			redirs,
+			ctty,
+		};
 		let observed = spec.stdio[1..]
 			.iter()
 			.chain(spec.extra_fds.iter().map(|(_, stdio)| stdio))

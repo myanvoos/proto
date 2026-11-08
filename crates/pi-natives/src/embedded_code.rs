@@ -11,6 +11,7 @@
 //! compound is closed synthetically so a partial command still yields its code.
 
 use napi_derive::napi;
+use pi_builtins::kernel_route::{ArgvRoute, kernel_builtin_argv, route_argv};
 use pi_shell::bash::syntax::{
 	AssignValue, Command, CommandKind, Features, HereDoc, List, ParseErrorKind, Part, Redir,
 	RedirFd, RedirOp, RedirTarget, Simple, Word, WordPart, ansi_decode_all, parse_all,
@@ -566,6 +567,66 @@ impl Scan<'_> {
 		Some(route_argv(spec, &argv))
 	}
 
+	/// The word as the shell spells it after quote removal, expansions kept
+	/// verbatim (`"$dir"/new.py` → `$dir/new.py`).
+	///
+	/// A heredoc destination is recorded before the shell expands it, so its
+	/// variable values are unknown; keeping the expansion text is what makes
+	/// the write receipt name the path the command targets instead of only
+	/// its literal tail.
+	fn raw_word_text(&self, word: &WordInfo) -> String {
+		let bytes = self.source.as_bytes();
+		let slice = bytes.get(word.start..word.end).unwrap_or_default();
+		let mut out = Vec::with_capacity(slice.len());
+		let mut index = 0;
+		while index < slice.len() {
+			match slice[index] {
+				b'\'' => {
+					index += 1;
+					while index < slice.len() && slice[index] != b'\'' {
+						out.push(slice[index]);
+						index += 1;
+					}
+					index += 1;
+				},
+				b'"' => {
+					index += 1;
+					while index < slice.len() && slice[index] != b'"' {
+						if slice[index] == b'\\'
+							&& slice
+								.get(index + 1)
+								.is_some_and(|&next| matches!(next, b'$' | b'`' | b'"' | b'\\' | b'\n'))
+						{
+							if slice[index + 1] != b'\n' {
+								out.push(slice[index + 1]);
+							}
+							index += 2;
+						} else {
+							out.push(slice[index]);
+							index += 1;
+						}
+					}
+					index += 1;
+				},
+				b'\\' => {
+					if let Some(&next) = slice.get(index + 1) {
+						if next != b'\n' {
+							out.push(next);
+						}
+						index += 2;
+					} else {
+						index += 1;
+					}
+				},
+				byte => {
+					out.push(byte);
+					index += 1;
+				},
+			}
+		}
+		String::from_utf8_lossy(&out).into_owned()
+	}
+
 	fn try_write(&mut self, command: &CommandInfo) -> bool {
 		let Some(Target::HereDoc { code, start, end }) =
 			command.stdin().map(|redirect| &redirect.target)
@@ -589,7 +650,7 @@ impl Scan<'_> {
 				else {
 					return false;
 				};
-				word.value.text.clone()
+				self.raw_word_text(word)
 			},
 			Some("tee") => {
 				let mut options = true;
@@ -603,7 +664,7 @@ impl Scan<'_> {
 				let Some(file) = file else {
 					return false;
 				};
-				file.value.text.clone()
+				self.raw_word_text(file)
 			},
 			_ => return false,
 		};
@@ -888,82 +949,6 @@ fn stdin_after_double_dash(args: &[WordInfo], index: usize) -> ProgramSource {
 	}
 }
 
-// ─── kernel argv routing ───────────────────────────────────────────────
-
-/// The argv grammar a kernel-cell builtin accepts before it falls through.
-struct KernelArgv {
-	/// Flag whose following argument is the program text (`-c`, `-e`).
-	code_flag:   &'static str,
-	/// Interpreter flags the kernel honors implicitly and skips over.
-	passthrough: &'static [&'static str],
-}
-
-const JS_ARGV: KernelArgv = KernelArgv { code_flag: "-e", passthrough: &[] };
-
-/// Where a kernel-cell builtin takes its program from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArgvRoute {
-	/// `-c CODE` / `-e CODE` followed by program arguments; the index is CODE's.
-	Code(usize),
-	/// No program argument: the program is read from stdin.
-	Stdin,
-	/// A script path at this index.
-	Script(usize),
-	/// Anything the kernel does not model; a real interpreter runs it.
-	External,
-}
-
-/// Classify an argv (program name excluded). `None` marks an argument whose
-/// text is unknown (non-UTF-8 at run time), which only a real interpreter can
-/// take.
-fn route_argv(spec: &KernelArgv, argv: &[Option<&str>]) -> ArgvRoute {
-	if argv.iter().any(Option::is_none) {
-		return ArgvRoute::External;
-	}
-	let mut index = 0;
-	while index < argv.len() {
-		let Some(arg) = argv[index] else {
-			return ArgvRoute::External;
-		};
-		if spec.passthrough.contains(&arg) {
-			index += 1;
-			continue;
-		}
-		if arg == spec.code_flag {
-			if argv.get(index + 1).is_none() {
-				return ArgvRoute::External;
-			}
-			// Node/Bun still parse options until -- or the first positional
-			// argument. Leave unsupported options to the native
-			// interpreter.
-			if argv
-				.get(index + 2)
-				.and_then(|arg| *arg)
-				.is_some_and(|arg| arg.starts_with('-') && arg != "--")
-			{
-				return ArgvRoute::External;
-			}
-			return ArgvRoute::Code(index + 1);
-		}
-		if arg == "-" {
-			return ArgvRoute::Stdin;
-		}
-		if arg.starts_with('-') {
-			return ArgvRoute::External;
-		}
-		return ArgvRoute::Script(index);
-	}
-	ArgvRoute::Stdin
-}
-
-/// Only JavaScript runtimes have implicit persistent-cell routing.
-fn kernel_builtin_argv(name: &str) -> Option<&'static KernelArgv> {
-	match name {
-		"node" | "nodejs" | "bun" if cfg!(unix) => Some(&JS_ARGV),
-		_ => None,
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -1011,6 +996,16 @@ mod tests {
 		assert_eq!(scan.writes[0].path, "src/foo.ts");
 		assert_eq!(scan.writes[0].code, "const x: number = 1;");
 		assert_eq!((scan.writes[0].start, scan.writes[0].end), (25, 45));
+	}
+
+	#[test]
+	fn written_paths_keep_their_expansions() {
+		// A destination the shell expands is still the path the write lands
+		// on; dropping `$dir` reported `/new.py` and lost the receipt.
+		let scan = scan_embedded_code("cat > \"$dir\"/new.py <<'EOF'\nx = 1\nEOF");
+		assert_eq!(scan.writes[0].path, "$dir/new.py");
+		let scan = scan_embedded_code("cat > \"${out}/a b.txt\" <<'EOF'\nx\nEOF");
+		assert_eq!(scan.writes[0].path, "${out}/a b.txt");
 	}
 
 	#[test]

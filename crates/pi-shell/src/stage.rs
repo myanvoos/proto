@@ -219,14 +219,22 @@ impl EventSink for StageTrace {
 							.truncate(stage.command.floor_char_boundary(COMMAND_LIMIT));
 					}
 				}
-				if argv
+				stage.route = if argv
 					.first()
 					.is_some_and(|arg| arg.as_slice() == b"protolens")
 				{
-					stage.route = "protolens".into();
-				} else if *resolved == ResolvedKind::Tool {
-					stage.route = "tool".into();
+					"protolens"
+				} else {
+					match resolved {
+						ResolvedKind::External => "external",
+						ResolvedKind::Function => "function",
+						// The JavaScript kernel builtins report the runtime
+						// they stand in for, as pi's kernel cell did.
+						ResolvedKind::Tool => kernel_route_name(argv.first()).unwrap_or("tool"),
+						_ => "shell",
+					}
 				}
+				.into();
 			},
 			EventData::CmdEnd { status, dur_ns, .. } => {
 				let Some(tag) = ev.command_tag() else {
@@ -253,8 +261,11 @@ impl EventSink for StageTrace {
 
 	fn wants_output(&self) -> bool {
 		// In-process writes (builtins, callouts such as `protolens`) carry
-		// their tag through the host's stream files; externals stay on their
-		// direct pipe, so a stage recorder never changes how they are spawned.
+		// their tag through the host's stream files. An external's output
+		// would only be attributable by spawning it on a pipe instead of
+		// `exec`ing its subshell, which changes signal delivery for the
+		// background jobs pi's cancellation relies on; the stage record keeps
+		// its own output only where the engine already tags it.
 		false
 	}
 
@@ -281,6 +292,18 @@ impl EventSink for StageTrace {
 			.data
 			.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
 		capture.truncated = capture.bytes > STREAM_LIMIT;
+	}
+}
+
+/// The runtime a JavaScript kernel builtin is routed as, from its command
+/// word; `None` for any other tool.
+fn kernel_route_name(arg: Option<&bstr::BString>) -> Option<&'static str> {
+	let name = arg?.to_str().ok()?;
+	let base = name.rsplit('/').next().unwrap_or(name);
+	match base {
+		"node" | "nodejs" => Some("node"),
+		"bun" => Some("bun"),
+		_ => None,
 	}
 }
 

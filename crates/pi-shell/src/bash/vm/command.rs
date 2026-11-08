@@ -2588,7 +2588,7 @@ fn spawned_external(
 			// result, a name with `/` as written.
 			let name = st(vp).argv[0].clone();
 			let name = if name.contains(&b'/') { name } else { path };
-			let (diag, status) = spawn_error(name, err);
+			let (diag, status) = spawn_error(k.proto_errors, name, err);
 			k.diag(cx, vp, line, diag);
 			let s = st(vp);
 			s.status = status;
@@ -4926,7 +4926,13 @@ fn refused(
 		if !executable
 			|| matches!(err.kind(), ErrorKind::ArgumentListTooLong | ErrorKind::OutOfMemory)
 		{
-			Diag::Refused { name, err }
+			// pi's shell reported a command word naming nothing at all as a
+			// missing command, whether it was a bare name or a path.
+			if k.proto_errors && enoent && stat.is_none() {
+				Diag::CommandNotFound { name }
+			} else {
+				Diag::Refused { name, err }
+			}
 		} else {
 			let text = match command_probe(k, cx, vp, &Probe::Read { path: path.clone() }) {
 				Err(key) => return Some(Flow::Block(key)),
@@ -5037,8 +5043,11 @@ fn zsh_refused(
 	None
 }
 
-fn spawn_error(name: BString, err: std::io::Error) -> (Diag, i32) {
+fn spawn_error(proto: bool, name: BString, err: std::io::Error) -> (Diag, i32) {
 	match err.kind() {
+		// pi's shell reported every command it could not run as a missing
+		// command, path or not; bash separates a path's `ENOENT`.
+		std::io::ErrorKind::NotFound if proto => (Diag::CommandNotFound { name }, 127),
 		std::io::ErrorKind::NotFound => (Diag::NoSuchFile { name }, 127),
 		std::io::ErrorKind::PermissionDenied => (Diag::PermissionDenied { name }, 126),
 		std::io::ErrorKind::IsADirectory => (Diag::IsADirectory { name }, 126),

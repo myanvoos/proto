@@ -153,6 +153,10 @@ pub struct ShellInit {
 	pub zsh_params:  Vec<(BString, BString)>,
 	/// Whose shell it is: a user's, or a program's ([`Profile::Tool`]).
 	pub profile:     Profile,
+	/// Report a missing command as pi's shell did (`command not found:
+	/// name`) instead of bash's order (`name: command not found`); line
+	/// numbers, statuses and every other message are unchanged.
+	pub proto_errors: bool,
 }
 
 /// Whose shell a [`Shell`] is, which decides whether it may touch its
@@ -203,6 +207,7 @@ impl Default for ShellInit {
 			startup:     Vec::new(),
 			zsh_params:  Vec::new(),
 			profile:     Profile::User,
+			proto_errors: false,
 		}
 	}
 }
@@ -493,6 +498,9 @@ pub struct Kernel {
 	pub exec_signals:       HashMap<RunId, i32>,
 	/// Signal death associated with the most recently reported run.
 	pub reported_signal:    Option<(RunId, i32)>,
+	/// Missing commands report in pi's word order
+	/// ([`ShellInit::proto_errors`]).
+	pub proto_errors:       bool,
 	/// Background jobs whose pid is still to be settled
 	/// ([`proc::Bang`]): imaged (a restored job still decides).
 	pub bangs:              Vec<proc::Bang>,
@@ -555,6 +563,7 @@ impl Kernel {
 			paused: false,
 			argv0,
 			shell_pid,
+			proto_errors: false,
 			dropped_fs: 0,
 			spawned: Vec::new(),
 			rand: state::Random::new(1),
@@ -962,7 +971,7 @@ impl Kernel {
 			Some(Some(Record::Misc(name))) => name.as_slice(),
 			_ => self.argv0.as_slice(),
 		};
-		render(diag, DiagSite { shell_name, origin, line, utf8 })
+		render(diag, DiagSite { shell_name, origin, line, utf8, proto: self.proto_errors })
 	}
 
 	/// The `Diag` event of a diagnostic `vp` prints.
@@ -1437,6 +1446,7 @@ impl Shell {
 		};
 		let root = Root::load(cx.store).map_err(ShellError::Store)?;
 		let mut k = Kernel::new(engine, root, init.argv0.clone(), shell_pid);
+		k.proto_errors = init.proto_errors;
 		k.rand = state::Random::new((cx.host.random() & 0xffff_ffff) as u32);
 		k.root.set_misc(cx.store, MiscKey::Random, k.rand.encode());
 		k.start_ns = cx.host.now_ns();
@@ -2449,6 +2459,21 @@ impl Shell {
 						})
 				})
 			})
+			.count()
+	}
+
+	/// Number of the root's background jobs that are still running, in-engine
+	/// work included (`sleep 30 &`, a loop, a builtin pipeline): a host that
+	/// retains a shell for its background work asks this between scripts.
+	/// Finished jobs stay in the table for `wait`; their status is `Done`.
+	pub fn live_background_jobs(&self) -> usize {
+		let Some(root) = self.procs.first() else {
+			return 0;
+		};
+		root
+			.jobs
+			.iter()
+			.filter(|job| !matches!(job.state, proc::JobState::Done(_)))
 			.count()
 	}
 

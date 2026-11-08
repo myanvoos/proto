@@ -31,6 +31,7 @@ use crate::{
 	bash::trace::{RunTrace, SegmentSource},
 	cancel::{AbortReason, AbortToken, CancelToken},
 	git::is_git_repo_location_var,
+	host::is_python_harness_env_var,
 	minimizer,
 	observe::FsObservation,
 	output_decode::CaptureDecoder,
@@ -370,11 +371,11 @@ impl Shell {
 			.map_or_else(Vec::new, Children::pids)
 	}
 
-	/// Number of live external background jobs tracked by the persistent
-	/// session. The host retains a per-call shell while this is nonzero, since
-	/// dropping it would kill its children. Exited children are reaped
-	/// without discarding their status, so a later `wait` still sees the exit
-	/// code. 0 when the session is gone.
+	/// Number of background jobs (`cmd &`) the persistent session still runs,
+	/// in-engine work included (`sleep 30 &`, a loop). The host retains a
+	/// per-call shell while this is nonzero, since dropping it would end that
+	/// work. Exited children are reaped without discarding their status, so a
+	/// later `wait` still sees the exit code. 0 when the session is gone.
 	pub async fn live_background_job_count(&self) -> u32 {
 		let guard = self.session.lock().await;
 		let Some(core) = guard.as_ref() else {
@@ -382,7 +383,7 @@ impl Shell {
 		};
 		core
 			.session
-			.live_external_jobs()
+			.live_background_jobs()
 			.await
 			.map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX))
 	}
@@ -858,7 +859,12 @@ fn copy_env_into(
 			continue;
 		};
 		let normalized_key = normalize_inherited_env_key(key);
-		if should_skip_env_var(normalized_key) || is_git_repo_location_var(normalized_key) {
+		// The Python harness package root is not an inherited variable: a
+		// command folds it into its `PYTHONPATH` ([`crate::session`]).
+		if should_skip_env_var(normalized_key)
+			|| is_git_repo_location_var(normalized_key)
+			|| is_python_harness_env_var(normalized_key.as_bytes())
+		{
 			continue;
 		}
 		if normalized_key == "PATH" {
@@ -889,7 +895,10 @@ fn copy_env_into(
 fn apply_session_env(vars: &mut HashMap<String, String>, session_env: &HashMap<String, String>) {
 	for (key, value) in session_env {
 		let normalized_key = normalize_inherited_env_key(key);
-		if should_skip_env_var(normalized_key) || is_git_repo_location_var(normalized_key) {
+		if should_skip_env_var(normalized_key)
+			|| is_git_repo_location_var(normalized_key)
+			|| is_python_harness_env_var(normalized_key.as_bytes())
+		{
 			continue;
 		}
 		// The agent forwards its whole host env here, so temp paths need the
@@ -1026,6 +1035,7 @@ fn should_skip_env_var(key: &str) -> bool {
 	if is_macos_malloc_stack_logging_var(key) {
 		return true;
 	}
+
 
 	matches!(
 		key,
