@@ -140,6 +140,13 @@ func (h *eventHub) events(ctx context.Context) <-chan admin.Event {
 
 // serve opens the persistent export, attaches its native client, and handles shutdown.
 func serve(args []string) error {
+	return serveInternal(args, nil, nil)
+}
+
+// serveInternal runs the daemon until a signal, an admin stop request, or
+// `stop` closes. `ready` runs once the admin socket accepts connections; an
+// embedded start uses it instead of spawning a child process.
+func serveInternal(args []string, stop <-chan struct{}, ready func()) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	state := flags.String("state", defaultState, "persistent state directory")
 	mount := flags.String("mount", defaultMount, "folder where checkouts appear")
@@ -277,9 +284,15 @@ func serve(args []string) error {
 	go func() {
 		served <- fmt.Errorf("admin serve: %w", admin.Serve(adminListener, welcome, handler, hub.events))
 	}()
-	sigs := make(chan os.Signal, 2)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(sigs)
+	var sigs chan os.Signal
+	if stop == nil {
+		sigs = make(chan os.Signal, 2)
+		signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigs)
+	}
+	if ready != nil {
+		ready()
+	}
 	force := false
 	for {
 		select {
@@ -288,6 +301,7 @@ func serve(args []string) error {
 			return err
 		case <-stopRequests:
 		case <-sigs:
+		case <-stop:
 		}
 		if err = release(force); err != nil {
 			log.Printf("unmount: %v; stop again to force", err)

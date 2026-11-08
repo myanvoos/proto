@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
+import { hasEmbeddedProtofs } from "./embedded";
 
 /** Test seam for the filesystem, executable and platform inputs of protofs resolution. */
 export interface ProtofsCommandEnvironment {
@@ -11,6 +12,8 @@ export interface ProtofsCommandEnvironment {
 	moduleDir?: string;
 	exists?: (filePath: string) => boolean;
 	which?: (command: string) => string | null;
+	/** Whether `libprotofs` is loadable; defaults to probing the configured library. */
+	embedded?: boolean;
 }
 
 /** `darwin-arm64`, `linux-x64`, … or undefined for an unsupported host. */
@@ -56,7 +59,12 @@ export function resolveProtofsCommand(
 	for (const candidate of candidates) {
 		if (exists(candidate)) return candidate;
 	}
-	return which("protofs") ? "protofs" : undefined;
+	if (which("protofs")) return "protofs";
+	// The shared library can run the daemon without an executable; the command
+	// is then only the daemon key and the fallback if the library fails to load.
+	const embeddedAvailable = environment.embedded ?? hasEmbeddedProtofs(settings.get("protofs.library"));
+	if (settings.get("protofs.embedded") !== false && embeddedAvailable) return "protofs";
+	return undefined;
 }
 
 /**

@@ -50,15 +50,15 @@ interface NewReply {
 }
 
 /** One operation on the daemon `command` manages, starting it again once if it went away. */
-async function call<T>(command: string, op: string, args: object): Promise<T> {
-	const { socket } = await startDaemon(command);
+async function call<T>(command: string, op: string, args: object, embedded = true): Promise<T> {
+	const { socket } = await startDaemon(command, embedded);
 	try {
 		return await callSocket<T>(socket, op, args);
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code !== "ECONNREFUSED" && code !== "ENOENT") throw err;
 		forgetDaemon(command);
-		return callSocket<T>((await startDaemon(command)).socket, op, args);
+		return callSocket<T>((await startDaemon(command, embedded)).socket, op, args);
 	}
 }
 
@@ -76,9 +76,9 @@ function checkoutName(agentId: string): string {
 }
 
 /** Remove a checkout; one already gone counts as removed. */
-async function removeCheckout(command: string, checkout: string): Promise<void> {
+async function removeCheckout(command: string, checkout: string, embedded = true): Promise<void> {
 	try {
-		await call(command, "rm", { checkout });
+		await call(command, "rm", { checkout }, embedded);
 	} catch (err) {
 		if (!(err instanceof ProtofsError && err.code === "not_found")) throw err;
 	}
@@ -88,9 +88,9 @@ async function removeCheckout(command: string, checkout: string): Promise<void> 
  * Remove `checkout`, then delete `dir`. A removal that cannot be confirmed
  * keeps `dir` and the checkout record in it, so `proto worktree clear` can retry.
  */
-async function releaseCheckoutRecord(dir: string, command: string, checkout: string): Promise<void> {
+async function releaseCheckoutRecord(dir: string, command: string, checkout: string, embedded = true): Promise<void> {
 	try {
-		await removeCheckout(command, checkout);
+		await removeCheckout(command, checkout, embedded);
 	} catch (err) {
 		logger.warn("protofs checkout removal failed; `proto worktree clear` retries it", {
 			dir,
@@ -107,14 +107,14 @@ async function releaseCheckoutRecord(dir: string, command: string, checkout: str
  * recorded one. Throws when the checkout cannot be removed (the record then stays
  * for a later retry); `proto worktree clear` calls this before deleting the dir.
  */
-export async function releaseProtofsCheckout(dir: string): Promise<boolean> {
+export async function releaseProtofsCheckout(dir: string, embedded = true): Promise<boolean> {
 	let record: CheckoutRecord;
 	try {
 		record = (await Bun.file(path.join(dir, PROTOFS_CHECKOUT_FILE)).json()) as CheckoutRecord;
 	} catch {
 		return false;
 	}
-	await removeCheckout(record.command, record.checkout);
+	await removeCheckout(record.command, record.checkout, embedded);
 	return true;
 }
 
@@ -124,12 +124,14 @@ class ProtofsWorkspace implements IsolationWorkspace {
 	#baseDir: string;
 	readonly #command: string;
 	readonly #checkout: string;
+	readonly #embedded: boolean;
 
-	constructor(dir: string, baseDir: string, command: string, checkout: string) {
+	constructor(dir: string, baseDir: string, command: string, checkout: string, embedded: boolean) {
 		this.dir = dir;
 		this.#baseDir = baseDir;
 		this.#command = command;
 		this.#checkout = checkout;
+		this.#embedded = embedded;
 	}
 
 	/** The checkout stays where it is; its record leaves the deterministic slot so a later run with this id keeps it. */
@@ -140,7 +142,7 @@ class ProtofsWorkspace implements IsolationWorkspace {
 
 	/** Remove the checkout, then its record; a checkout that cannot be removed keeps its record for `proto worktree clear`. */
 	async cleanup(): Promise<void> {
-		await releaseCheckoutRecord(this.#baseDir, this.#command, this.#checkout);
+		await releaseCheckoutRecord(this.#baseDir, this.#command, this.#checkout, this.#embedded);
 	}
 }
 
@@ -149,14 +151,14 @@ class ProtofsWorkspace implements IsolationWorkspace {
  * protofs executable `command`. Failures say what is wrong with protofs; there is
  * no silent fallback to native isolation.
  */
-export function protofsWorkspace(command: string): OpenWorkspace {
+export function protofsWorkspace(command: string, embedded = true): OpenWorkspace {
 	return async (repoRoot, agentId) => {
 		const baseDir = taskIsolationBaseDir(repoRoot, agentId);
 		// A dead run with this id may still record a checkout. Reusing the slot
 		// deletes that record, so a removal that fails has to move the record
 		// and its owner marker aside first — or leave them and refuse the slot.
 		try {
-			await releaseProtofsCheckout(baseDir);
+			await releaseProtofsCheckout(baseDir, embedded);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			const preserved = await vacateIsolationSlot(baseDir);
@@ -184,18 +186,18 @@ export function protofsWorkspace(command: string): OpenWorkspace {
 		// deleted only after removal is confirmed.
 		let recorded = false;
 		try {
-			await startDaemon(command);
+			await startDaemon(command, embedded);
 			const record: CheckoutRecord = { command, checkout };
 			await atomicWriteJson(path.join(baseDir, PROTOFS_CHECKOUT_FILE), record);
 			recorded = true;
-			const reply = await call<NewReply>(command, "new", { dir: repoRoot, name: checkout });
-			return new ProtofsWorkspace(reply.checkout.path, baseDir, command, checkout);
+			const reply = await call<NewReply>(command, "new", { dir: repoRoot, name: checkout }, embedded);
+			return new ProtofsWorkspace(reply.checkout.path, baseDir, command, checkout, embedded);
 		} catch (err) {
 			// `exists` refused the name: that checkout predates this attempt, so
 			// only the new local record goes — removing the checkout would
 			// delete the older run's work.
 			const refusedExisting = err instanceof ProtofsError && err.code === "exists";
-			if (recorded && !refusedExisting) await releaseCheckoutRecord(baseDir, command, checkout);
+			if (recorded && !refusedExisting) await releaseCheckoutRecord(baseDir, command, checkout, embedded);
 			else await fs.rm(baseDir, { recursive: true, force: true });
 			throw new Error(
 				`protofs isolation failed: ${err instanceof Error ? err.message : String(err)} (set orchestrator.isolation.mode to a native backend to bypass protofs)`,

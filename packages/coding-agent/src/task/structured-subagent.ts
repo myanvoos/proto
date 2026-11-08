@@ -422,7 +422,9 @@ function buildExecutorOptions(
 function openIsolatedWorkspace(settings: Settings): OpenWorkspace {
 	const mode = settings.get("orchestrator.isolation.mode");
 	const protofs = mode === "auto" ? protofsCommand(settings) : undefined;
-	return protofs ? protofsWorkspace(protofs) : nativeWorkspace(parseIsolationMode(mode));
+	return protofs
+		? protofsWorkspace(protofs, settings.get("protofs.embedded") !== false && !settings.get("protofs.path"))
+		: nativeWorkspace(parseIsolationMode(mode));
 }
 
 function buildFailureResult(

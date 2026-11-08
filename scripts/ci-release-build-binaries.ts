@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { COMPILED_EXTERNAL_DEPENDENCIES, compileCodingAgent } from "../packages/coding-agent/scripts/compile-binary";
-import { buildProtofs } from "./build-protofs";
+import { buildProtofs, buildProtofsLibrary, hostProtofsTarget } from "./build-protofs";
 
 interface BinaryTarget {
 	id: string;
@@ -142,6 +142,18 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 		minifyIdentifiers: true,
 		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),
 	});
+
+	// The in-process protofs library is built on its host target; other targets
+	// (musl) ship the executable fallback.
+	let host: string | undefined;
+	try {
+		host = hostProtofsTarget();
+	} catch {
+		host = undefined;
+	}
+	if (host === target.id) {
+		await buildProtofsLibrary({ target: target.id, root: repoRoot });
+	}
 
 	await buildProtofs({ target: target.id, dryRun: isDryRun });
 

@@ -13,7 +13,7 @@ function settings(overrides: Record<string, unknown> = {}): Settings {
 	});
 }
 
-function environment(existing: readonly string[], which: string | null = null) {
+function environment(existing: readonly string[], which: string | null = null, embedded = false) {
 	return {
 		execPath: EXEC_PATH,
 		platform: "darwin" as const,
@@ -21,6 +21,7 @@ function environment(existing: readonly string[], which: string | null = null) {
 		moduleDir: MODULE_DIR,
 		exists: (candidate: string) => existing.includes(candidate),
 		which: () => which,
+		embedded,
 	};
 }
 
@@ -71,5 +72,12 @@ describe("protofs command resolution", () => {
 	test("falls back to protofs on PATH, and returns undefined when nothing exists", () => {
 		expect(resolveProtofsCommand(settings(), environment([], "/usr/bin/protofs"))).toBe("protofs");
 		expect(resolveProtofsCommand(settings(), environment([], null))).toBeUndefined();
+	});
+
+	test("a loadable library resolves protofs without an executable unless protofs.embedded is off", () => {
+		expect(resolveProtofsCommand(settings(), environment([], null, true))).toBe("protofs");
+		expect(
+			resolveProtofsCommand(settings({ "protofs.embedded": false }), environment([], null, true)),
+		).toBeUndefined();
 	});
 });

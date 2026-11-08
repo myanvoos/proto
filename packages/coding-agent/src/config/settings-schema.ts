@@ -3385,6 +3385,30 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"protofs.embedded": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "In-process protofs",
+			description:
+				"Run the protofs daemon inside proto through the bundled `libprotofs` shared library instead of spawning the `protofs` executable; falls back to the executable when the library is missing",
+		},
+	},
+
+	"protofs.library": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "protofs Library",
+			description:
+				"Path to `libprotofs` for in-process protofs; unset uses the sibling of the proto binary, the development build, then the source build",
+		},
+	},
+
 	"orchestrator.isolation.apply": {
 		type: "boolean",
 		default: true,

@@ -17,6 +17,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { PROTOCOL_VERSION } from "./client";
+import { startEmbeddedDaemon } from "./embedded";
 
 /** A running protofs daemon. */
 export interface Daemon {
@@ -68,11 +69,21 @@ async function report(command: string, verb: "start" | "status"): Promise<Daemon
 	return { socket: status.socket, mount: path.join(parent, path.basename(status.mount)) };
 }
 
-/** The daemon `command` manages, started unless it runs; a failure is retried on the next call. */
-export function startDaemon(command: string): Promise<Daemon> {
+/**
+ * The daemon `command` manages, started unless it runs; a failure is retried on
+ * the next call. With `preferEmbedded`, the vendored shared library runs the
+ * daemon in-process first, falling back to the executable.
+ */
+export function startDaemon(command: string, preferEmbedded = true): Promise<Daemon> {
 	let daemon = daemons.get(command);
 	if (!daemon) {
-		const started = report(command, "start");
+		const started = (async () => {
+			if (preferEmbedded) {
+				const embedded = await startEmbeddedDaemon().catch(() => undefined);
+				if (embedded) return embedded;
+			}
+			return report(command, "start");
+		})();
 		started.catch(() => {
 			if (daemons.get(command) === started) daemons.delete(command);
 		});

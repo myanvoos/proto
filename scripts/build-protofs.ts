@@ -42,6 +42,25 @@ export function defaultProtofsOutput(target: string): string {
 	return path.join(repoRoot, "packages", "coding-agent", "binaries", `protofs-${target}`);
 }
 
+/** Shared-library extension for the in-process daemon. */
+export function protofsLibraryExtension(goos: ProtofsTarget["goos"]): "dylib" | "so" | "dll" {
+	if (goos === "darwin") return "dylib";
+	if (goos === "linux") return "so";
+	return "dll";
+}
+
+/** Default `libprotofs` path for a target. */
+export function defaultProtofsLibraryOutput(target: string): string {
+	const parsed = protofsTarget(target);
+	return path.join(
+		repoRoot,
+		"packages",
+		"coding-agent",
+		"binaries",
+		`libprotofs-${parsed.id}.${protofsLibraryExtension(parsed.goos)}`,
+	);
+}
+
 export interface BuildProtofsOptions {
 	target?: string;
 	out?: string;
@@ -81,8 +100,59 @@ export async function buildProtofs(options: BuildProtofsOptions = {}): Promise<s
 	return out;
 }
 
+/** Build the in-process shared library for the host target (cgo is required). */
+export async function buildProtofsLibrary(options: BuildProtofsOptions = {}): Promise<string> {
+	const root = options.root ?? repoRoot;
+	const target = protofsTarget(options.target ?? hostProtofsTarget());
+	const host = hostProtofsTarget();
+	if (target.id !== host || target.id.includes("musl")) {
+		throw new Error(
+			`libprotofs is built on its host target (${host}); ${target.id} uses the protofs executable fallback`,
+		);
+	}
+	const out = path.resolve(
+		root,
+		options.out ??
+			path.join(
+				"packages",
+				"coding-agent",
+				"binaries",
+				`libprotofs-${target.id}.${protofsLibraryExtension(target.goos)}`,
+			),
+	);
+	if (options.dryRun) {
+		console.log(
+			`DRY RUN GOOS=${target.goos} GOARCH=${target.goarch} CGO_ENABLED=1 go build -tags cshared -buildmode=c-shared -o ${out} .`,
+		);
+		return out;
+	}
+	const go = $which("go");
+	if (!go) {
+		throw new Error(
+			"go was not found on PATH; install Go 1.27.3+ (CI installs it, or run `brew install go`) and retry",
+		);
+	}
+	await fs.mkdir(path.dirname(out), { recursive: true });
+	console.log(`Building libprotofs ${target.id} -> ${out}`);
+	const proc = Bun.spawn(
+		[go, "build", "-trimpath", "-tags", "cshared", "-buildmode=c-shared", "-ldflags", "-s -w", "-o", out, "."],
+		{
+			cwd: path.join(root, "protofs"),
+			env: { ...process.env, GOOS: target.goos, GOARCH: target.goarch, CGO_ENABLED: "1" },
+			stdout: "inherit",
+			stderr: "inherit",
+		},
+	);
+	const exitCode = await proc.exited;
+	if (exitCode !== 0)
+		throw new Error(`go build -buildmode=c-shared failed for protofs ${target.id} (exit ${exitCode})`);
+	const header = out.replace(/\.(dylib|so|dll)$/, ".h");
+	await fs.rm(header, { force: true });
+	return out;
+}
+
 function usage(): string {
-	return `usage: bun scripts/build-protofs.ts [--target <id>] [--out <file>] [--dry-run]\n\nTargets: ${PROTOFS_TARGETS.map(t => t.id).join(", ")}`;
+	return `usage: bun scripts/build-protofs.ts [--target <id>] [--out <file>] [--dry-run] [--no-library]\n\nTargets: ${PROTOFS_TARGETS.map(t => t.id).join(", ")}`;
 }
 
 async function main(): Promise<void> {
@@ -90,6 +160,7 @@ async function main(): Promise<void> {
 	let target: string | undefined;
 	let out: string | undefined;
 	let dryRun = false;
+	let library = true;
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--target") {
@@ -104,6 +175,8 @@ async function main(): Promise<void> {
 			out = arg.slice("--out=".length);
 		} else if (arg === "--dry-run") {
 			dryRun = true;
+		} else if (arg === "--no-library") {
+			library = false;
 		} else if (arg === "--help" || arg === "-h") {
 			console.log(usage());
 			return;
@@ -112,6 +185,14 @@ async function main(): Promise<void> {
 		}
 	}
 	await buildProtofs({ target, out, dryRun });
+	if (library) {
+		const resolved = target ?? hostProtofsTarget();
+		if (resolved === hostProtofsTarget() && !resolved.includes("musl")) {
+			await buildProtofsLibrary({ target: resolved, dryRun });
+		} else {
+			console.log(`Skipping libprotofs for ${resolved}: built on its host target; the executable is the fallback`);
+		}
+	}
 }
 
 if (import.meta.main) {
