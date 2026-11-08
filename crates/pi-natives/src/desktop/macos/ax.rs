@@ -151,7 +151,8 @@ impl NodeValues {
 			Err(_) => NodeBatch::Lone(
 				attributes
 					.map(|index| {
-						// Do not add a timeout for naming-only metadata when the batch is unresponsive.
+						// Do not add a timeout for naming-only metadata when the
+						// batch is unresponsive.
 						if index == PLACEHOLDER {
 							Err(AXError::CannotComplete)
 						} else {
@@ -910,7 +911,8 @@ fn element_gone() -> DesktopError {
 }
 
 fn set_date_value(element: &AXUIElement, text: &str, current: f64) -> CoreResult<()> {
-	// CF caches the system zone per process; the target app follows changes to it.
+	// CF caches the system zone per process; the target app follows changes to
+	// it.
 	CFTimeZone::reset_system();
 	let zone = CFTimeZone::system()
 		.ok_or_else(|| DesktopError::ax_failed("the system time zone is unavailable"))?;
@@ -1046,8 +1048,8 @@ mod popup {
 	/// reading the popup's `AXValue` back. A menu this call opened is closed
 	/// again whenever no choice is made.
 	pub(super) fn choose(popup: &AXUIElement, value: &str) -> CoreResult<()> {
-		// Already showing `value`: the read-back verdict holds without opening the
-		// menu.
+		// Already showing `value`: the read-back verdict holds without opening
+		// the menu.
 		if copy_string(popup, "AXValue").as_deref() == Some(value) {
 			return Ok(());
 		}
@@ -1179,8 +1181,8 @@ mod popup {
 				"{action} published no options within {} ms",
 				MENU_OPEN_WAIT.as_millis()
 			));
-			// Close an empty menu so the next action opens it instead of toggling it
-			// shut; a menu that stays open ends the attempts.
+			// Close an empty menu so the next action opens it instead of toggling
+			// it shut; a menu that stays open ends the attempts.
 			if !close_menu(popup) {
 				left_open = true;
 				break;

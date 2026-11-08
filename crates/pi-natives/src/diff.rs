@@ -234,14 +234,16 @@ fn myers_diff_bounded(old: &[u32], new: &[u32], max_edit_distance: usize) -> Opt
 
 fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
 	// Run the original search while it is within the compatibility budget. The
-	// bounded frontier has the same tie-breaking as the unbounded implementation,
-	// so all results at or below the cap remain byte-for-byte compatible.
+	// bounded frontier has the same tie-breaking as the unbounded
+	// implementation, so all results at or below the cap remain byte-for-byte
+	// compatible.
 	if let Some(runs) = myers_diff_bounded(old, new, MAX_MYERS_EDIT_DISTANCE) {
 		return runs;
 	}
 
-	// Once the budget is exceeded, retain equal edges and replace only the middle.
-	// This keeps large files readable while making the expensive path bounded.
+	// Once the budget is exceeded, retain equal edges and replace only the
+	// middle. This keeps large files readable while making the expensive path
+	// bounded.
 	let (prefix, suffix) = trim_common_edges(old, new);
 	let old_middle_end = old.len() - suffix;
 	let new_middle_end = new.len() - suffix;

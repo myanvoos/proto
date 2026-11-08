@@ -198,8 +198,8 @@ mod posix {
 	use base64::{Engine, engine::general_purpose::STANDARD};
 	use serde::Serialize;
 
-	// Explicit resource ceilings fail new captures rather than evicting/truncating
-	// live writers.
+	// Explicit resource ceilings fail new captures rather than
+	// evicting/truncating live writers.
 	const MAX_STREAMS: usize = 256;
 	const MAX_SCOPES: usize = 128;
 	const MAX_RUN_ID_BYTES: usize = 1024;
@@ -296,9 +296,9 @@ mod posix {
 			let (wake_read, wake) = pipe()?;
 			let (cancel_read, cancel) = pipe()?;
 			let (requests, receiver) = mpsc::sync_channel(1);
-			// dup shares file-status flags. The child owns this output description; restore
-			// its flags at close. Captured fd 1/2 are separate, blocking pipe write
-			// descriptions.
+			// dup shares file-status flags. The child owns this output
+			// description; restore its flags at close. Captured fd 1/2
+			// are separate, blocking pipe write descriptions.
 			set_flags(transport.as_raw_fd(), original_stdout_flags | libc::O_NONBLOCK)?;
 			let reader = match thread::Builder::new()
 				.name("kernel-stdio".into())
@@ -346,7 +346,8 @@ mod posix {
 				});
 				return Ok(());
 			}
-			// C stdio buffers belong to the previous scope, before fd reassignment.
+			// C stdio buffers belong to the previous scope, before fd
+			// reassignment.
 			self.flush()?;
 			let run_id: Arc<str> = run_id.into();
 			let (stdout_read, stdout) = pipe()?;
@@ -401,8 +402,9 @@ mod posix {
 		}
 
 		pub(super) fn flush(&self) -> io::Result<u64> {
-			// Flush C stdio as well as already-written raw descriptors. Interpreter-level
-			// buffering is the caller's responsibility before requesting this native fence.
+			// Flush C stdio as well as already-written raw descriptors.
+			// Interpreter-level buffering is the caller's responsibility
+			// before requesting this native fence.
 			if unsafe { libc::fflush(std::ptr::null_mut()) } != 0 {
 				return Err(io::Error::last_os_error());
 			}
@@ -522,7 +524,8 @@ mod posix {
 				if let Ok(request) = requests.try_recv() {
 					let result = match request.command {
 						Command::Add { run_id, stdout, stderr } => {
-							// Retire only EOF pipes. Live inherited writers are never evicted.
+							// Retire only EOF pipes. Live inherited writers are never
+							// evicted.
 							streams.retain(|stream| !at_eof(stream.fd.as_raw_fd()));
 							if streams.len() + 2 > MAX_STREAMS {
 								Err(io::Error::other(
@@ -580,10 +583,10 @@ mod posix {
 		sequence: &mut u64,
 		buffer: &mut [u8],
 	) -> io::Result<u64> {
-		// The pump is the only reader. Snapshot the unread counts before draining any
-		// stream; this side-channel fence cannot collide with arbitrary user bytes
-		// and cannot starve when descendants keep writing. FIONREAD on pipes is
-		// available on Linux and Darwin.
+		// The pump is the only reader. Snapshot the unread counts before draining
+		// any stream; this side-channel fence cannot collide with arbitrary
+		// user bytes and cannot starve when descendants keep writing.
+		// FIONREAD on pipes is available on Linux and Darwin.
 		let counts = streams
 			.iter()
 			.map(|stream| pending_bytes(stream.fd.as_raw_fd()))

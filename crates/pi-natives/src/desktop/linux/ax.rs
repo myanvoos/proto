@@ -294,7 +294,8 @@ impl AtSpiAx {
 				if dbus
 					.get_connection_unix_process_id(bus_name.clone().into())
 					.await
-					.ok() == Some(pid)
+					.ok()
+					== Some(pid)
 				{
 					return Ok(app);
 				}
