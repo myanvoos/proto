@@ -5,11 +5,13 @@ import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { AsyncJobManager } from "../async/job-manager";
 import { isProviderEnabled } from "../capability";
 import { invalidModelSelectorReason, resolveAgentSpawnModelSelection } from "../config/model-resolver";
+import type { Settings } from "../config/settings";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { registerArtifactsDir } from "../internal-urls/registry-helpers";
 import { MCPManager } from "../mcp/manager";
 import subagentUserPromptTemplate from "../prompts/system/subagent-user-prompt.md" with { type: "text" };
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
+import { protofsCommand } from "../protofs/settings";
 import { MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { WorkerEffort } from "../thinking";
 import type { ToolSession } from "../tools";
@@ -29,11 +31,14 @@ import {
 	type IsolationContext,
 	makeIsolationCommitMessage,
 	mergeIsolatedChanges,
+	nativeWorkspace,
+	type OpenWorkspace,
 	persistNestedPatches,
 	prepareIsolationContext,
 	renderIsolationSummary,
 	runIsolatedSubprocess,
 } from "./isolation-runner";
+import { protofsWorkspace } from "./protofs";
 import { describeDisabledAgent, describeUnknownAgent, resolveSpawnPreflight } from "./spawn-policy";
 import type { AgentDefinition, AgentProgress, SingleResult } from "./types";
 import { recordSubagentRun } from "./usage-rollup";
@@ -413,6 +418,13 @@ function buildExecutorOptions(
 	};
 }
 
+/** Isolated runs work in protofs checkouts when isolation mode is auto and protofs is found, else in native clones. */
+function openIsolatedWorkspace(settings: Settings): OpenWorkspace {
+	const mode = settings.get("orchestrator.isolation.mode");
+	const protofs = mode === "auto" ? protofsCommand(settings) : undefined;
+	return protofs ? protofsWorkspace(protofs) : nativeWorkspace(parseIsolationMode(mode));
+}
+
 function buildFailureResult(
 	request: StructuredSubagentRequest,
 	policy: EffectiveSubagentPolicy,
@@ -586,7 +598,7 @@ async function executeStructuredSubagent(
 					result = await runIsolatedSubprocess({
 						baseOptions,
 						context: isolationContext,
-						preferredBackend: parseIsolationMode(request.session.settings.get("orchestrator.isolation.mode")),
+						openWorkspace: openIsolatedWorkspace(request.session.settings),
 						agentId: id,
 						mergeMode: policy.mergeMode,
 						artifactsDir: lease.artifactsDir,

@@ -142,6 +142,7 @@ import {
 import { MCP_CONNECTION_STATUS_EVENT_CHANNEL, type McpConnectionStatusEvent } from "./mcp/startup-events";
 import { type OrchestratorParent, OrchestratorRuntime } from "./orchestrator/runtime";
 import mcpXdevGuidanceTemplate from "./prompts/system/mcp-xdev-guidance.md" with { type: "text" };
+import { protofsCommand } from "./protofs/settings";
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
 import { type AgentKind, type AgentRef, AgentRegistry, isSideAgentId, MAIN_AGENT_ID } from "./registry/agent-registry";
 import {
@@ -685,6 +686,7 @@ export interface BuildSystemPromptOptions {
 	appendPrompt?: string;
 	inlineToolDescriptors?: boolean;
 	includeWorkspaceTree?: boolean;
+	protofs?: string;
 }
 
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
@@ -706,6 +708,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		includeWorkspaceTree: options.includeWorkspaceTree,
 		toolNames,
 		tools: promptTools,
+		protofs: options.protofs,
 	});
 }
 
@@ -2701,6 +2704,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				),
 				fleetEnabled: !restrictToolNames && isIrcEnabled(settings, options.taskDepth ?? 0),
 				autoQaEnabled: !restrictToolNames && isAutoQaEnabled(settings),
+				protofs: protofsCommand(settings),
 				secretsEnabled,
 				workspaceTree: workspaceTreePromise,
 				includeWorkspaceTree,

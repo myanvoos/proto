@@ -9,6 +9,7 @@ import {
 	needsNativeTeardown,
 	readRetainedBackend,
 } from "../task/isolation-ownership";
+import { PROTOFS_CHECKOUT_FILE, releaseProtofsCheckout } from "../task/protofs";
 import * as git from "../utils/git";
 
 type WorktreeKind = "pr-checkout" | "task-isolation" | "empty" | "stray";
@@ -19,6 +20,9 @@ interface WorktreeEntry {
 	path: string;
 
 	kind: WorktreeKind;
+
+	/** A protofs checkout record owns this isolation dir (no native `m` mount). */
+	protofs?: boolean;
 
 	parentRepo?: string;
 
@@ -116,7 +120,10 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<vo
 				}
 			} else {
 				if (target.kind === "task-isolation" || path.basename(target.path).includes(".retained-")) {
-					await stopRetainedWorkspace(target.path);
+					// A protofs checkout record names work outside this dir; release it
+					// first, and skip native teardown when that record owned the workspace.
+					const released = await releaseProtofsCheckout(target.path);
+					if (!released) await stopRetainedWorkspace(target.path);
 				}
 				await fs.rm(target.path, { recursive: true, force: true });
 				if (target.parentRepo) parentsToPrune.add(target.parentRepo);
@@ -211,7 +218,8 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 		return classifyPrCheckout(dir, gitEntry);
 	}
 
-	let isIsolation = await Bun.file(path.join(dir, ISOLATION_OWNER_FILE)).exists();
+	const hasProtofsRecord = await Bun.file(path.join(dir, PROTOFS_CHECKOUT_FILE)).exists();
+	let isIsolation = hasProtofsRecord || (await Bun.file(path.join(dir, ISOLATION_OWNER_FILE)).exists());
 	if (!isIsolation) {
 		for (const mountDir of WORKER_ISOLATION_MOUNT_DIRS) {
 			const mountStat = await fs.stat(path.join(dir, mountDir)).catch(() => null);
@@ -226,7 +234,7 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 	return {
 		path: dir,
 		kind: "task-isolation",
-
+		protofs: hasProtofsRecord,
 		orphanReason: live ? undefined : "task-isolation leftover (no live task owns it)",
 	};
 }
@@ -291,7 +299,7 @@ function formatEntryDetail(entry: WorktreeEntry): string {
 		const branch = entry.branch ?? "unknown branch";
 		parts.push(`${repo} · ${branch}`);
 	} else if (entry.kind === "task-isolation") {
-		parts.push("task-isolation sandbox");
+		parts.push(entry.protofs ? "protofs checkout sandbox" : "task-isolation sandbox");
 	} else if (entry.kind === "empty") {
 		parts.push("legacy project shell");
 	} else {

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added protofs isolated checkouts: with `orchestrator.isolation.mode=auto` and a `protofs` binary on `PATH`, isolated workers run in copy-on-write checkouts instead of native clones (`protofs.enabled`, `protofs.path`), and the system prompt tells agents to open checkouts instead of git worktrees or copies.
 - Adopt the Devin CLI's saved credentials as a `devin` account with the `devin-cli` login, so chat, discovery and usage no longer require `DEVIN_API_KEY`.
 - Sign in to a Windsurf Enterprise seat with the `devin-windsurf` login, which stores the exchanged seat key as a `devin` account.
 - Added opt-in `proto gc --compress` (or `gc.compress`), which stores sessions idle for `gc.compressAfterDays` (default 7) with APFS transparent compression; they stay resumable and searchable.
@@ -21,6 +22,7 @@
 
 ### Fixed
 
+- Keep a protofs checkout record when removal cannot be confirmed, so `proto worktree clear` can retry it instead of losing the checkout.
 - Fixed `proto gc --compress` taking minutes on large session histories: live-transcript detection reads only each artifact's header line, skips non-JSON artifacts before probing, and leases each session id once.
 - Fixed `proto gc --compress --apply` copying and verifying every idle session on volumes where compression does not shrink files (e.g. macOS 27); it probes first and reports `compress skipped: <reason>`.
 - Keep user-initiated custom prompts and count retained native-history images correctly during compaction.

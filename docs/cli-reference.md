@@ -279,7 +279,7 @@ Run `proto <command> --help` for each command's own flags and examples.
 | `tiny-models` | Download tiny local models (session titles). | [local models](./local-models.md) |
 | `token` | Get the API key or OAuth token for a provider. | [secrets](./secrets.md) |
 | `ttsr` | Inspect and test Time-Traveling Stream Rules (TTSR). (Covers the CLI command; the [TTSR feature](./ttsr-injection-lifecycle.md) is documented separately.) | |
-| `worktree`, `wt` | List or clear agent-managed git worktrees (`~/.proto/wt`). | |
+| `worktree`, `wt` | List or clear agent-managed git worktrees and protofs checkouts (`~/.proto/wt`). | |
 | `search`, `q` | Test web search providers from the CLI. | [web_search tool](./tools/web_search.md) |
 | `__complete` | Hidden: internal shell-completion hook for installed completions. | |
 

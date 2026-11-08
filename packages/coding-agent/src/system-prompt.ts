@@ -539,6 +539,9 @@ export interface BuildSystemPromptOptions {
 	xdevDocs?: string;
 
 	autoQaEnabled?: boolean;
+
+	/** protofs command when its binary is found (`protofsCommand`); renders the separate-checkout guidance. */
+	protofs?: string;
 }
 
 export interface BuildSystemPromptResult {
@@ -599,6 +602,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		xdevTools = [],
 		xdevDocs = "",
 		autoQaEnabled = false,
+		protofs,
 		activeRepoContext: providedActiveRepoContext,
 	} = options;
 	const inlineToolDescriptors = providedInlineToolDescriptors ?? false;
@@ -863,6 +867,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		hasDynamicXdevTools: xdevTools.some(mounted => mounted.dynamic === true),
 		xdevDocs,
 		autoQaEnabled,
+		protofs,
 	};
 	const rendered = prompt.render(resolvedCustomPrompt ? customSystemPromptTemplate : systemPromptTemplate, data);
 	const systemPrompt = [rendered];
