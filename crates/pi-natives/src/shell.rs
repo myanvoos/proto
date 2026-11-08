@@ -112,6 +112,7 @@ impl From<ShellOptions> for CoreShellOptions {
 			session_env:   value.session_env,
 			snapshot_path: value.snapshot_path,
 			minimizer:     value.minimizer.map(Into::into),
+			filesystem:    pi_vfs::Fs::native(),
 		}
 	}
 }
@@ -295,17 +296,20 @@ impl Shell {
 			Arc::new(NapiProtolensDispatcher { callback: Arc::new(callback) })
 				as Arc<dyn ProtolensDispatcher>
 		});
-		inner.set_protolens_dispatcher(dispatcher, options.protolens_call_id.clone());
+		let protolens_call_id = options.protolens_call_id.clone();
 		let run_options = CoreShellRunOptions {
 			command:    options.command,
 			cwd:        options.cwd,
 			env:        options.env,
 			timeout_ms: options.timeout_ms,
+			filesystem: None,
+			pipe_taps:  None,
+			trace:      None,
 		};
 		task::future(env, "shell.run", async move {
 			let (chunk_tx, drain_handle) = bridge_chunks(on_chunk);
 			let result = inner
-				.run(run_options, chunk_tx, cancel_token.into_core())
+				.run(run_options, chunk_tx, dispatcher, protolens_call_id, cancel_token.into_core())
 				.await
 				.map(Into::into)
 				.map_err(|err| Error::from_reason(err.to_string()));
@@ -357,6 +361,7 @@ pub fn execute_shell<'env>(
 		timeout_ms:    options.timeout_ms,
 		snapshot_path: options.snapshot_path,
 		minimizer:     options.minimizer.map(Into::into),
+		filesystem:    pi_vfs::Fs::native(),
 	};
 	task::future(env, "shell.execute", async move {
 		let (chunk_tx, drain_handle) = bridge_chunks(on_chunk);

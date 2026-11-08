@@ -10,12 +10,14 @@ const ISO_UNAVAILABLE_WITH_LEADING_SPACE: &str = " ISO_UNAVAILABLE:";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[napi]
 pub enum IsoBackendKind {
-	Apfs         = 0,
-	Btrfs        = 1,
-	Zfs          = 2,
-	LinuxReflink = 3,
-	Overlayfs    = 4,
-	Rcopy        = 7,
+	Apfs              = 0,
+	Btrfs             = 1,
+	Zfs               = 2,
+	LinuxReflink      = 3,
+	Overlayfs         = 4,
+	WindowsBlockClone = 5,
+	Projfs            = 6,
+	Rcopy             = 7,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +145,8 @@ const fn to_napi_kind(kind: BackendKind) -> IsoBackendKind {
 		BackendKind::Zfs => IsoBackendKind::Zfs,
 		BackendKind::LinuxReflink => IsoBackendKind::LinuxReflink,
 		BackendKind::Overlayfs => IsoBackendKind::Overlayfs,
+		BackendKind::WindowsBlockClone => IsoBackendKind::WindowsBlockClone,
+		BackendKind::Projfs => IsoBackendKind::Projfs,
 		BackendKind::Rcopy => IsoBackendKind::Rcopy,
 	}
 }
@@ -154,6 +158,8 @@ const fn from_napi_kind(kind: IsoBackendKind) -> BackendKind {
 		IsoBackendKind::Zfs => BackendKind::Zfs,
 		IsoBackendKind::LinuxReflink => BackendKind::LinuxReflink,
 		IsoBackendKind::Overlayfs => BackendKind::Overlayfs,
+		IsoBackendKind::WindowsBlockClone => BackendKind::WindowsBlockClone,
+		IsoBackendKind::Projfs => BackendKind::Projfs,
 		IsoBackendKind::Rcopy => BackendKind::Rcopy,
 	}
 }

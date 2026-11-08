@@ -410,7 +410,7 @@ fn run_pty_sync(
 	let reader_thread = std::thread::spawn(move || {
 		const BUF: usize = 65536;
 		let mut buf = vec![0u8; BUF];
-		let mut pending = Vec::with_capacity(BUF + 4);
+		let mut decoder = pi_shell::output_decode::OutputDecoder::utf8();
 		// Once the pump is gone (JS failed, or a wedged `on_chunk` hit the
 		// stall timeout) keep reading and discard: the child must not block on
 		// a full PTY buffer that nothing drains (#12657).
@@ -419,11 +419,7 @@ fn run_pty_sync(
 			match reader.read(&mut buf) {
 				Ok(0) | Err(_) => break,
 				Ok(n) if forwarding => {
-					pending.extend_from_slice(&buf[..n]);
-					let (text, trailing) = pi_shell::shell::decode_utf8_read(&pending, false);
-					let consumed = pending.len() - trailing;
-					pending.copy_within(consumed.., 0);
-					pending.truncate(trailing);
+					let text = decoder.push(&buf[..n]);
 					forwarding = text.is_empty() || reader_tx.send(ReaderEvent::Chunk(text)).is_ok();
 				},
 				Ok(_) => {},
@@ -432,7 +428,7 @@ fn run_pty_sync(
 		if !forwarding {
 			return;
 		}
-		let (rest, _) = pi_shell::shell::decode_utf8_read(&pending, true);
+		let rest = decoder.finish();
 		if !rest.is_empty() && reader_tx.send(ReaderEvent::Chunk(rest)).is_err() {
 			return;
 		}
@@ -449,7 +445,7 @@ fn run_pty_sync(
 	if let Some(pgid) = master.process_group_leader().filter(|pgid| *pgid > 0) {
 		targets.add_pgid(pgid);
 	}
-	let pinned_child = child_pid.and_then(pi_shell::process::Process::from_pid);
+	let pinned_child = child_pid.and_then(pi_shell::proctree::Process::from_pid);
 	if let Some(process) = &pinned_child {
 		targets.add_process(process.clone());
 	}

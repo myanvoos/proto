@@ -98,8 +98,44 @@ impl CancelToken {
 		self.core.aborted()
 	}
 
+	/// A token cancelled once this one aborts or times out (for synchronous
+	/// `walk::tree`/search callers); the waiter ends with the returned guard.
+	pub fn cancellation(&self) -> Cancellation {
+		let token = tokio_util::sync::CancellationToken::new();
+		let waiter = {
+			let this = self.clone();
+			let token = token.clone();
+			napi::bindgen_prelude::spawn(async move {
+				this.wait().await;
+				token.cancel();
+			})
+		};
+		Cancellation { token, waiter }
+	}
+
 	pub fn into_core(self) -> core_cancel::CancelToken {
 		self.core
+	}
+}
+
+/// A [`tokio_util::sync::CancellationToken`] fired by a [`CancelToken`]; aborts
+/// its waiter task on drop.
+pub struct Cancellation {
+	token:  tokio_util::sync::CancellationToken,
+	waiter: napi::tokio::task::JoinHandle<()>,
+}
+
+impl Cancellation {
+	/// The token cancelled when the originating [`CancelToken`] aborts or
+	/// times out.
+	pub const fn token(&self) -> &tokio_util::sync::CancellationToken {
+		&self.token
+	}
+}
+
+impl Drop for Cancellation {
+	fn drop(&mut self) {
+		self.waiter.abort();
 	}
 }
 
@@ -226,4 +262,44 @@ where
 		let _guard = profile_region(tag);
 		work.await
 	})
+}
+
+/// Run `work` until it settles or `cancel_token` aborts or times out.
+///
+/// Dropping `work` on cancellation cancels the walker/search tasks it spawned,
+/// which is how `pi_walker` futures stop. The rejection matches [`Blocking`]'s
+/// settlement contract: a timeout rejects with `Aborted: Timeout`, other
+/// aborts with an `AbortError`.
+pub fn cancellable_future<'env, T, Fut>(
+	env: &'env Env,
+	tag: &'static str,
+	cancel_token: CancelToken,
+	work: Fut,
+) -> Result<PromiseRaw<'env, T>>
+where
+	Fut: Future<Output = Result<T>> + Send + 'static,
+	T: ToNapiValue + Send + 'static,
+{
+	future(env, tag, async move {
+		tokio::select! {
+			biased;
+			result = work => result,
+			reason = cancel_token.wait() => Err(abort_error(reason)),
+		}
+	})
+}
+
+/// The error a cancelled native task rejects with.
+pub fn abort_error(reason: AbortReason) -> Error {
+	let message = match reason {
+		AbortReason::Timeout => "Aborted: Timeout".to_string(),
+		other => format!("Aborted: {other:?}"),
+	};
+	Error::new(Status::Cancelled, message)
+}
+
+/// Map a walker root failure to the message the natives report.
+pub fn walk_failure(err: pi_walker::walk::WalkError) -> Error {
+	let pi_walker::walk::WalkError::Root { path, error } = err;
+	Error::from_reason(format!("Native directory scan failed for {}: {error}", path.display()))
 }

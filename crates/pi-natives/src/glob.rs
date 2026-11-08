@@ -1,4 +1,19 @@
-use std::cmp::Ordering;
+//! Filesystem discovery with glob patterns, ignore semantics, and shared
+//! directory-listing reuse.
+//!
+//! # Overview
+//! Resolves a search root, runs `pi_walker::glob`, and optionally streams each
+//! returned match through a callback.
+//!
+//! `pi_walker::glob` never yields `.git`, and skips `node_modules` unless the
+//! pattern or options request it.
+//!
+//! # Example
+//! ```ignore
+//! // JS: await native.glob({ pattern: "*.rs", path: "." })
+//! ```
+
+use std::path::Path;
 
 use napi::{
 	bindgen_prelude::*,
@@ -6,210 +21,128 @@ use napi::{
 };
 use napi_derive::napi;
 
-pub use crate::iofs::{FileType, GlobMatch};
-use crate::{glob_util, iofs, task};
+use crate::task;
 
-#[napi(object)]
-pub struct GlobOptions<'env> {
-	pub pattern: String,
-
-	pub path: String,
-
-	pub file_type: Option<FileType>,
-
-	pub recursive: Option<bool>,
-
-	pub hidden: Option<bool>,
-
-	pub max_results: Option<u32>,
-
-	pub gitignore: Option<bool>,
-
-	pub cache: Option<bool>,
-
-	pub sort_by_mtime: Option<bool>,
-
-	pub include_node_modules: Option<bool>,
-
-	pub signal: Option<Unknown<'env>>,
-
-	pub timeout_ms: Option<u32>,
+/// Resolved filesystem entry kind for glob filters and match metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[napi]
+pub enum FileType {
+	/// Regular file.
+	File    = 1,
+	/// Directory.
+	Dir     = 2,
+	/// Symbolic link.
+	Symlink = 3,
 }
 
+/// A single filesystem entry from a directory scan.
+#[derive(Clone)]
+#[napi(object)]
+pub struct GlobMatch {
+	/// Relative path from the search root, using forward slashes.
+	pub path:      String,
+	/// Resolved filesystem type for the match.
+	pub file_type: FileType,
+	/// Modification time in milliseconds since Unix epoch.
+	pub mtime:     Option<f64>,
+	/// File size in bytes for regular files.
+	pub size:      Option<f64>,
+}
+
+impl From<pi_walker::FileType> for FileType {
+	fn from(file_type: pi_walker::FileType) -> Self {
+		match file_type {
+			pi_walker::FileType::File => Self::File,
+			pi_walker::FileType::Dir => Self::Dir,
+			pi_walker::FileType::Symlink => Self::Symlink,
+		}
+	}
+}
+
+impl From<FileType> for pi_walker::FileType {
+	fn from(file_type: FileType) -> Self {
+		match file_type {
+			FileType::File => Self::File,
+			FileType::Dir => Self::Dir,
+			FileType::Symlink => Self::Symlink,
+		}
+	}
+}
+
+/// Input options for `glob`, including traversal, filtering, and cancellation.
+#[napi(object, object_to_js = false)]
+pub struct GlobOptions<'env> {
+	/// Glob pattern to match (e.g., "*.ts").
+	pub pattern:              String,
+	/// Directory to search: a host path or an absolute `scheme://` URL.
+	pub path:                 String,
+	/// Filter by file type: "file", "dir", or "symlink". Symlinks are
+	/// matched for file/dir filters based on their target type.
+	pub file_type:            Option<FileType>,
+	/// Match simple patterns recursively by default (`*.ts` -> recursive).
+	pub recursive:            Option<bool>,
+	/// Include hidden files (default: false).
+	pub hidden:               Option<bool>,
+	/// Maximum number of results to return.
+	pub max_results:          Option<u32>,
+	/// Respect .gitignore files (default: true).
+	pub gitignore:            Option<bool>,
+	/// Reuse unchanged directory listings across calls (default: false).
+	pub cache:                Option<bool>,
+	/// Sort results by mtime (most recent first) before applying limit.
+	pub sort_by_mtime:        Option<bool>,
+	/// Include `node_modules` entries when the pattern does not explicitly
+	/// mention them.
+	pub include_node_modules: Option<bool>,
+	/// Abort signal for cancelling the operation.
+	pub signal:               Option<Unknown<'env>>,
+	/// Timeout in milliseconds for the operation.
+	pub timeout_ms:           Option<u32>,
+}
+
+/// Result payload returned by a glob operation.
 #[napi(object)]
 pub struct GlobResult {
-	pub matches: Vec<GlobMatch>,
-
+	/// Matched filesystem entries.
+	pub matches:       Vec<GlobMatch>,
+	/// Number of returned matches (`matches.len()`), clamped to `u32::MAX`.
 	pub total_matches: u32,
 }
 
-struct GlobConfig {
-	root:                  std::path::PathBuf,
-	pattern:               String,
-	recursive:             bool,
-	include_hidden:        bool,
-	file_type_filter:      Option<FileType>,
-	max_results:           usize,
-	use_gitignore:         bool,
-	mentions_node_modules: bool,
-	sort_by_mtime:         bool,
-	cache:                 bool,
-}
-
-fn match_mtime(entry: &GlobMatch) -> f64 {
-	entry.mtime.unwrap_or(0.0)
-}
-
-fn compare_matches_by_rank(a: &GlobMatch, b: &GlobMatch) -> Ordering {
-	match_mtime(b)
-		.total_cmp(&match_mtime(a))
-		.then_with(|| a.path.cmp(&b.path))
-}
-
-fn apply_file_type_filter(entry: &mut GlobMatch, config: &GlobConfig) -> bool {
-	let Some(filter) = config.file_type_filter else {
-		return true;
-	};
-	if entry.file_type == filter {
-		return true;
-	}
-	if entry.file_type != FileType::Symlink || filter == FileType::Symlink {
-		return false;
-	}
-	let Ok(metadata) = std::fs::metadata(config.root.join(&entry.path)) else {
-		return false;
-	};
-	let matches = match filter {
-		FileType::File => metadata.is_file(),
-		FileType::Dir => metadata.is_dir(),
-		FileType::Symlink => false,
-	};
-	if !matches {
-		return false;
-	}
-	entry.file_type = filter;
-	entry.size = metadata.is_file().then_some(metadata.len() as f64);
-	entry.mtime = metadata
-		.modified()
-		.ok()
-		.and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-		.map(|duration| duration.as_millis() as f64);
-	true
-}
-
-fn collect_ranked_matches(
-	request: &pi_walker::WalkRequest,
-	config: &GlobConfig,
-	ct: &task::CancelToken,
-) -> Result<Vec<GlobMatch>> {
-	let outcome = request
-		.collect_ranked_with_heartbeat(
-			pi_walker::WalkRank::MtimeDescPathAsc,
-			config.max_results,
-			|| ct.heartbeat(),
-		)
-		.map_err(iofs::map_walker_error)?;
-	Ok(outcome.entries.into_iter().map(GlobMatch::from).collect())
-}
-
-fn collect_native_filtered_matches(
-	request: &pi_walker::WalkRequest,
-	config: &GlobConfig,
-	ct: &task::CancelToken,
-) -> Result<Vec<GlobMatch>> {
-	let outcome = request
-		.collect_with_heartbeat(|| ct.heartbeat())
-		.map_err(iofs::map_walker_error)?;
-	let mut collected = Vec::new();
-	for entry in outcome.entries {
-		ct.heartbeat()?;
-		let mut matched_entry = GlobMatch::from(entry);
-		if !apply_file_type_filter(&mut matched_entry, config) {
-			continue;
-		}
-		collected.push(matched_entry);
-		if !config.sort_by_mtime && collected.len() >= config.max_results {
-			break;
+impl From<pi_walker::glob::GlobMatch> for GlobMatch {
+	fn from(entry: pi_walker::glob::GlobMatch) -> Self {
+		Self {
+			path:      entry.path,
+			file_type: entry.file_type.into(),
+			mtime:     entry.mtime.map(Self::millis),
+			size:      entry.size.map(|size| size as f64),
 		}
 	}
-	Ok(collected)
 }
 
-fn run_glob(
-	config: GlobConfig,
-	on_match: Option<&ThreadsafeFunction<GlobMatch>>,
-	ct: task::CancelToken,
-) -> Result<GlobResult> {
-	let walk_glob_pattern = glob_util::build_glob_pattern(&config.pattern, config.recursive);
-
-	let walk_depth_limit = glob_util::walk_depth_bound(&walk_glob_pattern);
-	let walk_glob = pi_walker::CompiledWalkGlob::new([walk_glob_pattern])
-		.map_err(|err| Error::from_reason(format!("Invalid glob pattern: {err}")))?;
-	if config.max_results == 0 {
-		return Ok(GlobResult { matches: Vec::new(), total_matches: 0 });
+impl GlobMatch {
+	/// Unix nanoseconds to the milliseconds JavaScript dates use.
+	pub(crate) const fn millis(nanos: i64) -> f64 {
+		nanos.div_euclid(1_000_000) as f64
 	}
-
-	let scan_detail = if config.sort_by_mtime {
-		pi_walker::WalkDetail::Full
-	} else {
-		pi_walker::WalkDetail::Minimal
-	};
-	let base_request = pi_walker::WalkRequest::new(config.root.clone())
-		.hidden(config.include_hidden)
-		.gitignore(config.use_gitignore)
-		.skip_git(true)
-		.skip_node_modules(!config.mentions_node_modules)
-		.follow_links(pi_walker::FollowLinks::Never)
-		.detail(scan_detail)
-		.order(pi_walker::WalkOrder::Path)
-		.emit_root(false)
-		.depth(1, walk_depth_limit)
-		.directory_errors(pi_walker::DirectoryErrorMode::SkipSkippable)
-		.cache(config.cache)
-		.empty_recheck(pi_walker::EmptyRecheck::Configured)
-		.filter(
-			pi_walker::WalkFilter::all()
-				.glob(walk_glob)
-				.node_modules_unless_mentioned(config.mentions_node_modules),
-		);
-
-	let mut matches = if config.sort_by_mtime && config.file_type_filter.is_none() {
-		collect_ranked_matches(&base_request, &config, &ct)?
-	} else {
-		let request = if !config.sort_by_mtime && config.file_type_filter.is_none() {
-			base_request.limit(config.max_results)
-		} else {
-			base_request
-		};
-		collect_native_filtered_matches(&request, &config, &ct)?
-	};
-
-	if config.sort_by_mtime {
-		matches.sort_by(compare_matches_by_rank);
-		matches.truncate(config.max_results);
-		if let Some(callback) = on_match {
-			for matched_entry in &matches {
-				callback.call(Ok(matched_entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
-			}
-		}
-	}
-	if !config.sort_by_mtime
-		&& let Some(callback) = on_match
-	{
-		for matched_entry in &matches {
-			callback.call(Ok(matched_entry.clone()), ThreadsafeFunctionCallMode::NonBlocking);
-		}
-	}
-	let total_matches = matches.len().min(u32::MAX as usize) as u32;
-	Ok(GlobResult { matches, total_matches })
 }
 
-#[napi(catch_unwind)]
-pub fn glob(
+/// Find filesystem entries matching a glob pattern.
+///
+/// Resolves the search root, runs the glob search, and optionally streams each
+/// returned match through `on_match`.
+///
+/// # Errors
+/// Returns an error when the search path cannot be resolved, the path is not a
+/// directory, the glob pattern is invalid, or cancellation/timeout is
+/// triggered.
+#[napi]
+pub fn glob<'env>(
+	env: &'env Env,
 	options: GlobOptions<'_>,
 	#[napi(ts_arg_type = "((error: Error | null, match: GlobMatch) => void) | undefined | null")]
 	on_match: Option<ThreadsafeFunction<GlobMatch>>,
-) -> task::Promise<GlobResult> {
+) -> Result<PromiseRaw<'env, GlobResult>> {
 	let GlobOptions {
 		pattern,
 		path,
@@ -225,29 +158,43 @@ pub fn glob(
 		signal,
 	} = options;
 
-	let pattern = pattern.trim();
-	let pattern = if pattern.is_empty() { "*" } else { pattern };
-	let pattern = pattern.to_string();
+	let opts = pi_walker::glob::GlobOptions {
+		pattern,
+		recursive: recursive.unwrap_or(true),
+		file_type: file_type.map(Into::into),
+		max_results: max_results.map(|value| value as usize),
+		sort_by_mtime: sort_by_mtime.unwrap_or(false),
+		include_node_modules,
+		walk: pi_walker::walk::Options {
+			hidden: hidden.unwrap_or(false),
+			gitignore: gitignore.unwrap_or(true),
+			cache: cache.unwrap_or(false),
+			..Default::default()
+		},
+	};
 
 	let ct = task::CancelToken::new(timeout_ms, signal);
-
-	task::blocking("glob", ct, move |ct| {
-		run_glob(
-			GlobConfig {
-				root: pi_walker::resolve_search_path(&path).map_err(iofs::map_walker_error)?,
-				include_hidden: hidden.unwrap_or(false),
-				file_type_filter: file_type,
-				recursive: recursive.unwrap_or(true),
-				max_results: max_results.map_or(usize::MAX, |value| value as usize),
-				use_gitignore: gitignore.unwrap_or(true),
-				mentions_node_modules: include_node_modules
-					.unwrap_or_else(|| pattern.contains("node_modules")),
-				sort_by_mtime: sort_by_mtime.unwrap_or(false),
-				cache: cache.unwrap_or(false),
-				pattern,
-			},
-			on_match.as_ref(),
-			ct,
-		)
+	task::cancellable_future(env, "glob", ct, async move {
+		let filesystem = pi_vfs::Fs::native();
+		let root = pi_walker::fs::resolve_dir(&filesystem, Path::new(&path))
+			.await
+			.map_err(task::walk_failure)?;
+		let fs = pi_walker::Fs::new(&filesystem, &root);
+		let matches: Vec<GlobMatch> = pi_walker::glob::glob(&fs, &root, &opts)
+			.await
+			.map_err(|err| match err {
+				pi_walker::glob::GlobError::Walk(err) => task::walk_failure(err),
+				err @ pi_walker::glob::GlobError::Pattern(_) => Error::from_reason(err.to_string()),
+			})?
+			.into_iter()
+			.map(GlobMatch::from)
+			.collect();
+		if let Some(callback) = &on_match {
+			for matched in &matches {
+				callback.call(Ok(matched.clone()), ThreadsafeFunctionCallMode::NonBlocking);
+			}
+		}
+		let total_matches = crate::utils::clamp_u32(matches.len() as u64);
+		Ok(GlobResult { matches, total_matches })
 	})
 }
