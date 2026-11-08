@@ -4354,6 +4354,10 @@ export const SETTINGS_SCHEMA = {
 
 	"gc.compressAfterDays": { type: "number", default: 7 },
 
+	// Opt-in: an interactive launch starts a detached `proto gc --compress --apply`
+	// at most once a day, so idle sessions get compressed without anyone asking.
+	"gc.autoCompress": { type: "boolean", default: false },
+
 	"thinkingBudgets.minimal": { type: "number", default: 1024 },
 
 	"thinkingBudgets.low": { type: "number", default: 2048 },

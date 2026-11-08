@@ -7,6 +7,7 @@
 - Adopt the Devin CLI's saved credentials as a `devin` account with the `devin-cli` login, so chat, discovery and usage no longer require `DEVIN_API_KEY`.
 - Sign in to a Windsurf Enterprise seat with the `devin-windsurf` login, which stores the exchanged seat key as a `devin` account.
 - Added opt-in `proto gc --compress` (or `gc.compress`), which stores sessions idle for `gc.compressAfterDays` (default 7) with APFS transparent compression; they stay resumable and searchable.
+- Added opt-in `gc.autoCompress` (default off): interactive launches start a detached, low-priority `proto gc --compress --apply` at most once a day, so idle sessions are stored compressed without running the command; volumes where compression does not shrink a probe file (e.g. macOS 27) are skipped, and the latest run's output or skip reason is in `gc-auto-compress.log` in the agent dir.
 
 ### Changed
 

@@ -11,6 +11,7 @@ import {
 } from "../session/session-liveness";
 import { FileSessionStorage } from "../session/session-storage";
 import { serializeTitleSlot } from "../session/session-title-slot";
+import { GC_AUTO_COMPRESS_INTERVAL_MS, GC_AUTO_COMPRESS_LOG, scheduleGcAutoCompress } from "./gc-auto-compress";
 import { collectGcErrors, type GcResult, runGcCommand } from "./gc-cli";
 import * as gcCompress from "./gc-compress";
 
@@ -608,5 +609,104 @@ describe("runGcCommand session compression", () => {
 		expect(result.compress?.probeFailure).toBeUndefined();
 		expect(collectGcErrors(result)).toEqual(["compress: compression probe: EACCES: sessions dir"]);
 		expect(await snapshot(file)).toEqual(before);
+	});
+
+	test.skipIf(!realCompression)(
+		"the background run compresses idle sessions, then waits a day before running again",
+		async () => {
+			await using agentDir = await TempDir.create();
+			const { file, artifact } = await writeIdleSession(agentDir.path(), Bun.randomUUIDv7());
+			const logPath = path.join(agentDir.path(), GC_AUTO_COMPRESS_LOG);
+
+			const child = await scheduleGcAutoCompress(agentDir.path());
+			expect(await child?.exited).toBe(0);
+			for (const target of [file, artifact]) {
+				const after = await snapshot(target);
+				expect(after.allocated).toBeLessThan(after.size);
+			}
+			expect(await Bun.file(logPath).text()).toContain("compress: 2/2 files in 1 sessions");
+
+			expect(await scheduleGcAutoCompress(agentDir.path())).toBeUndefined();
+
+			const lastRun = (Date.now() - GC_AUTO_COMPRESS_INTERVAL_MS - 60_000) / 1000;
+			await fs.utimes(logPath, lastRun, lastRun);
+			const next = await scheduleGcAutoCompress(agentDir.path());
+			expect(await next?.exited).toBe(0);
+			expect(await Bun.file(logPath).text()).toContain("compress: 0/0 files in 0 sessions");
+		},
+		60_000,
+	);
+
+	test.skipIf(!realCompression)(
+		"simultaneous launches start one background run and keep its summary",
+		async () => {
+			await using agentDir = await TempDir.create();
+			await writeIdleSession(agentDir.path(), Bun.randomUUIDv7());
+			const logPath = path.join(agentDir.path(), GC_AUTO_COMPRESS_LOG);
+			const lastRun = (Date.now() - GC_AUTO_COMPRESS_INTERVAL_MS - 60_000) / 1000;
+			await Bun.write(logPath, "previous run\n");
+			await fs.utimes(logPath, lastRun, lastRun);
+
+			const launched = (await Promise.all([1, 2, 3].map(() => scheduleGcAutoCompress(agentDir.path())))).filter(
+				child => child !== undefined,
+			);
+
+			expect(launched).toHaveLength(1);
+			expect(await launched[0]!.exited).toBe(0);
+			const log = await Bun.file(logPath).text();
+			expect(log).toContain("compress: 2/2 files in 1 sessions");
+			expect(log).not.toContain("GC already running");
+		},
+		60_000,
+	);
+
+	test("a recent background run is not repeated", async () => {
+		await using agentDir = await TempDir.create();
+		const logPath = path.join(agentDir.path(), GC_AUTO_COMPRESS_LOG);
+		await Bun.write(logPath, "compress: 1/1 files in 1 sessions\n");
+		const probe = vi.spyOn(gcCompress, "compressionWorks");
+
+		expect(await scheduleGcAutoCompress(agentDir.path())).toBeUndefined();
+		expect(probe).not.toHaveBeenCalled();
+		expect(await Bun.file(logPath).text()).toBe("compress: 1/1 files in 1 sessions\n");
+	});
+
+	test("a volume whose compression shrinks nothing is probed once a day and left alone", async () => {
+		await using agentDir = await TempDir.create();
+		const { file } = await writeIdleSession(agentDir.path(), Bun.randomUUIDv7());
+		const before = await snapshot(file);
+		vi.spyOn(gcCompress, "compressMethod").mockResolvedValue("apfs");
+		const probe = vi.spyOn(gcCompress, "compressionWorks").mockResolvedValue(false);
+
+		expect(await scheduleGcAutoCompress(agentDir.path())).toBeUndefined();
+		expect(await scheduleGcAutoCompress(agentDir.path())).toBeUndefined();
+		expect(probe).toHaveBeenCalledTimes(1);
+		expect(await Bun.file(path.join(agentDir.path(), GC_AUTO_COMPRESS_LOG)).text()).toContain("compress skipped:");
+		expect(await snapshot(file)).toEqual(before);
+	});
+
+	test("the background run never starts without filesystem compression", async () => {
+		await using agentDir = await TempDir.create();
+		const { file } = await writeIdleSession(agentDir.path(), Bun.randomUUIDv7());
+		const before = await snapshot(file);
+		vi.spyOn(gcCompress, "compressMethod").mockResolvedValue(undefined);
+
+		expect(await scheduleGcAutoCompress(agentDir.path())).toBeUndefined();
+		expect(await Bun.file(path.join(agentDir.path(), GC_AUTO_COMPRESS_LOG)).text()).toContain(
+			"compress skipped: unsupported",
+		);
+		expect(await snapshot(file)).toEqual(before);
+	});
+
+	test("a throwing probe is stamped as a skipped check", async () => {
+		await using agentDir = await TempDir.create();
+		await writeIdleSession(agentDir.path(), Bun.randomUUIDv7());
+		vi.spyOn(gcCompress, "compressMethod").mockResolvedValue("apfs");
+		vi.spyOn(gcCompress, "compressionWorks").mockRejectedValue(new Error("EACCES: sessions dir"));
+
+		expect(await scheduleGcAutoCompress(agentDir.path())).toBeUndefined();
+		expect(await Bun.file(path.join(agentDir.path(), GC_AUTO_COMPRESS_LOG)).text()).toContain(
+			"compression probe failed: EACCES: sessions dir",
+		);
 	});
 });

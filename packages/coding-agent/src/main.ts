@@ -31,6 +31,7 @@ import { reset as resetCapabilities } from "./capability";
 import { type Args, reportUnrecognizedFlags, validateToolNames } from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
+import { scheduleGcAutoCompress } from "./cli/gc-auto-compress";
 import { buildInitialMessage } from "./cli/initial-message";
 import { selectSession } from "./cli/session-picker";
 import { applyStartupCwd } from "./cli/startup-cwd";
@@ -557,6 +558,13 @@ async function runInteractiveMode(
 		} else if (notify.kind === "info") {
 			mode.showStatus(notify.message);
 		}
+	}
+
+	if (settings.get("gc.autoCompress")) {
+		// After the first frame, so the opt-in background run never delays startup.
+		void scheduleGcAutoCompress(settings.getAgentDir()).catch(error =>
+			logger.warn("Background session compression failed to start", { error: String(error) }),
+		);
 	}
 
 	if (initialMessage !== undefined) {

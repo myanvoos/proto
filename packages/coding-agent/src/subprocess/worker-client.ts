@@ -90,6 +90,20 @@ function whichInAbsolutePaths(command: string): string | null {
 	return found && path.isAbsolute(found) ? found : null;
 }
 
+/**
+ * Command that re-enters this CLI, for a detached child that must outlive the
+ * launcher (e.g. the `gc --compress --apply` background run). In a compiled
+ * binary the entry point is the binary itself; otherwise re-enter the declared
+ * worker-host entry, falling back to the source entry under `bun test`/SDK.
+ */
+export function resolveCliEntryCmd(): string[] {
+	const executable = resolveExecutablePath();
+	if (isCompiledBinary()) return [executable];
+	const hostEntry = workerHostEntry();
+	if (hostEntry) return [executable, hostEntry];
+	return [executable, path.resolve(import.meta.dir, "..", "..", "src", "cli.ts")];
+}
+
 export function resolveWorkerSpawnCmd(workerArg: string): WorkerSpawnCommand {
 	const executable = resolveExecutablePath();
 	if (isCompiledBinary()) return { cmd: [executable, workerArg] };
