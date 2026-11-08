@@ -6,7 +6,7 @@
 //! and rename the shell performs is recorded here, native and provider paths
 //! alike.
 //!
-//! The shape matches proto's former brush `fsobserve` extension: reads carry
+//! The shape matches the former shell's `fsobserve` extension: reads carry
 //! the file's stamp; writes carry a bounded before/after text snapshot when
 //! the file is small enough to snapshot, and a write that would clobber a
 //! file changed since this shell last saw it is refused with

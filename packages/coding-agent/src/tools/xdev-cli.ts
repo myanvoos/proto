@@ -1,7 +1,7 @@
 /**
  * CLI-to-args mapping for `protolens` device dispatches.
  *
- * The Brush `protolens` builtin hands us raw shell argv (`protolens browser --action run --name main`), so
+ * The engine's `protolens` builtin hands us raw shell argv (`protolens browser --action run --name main`), so
  * device arguments can be authored as ordinary command lines instead of JSON embedded in shell
  * quotes. This module converts argv + stdin into the device's args object using the tool's JSON
  * wire schema, and renders the inverse (canonical CLI usage lines for docs and TUI previews).

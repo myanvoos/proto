@@ -41,13 +41,13 @@ afterEach(async () => {
 /** `omp "@brief.md"` sends the brief as one `<file>` attachment, which the pre-filter cleans away. */
 const ATTACHED_BRIEF = `<file name="/mnt/briefs/shellport-audit.md">
 You are the ShellPortAudit lane. You own seven pull requests that were out of draft and are now
-unmergeable, because upstream main deleted the vendored brush crates and rewrote the builtins.
+unmergeable, because upstream main deleted the vendored shell crates and rewrote the builtins.
 Rebase each one onto live main, resolve the conflicts, re-run the shell suite and report.
 </file>`;
 
 /** A reply long enough (>= 40 words) to reveal the task to the deferred retitle. */
 const AUDIT_REPLY =
-	"Starting on the ShellPortAudit lane. Seven pull requests need rebasing onto live main after the vendored brush crates were deleted, so each one's conflicts have to be resolved against the new builtins before the shell suite can run again. I will take them oldest first and report once the suite is green.";
+	"Starting on the ShellPortAudit lane. Seven pull requests need rebasing onto live main after the vendored shell crates were deleted, so each one's conflicts have to be resolved against the new builtins before the shell suite can run again. I will take them oldest first and report once the suite is green.";
 
 function stepTool(): AgentTool {
 	return {

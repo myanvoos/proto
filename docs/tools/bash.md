@@ -24,7 +24,7 @@
 | `env` | `Record<string, string>` | No | Extra environment variables. Keys must match `^[A-Za-z_][A-Za-z0-9_]*$` or the tool throws. Values go through internal-URL expansion and are passed as environment values, not shell text. |
 | `timeout` | `number` | No | Timeout in seconds. Default `300`. `0` disables the deadline. Non-zero values are capped by `tools.maxTimeout` when that setting is positive, then clamped to the Bash range `1..3600`. |
 | `cwd` | `string` | No | Working directory. Absolute paths, including `/`, remain absolute; relative paths resolve against `session.cwd`, and `~` expands to the home directory. Must exist and be a directory. |
-| `lane` | `string` | No | Persistent non-PTY Brush state lane (1–128 characters). Omitted/`main` share state and queue; other names isolate shell and JavaScript kernels. Python names are selected explicitly with `harness.kernel(name)`, not by ordinary command routing. Managed background jobs default to their own lane. |
+| `lane` | `string` | No | Persistent non-PTY engine state lane (1–128 characters). Omitted/`main` share state and queue; other names isolate shell and JavaScript kernels. Python names are selected explicitly with `harness.kernel(name)`, not by ordinary command routing. Managed background jobs default to their own lane. |
 | `pty` | `boolean` | No | Request PTY mode. Default `false`. PTY is used only when `pty: true`, `PI_NO_PTY !== "1"`, and the tool context has a UI. |
 | `async` | `boolean` | No | Background execution request. Present only when `async.enabled` is true (default `true`) for the session. Returns immediately with a job id instead of waiting; it does not change the effective deadline, including a disabled deadline from `timeout: 0`. |
 

@@ -4,7 +4,7 @@
 
 ### Added
 
-- Expose shell file observations, protolens dispatch records and stage records from `Shell.run`, and report missing AST grammars on ast-grep results.
+- Expose shell file observations, protolens dispatch records and stage records from `Shell.run`, route interpreter commands to kernel cells through the in-house engine, and report missing AST grammars on ast-grep results.
 
 ### Fixed
 

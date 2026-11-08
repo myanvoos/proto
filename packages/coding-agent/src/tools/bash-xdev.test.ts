@@ -206,7 +206,7 @@ test("ampersand-separated protolens calls dispatch concurrently", async () => {
 	});
 });
 
-test("mixed native commands compose with protolens through Brush", async () => {
+test("mixed native commands compose with protolens through the engine", async () => {
 	await withBash(async bash => {
 		const result = await bash.execute("protolens-mixed", {
 			command: `protolens probe '{"value":"one"}'; printf done`,

@@ -13,6 +13,7 @@
 
 ### Changed
 
+- The `bash` tool now runs on proto's in-house shell engine, with bash/zsh semantics, kernel cells, `protolens` dispatch, and one stage card per command.
 - Subagents can no longer broadcast: `fleet` `message` with `to: "all"` is refused unless the caller is the main agent, which messages the one agent that can answer instead.
 - `jobs` `wait` reports jobs that finish within 1.5 s of each other in one result instead of one wait call per job.
 - Broadcasts from other agents no longer cut short a `jobs` `wait` or interrupt running bash/eval; they arrive after the wait returns. A direct message still ends the wait, and the result now carries every message queued by then instead of one per call.

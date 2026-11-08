@@ -14,7 +14,7 @@ import { ArtifactManager } from "../session/artifacts";
 import { createTools, type Tool, type ToolSession } from ".";
 
 // `node` cells must run on the real Node.js the shell would run, in a kernel of their own; these
-// drive the real Brush shell and real kernels end to end, like every other bash-kernel test.
+// drive the real in-house shell and real kernels end to end, like every other bash-kernel test.
 const NODE = $which("node");
 
 interface Harness {
