@@ -9,6 +9,7 @@ import * as git from "../utils/git";
 import * as executor from "./executor";
 import { RETAINED_BACKEND_FILE, readRetainedBackend } from "./isolation-ownership";
 import {
+	nativeWorkspace,
 	persistNestedPatches,
 	renderIsolationSummary,
 	retainIsolationWorkspace,
@@ -225,7 +226,7 @@ for (const failure of ["patch", "nested", "merge"] as const) {
 					nested: [],
 				},
 			},
-			preferredBackend: natives.IsoBackendKind.Rcopy,
+			openWorkspace: nativeWorkspace(natives.IsoBackendKind.Rcopy),
 			agentId: result.id,
 			mergeMode: failure === "patch" ? "patch" : "branch",
 			artifactsDir: artifacts,

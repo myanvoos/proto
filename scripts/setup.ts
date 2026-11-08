@@ -24,6 +24,7 @@ interface Step {
 const steps: Step[] = [
 	{ label: "bun install", cmd: ["bun", "install"] },
 	{ label: "build:native", cmd: ["bun", "run", "build:native", ...passthrough] },
+	{ label: "build:protofs", cmd: ["bun", "run", "build:protofs", ...passthrough] },
 	{ label: "coding-agent link", cmd: ["bun", "--cwd=packages/coding-agent", "link"] },
 	{ label: "link proto", cmd: ["sh", "scripts/link-proto.sh"] },
 ];

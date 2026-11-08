@@ -444,10 +444,15 @@ function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-function getTaskIsolationSegment(repoRoot: string, id: string): string {
+/**
+ * Deterministic task-isolation dir of one run (`repoRoot` + agent id) under the
+ * worktrees dir: it holds the owner marker and either the native `m` mount or
+ * the record of a protofs checkout (see `./protofs`).
+ */
+export function taskIsolationBaseDir(repoRoot: string, id: string): string {
 	const key = `${path.resolve(repoRoot)}\0${id}`;
 	const digest = Bun.hash(key).toString(16).padStart(16, "0").slice(-WORKER_ISOLATION_DIR_DIGEST_CHARS);
-	return `${WORKER_ISOLATION_DIR_PREFIX}${digest}`;
+	return getWorktreeDir(`${WORKER_ISOLATION_DIR_PREFIX}${digest}`);
 }
 
 async function hasGitEntry(dir: string): Promise<boolean> {
@@ -485,7 +490,7 @@ export async function ensureIsolation(
 	const repoRoot = await getRepoRoot(baseCwd);
 	const repository = await git.repo.resolve(repoRoot);
 	const sourceCommonDir = repository?.commonDir ?? path.join(repoRoot, ".git");
-	const baseDir = getWorktreeDir(getTaskIsolationSegment(repoRoot, id));
+	const baseDir = taskIsolationBaseDir(repoRoot, id);
 	const mergedDir = path.join(baseDir, WORKER_ISOLATION_MOUNT_DIR);
 	// A failed retention rename can leave the only copy in this deterministic slot.
 	// Never reclaim an existing workspace implicitly; worktree clear owns that decision.

@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { COMPILED_EXTERNAL_DEPENDENCIES, compileCodingAgent } from "../packages/coding-agent/scripts/compile-binary";
+import { buildProtofs } from "./build-protofs";
 
 interface BinaryTarget {
 	id: string;
@@ -141,6 +142,8 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 		minifyIdentifiers: true,
 		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),
 	});
+
+	await buildProtofs({ target: target.id, dryRun: isDryRun });
 
 	if (shouldAdhocSignDarwinBinary(target)) {
 		await runCommand(

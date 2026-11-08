@@ -912,7 +912,7 @@ export const usageHelp = {
 } satisfies CommandMetadata;
 
 export const worktreeHelp = {
-	description: "List or clear agent-managed git worktrees (~/.proto/wt)",
+	description: "List or clear agent-managed git worktrees and protofs checkouts (~/.proto/wt)",
 	args: {
 		action: Args.string({
 			description: "list (default) or clear",

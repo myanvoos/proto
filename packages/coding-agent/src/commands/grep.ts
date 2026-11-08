@@ -2,7 +2,9 @@ import { GrepOutputMode } from "@oh-my-pi/pi-natives";
 import { Command } from "@oh-my-pi/pi-utils/cli";
 import { grepHelp as commandHelp } from "../cli/command-help";
 import { type GrepCommandArgs, runGrepCommand } from "../cli/grep-cli";
+import { Settings } from "../config/settings";
 import { initTheme } from "../modes/theme/theme";
+import { protofsCommand } from "../protofs/settings";
 
 export default class Grep extends Command {
 	static description = commandHelp.description;
@@ -27,6 +29,7 @@ export default class Grep extends Command {
 			context: flags.context,
 			mode,
 			gitignore: !flags["no-gitignore"],
+			protofs: protofsCommand(await Settings.loadReadOnly()),
 		};
 
 		await initTheme();

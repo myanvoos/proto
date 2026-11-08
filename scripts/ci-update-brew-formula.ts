@@ -76,9 +76,33 @@ export function renderFormula(version: string, sums: Record<string, string>): st
     end
   end
 
+  resource "protofs" do
+    if OS.mac? && Hardware::CPU.arm?
+      url "https://github.com/${REPO}/releases/download/v#{version}/protofs-darwin-arm64",
+          using: :nounzip
+      sha256 "${sums["protofs-darwin-arm64"]}"
+    elsif OS.mac?
+      url "https://github.com/${REPO}/releases/download/v#{version}/protofs-darwin-x64",
+          using: :nounzip
+      sha256 "${sums["protofs-darwin-x64"]}"
+    elsif Hardware::CPU.arm?
+      url "https://github.com/${REPO}/releases/download/v#{version}/protofs-linux-arm64",
+          using: :nounzip
+      sha256 "${sums["protofs-linux-arm64"]}"
+    else
+      url "https://github.com/${REPO}/releases/download/v#{version}/protofs-linux-x64",
+          using: :nounzip
+      sha256 "${sums["protofs-linux-x64"]}"
+    end
+  end
+
   def install
     bin.install Dir["proto-*"].first => "proto"
     (bin/"proto").chmod 0555
+    resource("protofs").stage do
+      bin.install Dir["protofs-*"].first => "protofs"
+      (bin/"protofs").chmod 0555
+    end
     with_env(HOME: buildpath) do
       generate_completions_from_executable(bin/"proto", "completions", shells: [:bash, :zsh, :fish])
     end
@@ -96,7 +120,16 @@ async function main(): Promise<void> {
 	const version = tag.replace(/^v/, "");
 	const assets = await fetchAssets(tag);
 
-	const targets = ["proto-darwin-arm64", "proto-darwin-x64", "proto-linux-arm64", "proto-linux-x64"];
+	const targets = [
+		"proto-darwin-arm64",
+		"proto-darwin-x64",
+		"proto-linux-arm64",
+		"proto-linux-x64",
+		"protofs-darwin-arm64",
+		"protofs-darwin-x64",
+		"protofs-linux-arm64",
+		"protofs-linux-x64",
+	];
 	const sums: Record<string, string> = {};
 	for (const name of targets) sums[name] = sha256For(assets, name);
 

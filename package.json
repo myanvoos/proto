@@ -20,6 +20,7 @@
     "claude:trace": "bun scripts/claude-trace.ts",
     "build": "bun run --workspaces --if-present build",
     "build:native": "bun --cwd=packages/natives run build",
+    "build:protofs": "bun scripts/build-protofs.ts",
     "check": "bun run --parallel check:ts check:rs",
     "check:ts": "bun run check:tools && bun run --workspaces --if-present check",
     "check:tools": "biome check . --no-errors-on-unmatched",

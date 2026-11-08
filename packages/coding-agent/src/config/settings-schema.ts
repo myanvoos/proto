@@ -3339,10 +3339,15 @@ export const SETTINGS_SCHEMA = {
 			group: "Isolation",
 			label: "Isolation Mode",
 			description:
-				'Isolation backend for workers. "auto" lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
+				'Isolation backend for workers. "auto" uses a protofs checkout when the protofs binary is found, otherwise lets the native PAL pick the best available backend (CoW-aware filesystems, then overlayfs/ProjFS, then a git worktree / recursive-copy fallback).',
 			options: [
 				{ value: "none", label: "None", description: "No isolation" },
-				{ value: "auto", label: "Auto", description: "Let the PAL pick the best available backend" },
+				{
+					value: "auto",
+					label: "Auto",
+					description:
+						"Isolated workers use protofs checkouts when protofs is found; otherwise the PAL picks the best available backend",
+				},
 				{ value: "apfs", label: "APFS", description: "macOS clonefile reflink (APFS)" },
 				{ value: "btrfs", label: "btrfs", description: "btrfs subvolume snapshot" },
 				{ value: "zfs", label: "ZFS", description: "ZFS snapshot + clone" },
@@ -3353,6 +3358,30 @@ export const SETTINGS_SCHEMA = {
 					description: "git worktree if available, otherwise recursive copy",
 				},
 			],
+		},
+	},
+
+	"protofs.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "protofs",
+			description:
+				"When the protofs binary is found, use protofs checkouts (copy-on-write views of a folder, ready in about a second at any size) whenever a separate copy is needed: the system prompt tells agents to open checkouts instead of git worktrees or copies, and isolated workers (with isolation mode on auto) run in checkouts instead of native clones",
+		},
+	},
+
+	"protofs.path": {
+		type: "string",
+		default: undefined,
+		ui: {
+			tab: "tasks",
+			group: "Isolation",
+			label: "protofs Binary",
+			description:
+				"protofs executable for `protofs.enabled`; unset uses the sibling of the proto binary, the development build, then `protofs` on PATH",
 		},
 	},
 

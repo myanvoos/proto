@@ -58,7 +58,10 @@ Labels (`[A-Za-z0-9_-]{1,48}`, rejected rather than rewritten) are display text 
 - `isolated: true` runs once synchronously in an isolated workspace copy (requires
   `orchestrator.isolation.mode` other than `none`), applies successful changes back by default
   (`orchestrator.isolation.apply=false` retains patch/branch artifacts), and leaves no
-  addressable worker. If patch capture or persistence fails, the error names the retained workspace
+  addressable worker. With `orchestrator.isolation.mode=auto` and a bundled, development or `PATH`
+  `protofs` binary (see [protofs checkouts](../protofs.md)), the workspace is a protofs checkout;
+  otherwise the PAL picks a native backend. If patch capture or persistence fails, the error names
+  the retained workspace
   containing the uncaptured changes. Recover those changes before running `proto worktree clear`
   after the owning session exits. Clear uses native teardown for retained overlays and Btrfs snapshots;
   missing or corrupt retention metadata and teardown failures leave the workspace intact. Retained

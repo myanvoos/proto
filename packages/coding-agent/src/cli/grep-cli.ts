@@ -1,6 +1,7 @@
 import * as path from "node:path";
-import { GrepOutputMode, grep } from "@oh-my-pi/pi-natives";
+import { GrepOutputMode } from "@oh-my-pi/pi-natives";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { grep as protofsGrep } from "../protofs/search";
 import { expandPath } from "../tools/path-utils";
 
 export interface GrepCommandArgs {
@@ -11,6 +12,8 @@ export interface GrepCommandArgs {
 	context: number;
 	mode: GrepOutputMode;
 	gitignore: boolean;
+	/** protofs command (`protofs.enabled`); a search root inside its mount is answered by the daemon. */
+	protofs?: string;
 }
 
 export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
@@ -29,16 +32,20 @@ export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
 	console.log("");
 
 	try {
-		const result = await grep({
-			pattern: cmd.pattern,
-			path: searchPath,
-			glob: cmd.glob,
-			mode: cmd.mode,
-			maxCount: cmd.limit,
-			context: cmd.mode === GrepOutputMode.Content ? cmd.context : undefined,
-			hidden: true,
-			gitignore: cmd.gitignore,
-		});
+		const result = await protofsGrep(
+			{
+				pattern: cmd.pattern,
+				path: searchPath,
+				glob: cmd.glob,
+				mode: cmd.mode,
+				maxCount: cmd.limit,
+				context: cmd.mode === GrepOutputMode.Content ? cmd.context : undefined,
+				hidden: true,
+				gitignore: cmd.gitignore,
+			},
+			null,
+			cmd.protofs,
+		);
 
 		console.log(chalk.green(`Total matches: ${result.totalMatches}`));
 		console.log(chalk.green(`Files with matches: ${result.filesWithMatches}`));
