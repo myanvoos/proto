@@ -93,7 +93,7 @@ test.skipIf(!python)(
 		try {
 			const forms = await bash.execute("forms", {
 				command: [
-					`alias pyreal=${quote(python!)}; pyreal -c 'print("alias-native")'`,
+					`shopt -s expand_aliases\nalias pyreal=${quote(python!)}\npyreal -c 'print("alias-native")'`,
 					`env ${python} program.py env-argument`,
 					"./program.py shebang-argument",
 					`${python} -m module_probe`,
@@ -185,8 +185,12 @@ test.skipIf(!python)(
 			expect(run.events.filter(event => event.type === "detection")).toHaveLength(2);
 			for (const flag of ["-I", "-E", "-S"]) {
 				expect(
-					await execute([flag, "-c", 'import sys; print("sitecustomize" in sys.modules, "tool" in globals())']),
-				).toBe("False False\n");
+					await execute([
+						flag,
+						"-c",
+						'import os,sys; print(os.environ.get("PROJECT_SITE_CHAINED"), "proto_harness._client" in sys.modules)',
+					]),
+				).toBe("None False\n");
 			}
 			expect(run.events.filter(event => event.type === "detection")).toHaveLength(2);
 		} finally {
