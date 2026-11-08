@@ -8,9 +8,11 @@ import {
 	estimateResolvedBlobBytes,
 	loadEntriesFromFileStream,
 	parseSessionContent,
+	readSessionHeaderId,
 	resolveBlobRefsInEntries,
 	resolveBlobRefsInEntriesSync,
 } from "./session-loader";
+import { serializeTitleSlot } from "./session-title-slot";
 
 test("stream loading distinguishes a malformed complete record from a torn final record", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-stream-session-load-"));
@@ -246,6 +248,32 @@ test("an image reference discovered later inside a replay blob reuses the load's
 		expect(entry.data).toMatchObject({
 			replay: { images: [{ data: Buffer.from("deduplicated image").toString("base64") }] },
 		});
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("readSessionHeaderId reads a wide header past the first window, whitespace, and a bare header", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "proto-session-header-"));
+	try {
+		const slot = serializeTitleSlot({ title: "Wide", source: "user", updatedAt: "2026-01-01T00:00:00.000Z" });
+		const wide = path.join(dir, "wide.jsonl");
+		const wideHeader = JSON.stringify({
+			type: "session",
+			version: 3,
+			id: "wide-id",
+			cwd: `/${"d".repeat(40 * 1024)}`,
+		});
+		await Bun.write(wide, `${slot}\n${wideHeader}\n${JSON.stringify({ type: "message", id: "m1" })}\n`);
+		expect(await readSessionHeaderId(wide)).toBe("wide-id");
+
+		const bare = path.join(dir, "bare.jsonl");
+		await Bun.write(bare, JSON.stringify({ type: "session", version: 3, id: "bare-id" }));
+		expect(await readSessionHeaderId(bare)).toBe("bare-id");
+
+		const padded = path.join(dir, "padded.jsonl");
+		await Bun.write(padded, `\n\t  ${JSON.stringify({ type: "session", version: 3, id: "padded-id" })}\n`);
+		expect(await readSessionHeaderId(padded)).toBe("padded-id");
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

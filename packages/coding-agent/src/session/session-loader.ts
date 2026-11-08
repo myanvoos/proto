@@ -1,16 +1,6 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import {
-	getBlobsDir,
-	isEisdir,
-	isEnoent,
-	isEnotdir,
-	jsonContainerEnd,
-	logger,
-	parseJsonlLenient,
-	peekFile,
-	tryParseJson,
-} from "@oh-my-pi/pi-utils";
+import { getBlobsDir, isEisdir, isEnoent, isEnotdir, logger, parseJsonlLenient, peekFile } from "@oh-my-pi/pi-utils";
 import {
 	type BlobReader,
 	BlobStore,
@@ -465,9 +455,9 @@ export async function readSessionHeaderId(filePath: string): Promise<string | un
 
 /**
  * The header id from a file's leading bytes, past the optional title slot
- * line. Parses only the first record, which may span lines (a pretty-printed
- * header). {@link HEADER_INCOMPLETE} when that record runs past `prefix` and
- * `final` is false (more of the file can be read).
+ * line. Parses only the first record line, so a large artifact costs one
+ * bounded read instead of a scan to its closing brace. {@link HEADER_INCOMPLETE}
+ * when that line runs past `prefix` and `final` is false (more can be read).
  */
 function sessionHeaderIdFromPrefix(prefix: Uint8Array, final: boolean): string | undefined | typeof HEADER_INCOMPLETE {
 	let records = prefix;
@@ -487,10 +477,11 @@ function sessionHeaderIdFromPrefix(prefix: Uint8Array, final: boolean): string |
 	if (records.length === 0) return final ? undefined : HEADER_INCOMPLETE;
 	// A header is an object; anything else is not a session file.
 	if (records[0] !== 0x7b) return undefined;
-	const text = new TextDecoder().decode(records);
-	const end = jsonContainerEnd(text, 0);
-	if (end === -1) return final ? undefined : HEADER_INCOMPLETE;
-	const entry = tryParseJson<FileEntry>(text.slice(0, end)) ?? undefined;
+	const end = records.indexOf(0x0a);
+	if (end === -1 && !final) return HEADER_INCOMPLETE;
+	const entry = Bun.JSONL.parseChunk(end === -1 ? records : records.subarray(0, end + 1)).values[0] as
+		| FileEntry
+		| undefined;
 	return isValidSessionHeader(entry) ? entry.id : undefined;
 }
 
