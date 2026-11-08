@@ -11,7 +11,7 @@ import { kernelLaneSessionId, resolveKernelLaneConfiguration } from "../eval/ker
 import { disposeKernelSessionsByOwner } from "../eval/py/executor";
 import { type BashResult, disposeBashSessions, executeBash } from "../exec/bash-executor";
 import { withExecutionOrigin } from "../jobs/origin";
-import type { ToolSession } from ".";
+import type { Tool, ToolSession } from ".";
 import { BashTool } from "./bash";
 import {
 	ContextTool,
@@ -24,6 +24,7 @@ import { JobsTool } from "./jobs";
 import { parseXdevCliArgs } from "./xdev-cli";
 
 const sessions = new Set<string>();
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 afterEach(async () => {
 	await Promise.all(
 		[...sessions].flatMap(id => [
@@ -103,20 +104,25 @@ test("explicit Python kernel start keeps compound heredoc edits tracked outside 
 		cwd,
 		target: { kind: "local" },
 	});
-	const result = await new BashTool(session).execute("compound-python-receipt", {
+	const bash = new BashTool(session);
+	const tools = new Map<string, Tool>([["bash", bash]]);
+	session.getToolByName = name => tools.get(name);
+	const pythonKernel = `${quote(interpreter)} -m proto_harness.kernel main`;
+	const result = await bash.execute("compound-python-receipt", {
 		cwd,
 		lane: "main",
 		command: [
-			"python <<'PY'",
+			`${pythonKernel} <<'PY'`,
+			"import proto_harness as harness",
 			"from pathlib import Path",
 			`config = Path(${JSON.stringify(config)})`,
 			"before = config.read_text()",
-			"config.write_text(before.replace('before', 'after'))",
+			"harness.fs.write_text(config, before.replace('before', 'after'))",
 			"marker = 73",
-			"assert callable(defs)",
+			"assert callable(harness.defs)",
 			"PY",
 			"printf 'catalog' > catalog.json",
-			"python <<'PY'",
+			`${pythonKernel} <<'PY'`,
 			"assert marker == 73",
 			"assert config.read_text() == 'providers: after\\n'",
 			"print('kernel-reused')",
@@ -312,7 +318,8 @@ describe("lane control", () => {
 		expect(after).toMatchObject({ state: "idle", kernels: [], configured: ["bun"] });
 		const probe = await execute("console.log(typeof marker, process.cwd(), kernelState().generation)");
 		const [markerType, probeCwd, generation] = probe.output.trim().split(" ");
-		expect([markerType, probeCwd]).toEqual(["undefined", cwd]);
+		// The kernel process reports the physical cwd; the lane keeps the logical spelling.
+		expect([markerType, probeCwd]).toEqual(["undefined", await fs.realpath(cwd)]);
 		expect(generation).not.toBe(started.kernel?.generation);
 
 		const closed = await within(lane(session, { op: "close", lane: "cfg" }));

@@ -17,6 +17,9 @@ import { ArtifactManager } from "../session/artifacts";
 import { createTools, type Tool, type ToolSession } from ".";
 import { handleContextControl } from "./context";
 
+const python = Bun.which("python3") ?? Bun.which("python");
+const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+
 // Real BashTool → shell bridge → kernel cell → tool.context bridge; the origin is whatever dispatch assigns.
 interface Harness {
 	session: ToolSession;
@@ -105,51 +108,58 @@ const cells = {
 		seed: "marker = 41",
 		read: 'print("marker=" + str(globals().get("marker")))',
 		control: (args: string) =>
-			`try:\n    tool.context(${args})\n    print("CONTROL ACCEPTED")\nexcept Exception as error:\n    print("CONTROL REJECTED:", error)`,
+			`import proto_harness as harness\ntry:\n    harness.tool.context(${args})\n    print("CONTROL ACCEPTED")\nexcept Exception as error:\n    print("CONTROL REJECTED:", error)`,
+		command: (lane: string, code: string) =>
+			`${quote(python!)} -m proto_harness.kernel ${lane} <<'CELL'\n${code}\nCELL`,
 	},
 	bun: {
 		seed: "var marker = 41",
 		read: 'console.log("marker=" + (typeof marker === "undefined" ? "None" : marker))',
 		control: (args: string) =>
 			`try { await tool.context(${args}); console.log("CONTROL ACCEPTED"); } catch (error) { console.log("CONTROL REJECTED:", error.message); }`,
+		command: (_lane: string, code: string) => `bun <<'CELL'\n${code}\nCELL`,
 	},
 } as const;
 
 for (const language of ["python", "bun"] as const) {
 	const cell = cells[language];
-	const command = (code: string) => `${language} <<'CELL'\n${code}\nCELL`;
-	test(`a ${language} cell cannot reset or close its own lane or kernel; another lane's cell can`, async () => {
-		await fixture(async bash => {
-			await bash("work", "export SHELL_MARKER=kept");
-			expect(await bash("work", command(cell.seed))).not.toContain("Error");
-			const own = [
-				`{"resource": "lane", "op": "reset", "lane": "work"}`,
-				`{"resource": "lane", "op": "close", "lane": "work", "force": True}`,
-				`{"resource": "kernel", "op": "reset", "language": "${language}", "lane": "work"}`,
-				`{"resource": "kernel", "op": "close", "language": "${language}", "lane": "work", "force": True}`,
-			].map(args => (language === "python" ? args : args.replace("True", "true")));
-			for (const args of own) {
-				const output = await bash("work", command(cell.control(args)));
-				expect(output).toContain("CONTROL REJECTED:");
-				expect(output).toMatch(/Cannot (reset|close) (lane work|the \w+ kernel of lane work)/);
-			}
-			// Rejected before mutation: heap, shell and generation survive with no state-loss notice.
-			const kept = await bash("work", `printf 'shell=%s\\n' "$SHELL_MARKER"; ${command(cell.read)}`);
-			expect(kept).toContain("marker=41");
-			expect(kept).toContain("shell=kept");
-			expect(kept).not.toContain("state lost");
+	const command = (lane: string, code: string) => cell.command(lane, code);
+	test.skipIf(language === "python" && !python)(
+		`a ${language} cell cannot reset or close its own lane or kernel; another lane's cell can`,
+		async () => {
+			await fixture(async bash => {
+				await bash("work", "export SHELL_MARKER=kept");
+				expect(await bash("work", command("work", cell.seed))).not.toContain("Error");
+				const own = [
+					`{"resource": "lane", "op": "reset", "lane": "work"}`,
+					`{"resource": "lane", "op": "close", "lane": "work", "force": True}`,
+					`{"resource": "kernel", "op": "reset", "language": "${language}", "lane": "work"}`,
+					`{"resource": "kernel", "op": "close", "language": "${language}", "lane": "work", "force": True}`,
+				].map(args => (language === "python" ? args : args.replace("True", "true")));
+				for (const args of own) {
+					const output = await bash("work", command("work", cell.control(args)));
+					expect(output).toContain("CONTROL REJECTED:");
+					expect(output).toMatch(/Cannot (reset|close) (lane work|the \w+ kernel of lane work)/);
+				}
+				// Rejected before mutation: heap, shell and generation survive with no state-loss notice.
+				const kept = await bash("work", `printf 'shell=%s\\n' "$SHELL_MARKER"; ${command("work", cell.read)}`);
+				expect(kept).toContain("marker=41");
+				expect(kept).toContain("shell=kept");
+				expect(kept).not.toContain("state lost");
 
-			const outer = await bash(
-				"control",
-				command(cell.control(`{"resource": "lane", "op": "reset", "lane": "work"}`)),
-			);
-			expect(outer).toContain("CONTROL ACCEPTED");
-			const reset = await bash("work", `printf 'shell=%s\\n' "$SHELL_MARKER"; ${command(cell.read)}`);
-			expect(reset).toContain("marker=None");
-			expect(reset).toContain("shell=\n");
-			expect(reset).toContain("<shell> state lost: lane work was reset by context control");
-		});
-	}, 60_000);
+				const outer = await bash(
+					"control",
+					command("control", cell.control(`{"resource": "lane", "op": "reset", "lane": "work"}`)),
+				);
+				expect(outer).toContain("CONTROL ACCEPTED");
+				const reset = await bash("work", `printf 'shell=%s\\n' "$SHELL_MARKER"; ${command("work", cell.read)}`);
+				expect(reset).toContain("marker=None");
+				expect(reset).toContain("shell=\n");
+				expect(reset).toContain("<shell> state lost: lane work was reset by context control");
+			});
+		},
+		60_000,
+	);
 }
 
 test("an interactive PTY command waits its turn in the lane FIFO and never runs once a lane reset cancels it", async () => {
