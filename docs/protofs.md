@@ -1,9 +1,10 @@
 # protofs checkouts
 
 `protofs` is an optional isolated-checkout backend, vendored from the OVN filesystem daemon
-(see `protofs/UPSTREAM.md`) and built by proto's own build step. It is not downloaded or installed
-as a separate tool: `bun run build:protofs` produces a sidecar binary, and release installs place it
-beside `proto`.
+(see `protofs/UPSTREAM.md`) and built by proto's own build step. `bun run build:protofs` produces
+both a `libprotofs` shared library and a `protofs` executable. proto prefers the library, which runs
+the daemon inside its own process, and falls back to the executable when the library is absent
+(source installs, musl targets, unsupported platforms). Release installs place both beside `proto`.
 
 Instead of cloning a repository for an isolated worker, proto opens a **protofs checkout**: a
 copy-on-write view of the repository served by the `protofs` daemon. A checkout is ready in about a
@@ -17,19 +18,33 @@ reflink, overlayfs, or recursive copy).
 ## Building
 
 ```sh
-bun run build:protofs                                  # host target
+bun run build:protofs                                  # host target: executable + library
 bun scripts/build-protofs.ts --target linux-x64        # one target
 bun scripts/build-protofs.ts --target darwin-arm64 --out /tmp/protofs
+bun scripts/build-protofs.ts --no-library              # executable only
 ```
 
 Targets: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`,
-`linux-musl-arm64`. The default output is
-`packages/coding-agent/binaries/protofs-<target>`. Builds use `CGO_ENABLED=0`,
-`-trimpath`, and `-ldflags "-s -w"`. Go 1.27.3 or newer is required.
+`linux-musl-arm64`. The default executable output is
+`packages/coding-agent/binaries/protofs-<target>`; the library is
+`packages/coding-agent/binaries/libprotofs-<target>.dylib` on macOS and `.so` on Linux. The
+executable builds use `CGO_ENABLED=0`, `-trimpath`, and `-ldflags "-s -w"`. The library builds with
+cgo (`-buildmode=c-shared`), so it is only produced for the host target and never for musl; every
+other target keeps the executable fallback. Go 1.27.3 or newer is required.
 
-## Binary resolution
+## Daemon resolution
 
-`protofs.enabled` defaults to on. When it is on, proto resolves the daemon in this order:
+`protofs.enabled` defaults to on. With `protofs.embedded` on (the default), proto first tries to load
+`libprotofs`:
+
+1. explicit `protofs.library`;
+2. `PROTOFS_LIBRARY`;
+3. `libprotofs-<platform>-<arch>.<dylib|so>`, then `libprotofs.<dylib|so>`, beside the running
+   `proto` binary;
+4. the development build `packages/coding-agent/binaries/libprotofs-<target>.<ext>`, then
+   `protofs/build/libprotofs-<target>.<ext>` from the repository.
+
+When no library loads, proto falls back to the `protofs` executable, resolved in this order:
 
 1. explicit `protofs.path`;
 2. `protofs-<platform>-<arch>` beside the running `proto` binary, then `protofs` beside it;
@@ -37,26 +52,32 @@ Targets: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-musl-x
    `protofs/protofs` from the repository;
 4. `protofs` on `PATH`.
 
-Release installs download `protofs-<target>` beside `proto` and install it as `protofs`. `proto
-update` refreshes that sibling best effort. Homebrew installs both binaries from the same formula.
+Setting `protofs.embedded=false` skips the library entirely and always uses the executable.
+
+Release installs download `libprotofs-<target>.<ext>` and `protofs-<target>` beside `proto`. `proto
+update` refreshes both siblings best effort, and Homebrew installs both from the same formula. Musl
+targets publish only the executable, so they always use the fallback; a release without a library
+warns during install instead of failing.
 
 ## Settings
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `protofs.enabled` | `true` | Use protofs when a binary is found. Turning this off removes the checkout guidance from the system prompt and keeps isolated workers on native backends. |
+| `protofs.enabled` | `true` | Use protofs when a daemon candidate is found. Turning this off removes the checkout guidance from the system prompt and keeps isolated workers on native backends. |
+| `protofs.embedded` | `true` | Run the daemon in-process through `libprotofs` when it loads; `false` spawns the `protofs` executable instead. |
 | `protofs.path` | unset | Explicit protofs executable, overriding every bundled or PATH candidate. |
+| `protofs.library` | unset | Explicit `libprotofs` path, overriding the sibling, development, and source candidates. |
 
-`protofs.enabled` alone is not enough: a candidate must exist. When none does, proto stays on the
-native backend and does not fail a spawn.
+`protofs.enabled` alone is not enough: a library or executable candidate must exist. When none
+does, proto stays on the native backend and does not fail a spawn.
 
 ## Isolated workers
 
 When `orchestrator.isolation.mode` is `auto` and protofs is found, an isolated worker's workspace is
 a protofs checkout:
 
-1. proto runs `protofs --json start` to make sure the daemon is running and to learn its admin
-   socket and mount.
+1. proto starts the daemon in-process through `libprotofs` (or runs `protofs --json start` when the
+   executable is the fallback) to learn its admin socket and mount.
 2. The run's task-isolation dir (under `~/.proto/wt`, or `worktree.base`) records the checkout in
    `.protofs-checkout.json` beside the owner marker.
 3. proto opens one checkout per run (`new`) over the daemon's Unix socket and runs the worker with
