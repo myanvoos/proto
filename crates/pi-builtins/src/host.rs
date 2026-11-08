@@ -913,6 +913,23 @@ impl Host {
 		self.paths.fs().to_async()
 	}
 
+	/// [`Host::vfs`] without automatic read reports: a search tool reports the
+	/// files it matched itself ([`Host::note_read`]), as pi's `grep`/`rg` do.
+	pub fn search_vfs(&self) -> pi_vfs::Fs {
+		self.vfs().without_read_observations()
+	}
+
+	/// Reports `path` as read by the utility itself.
+	pub fn note_read(&self, path: impl AsRef<std::path::Path>) {
+		self.vfs().note_read(self.resolve(path));
+	}
+
+	/// Reports a mutation the utility performed itself, outside the
+	/// filesystem facade (a descriptor-relative unlink, say).
+	pub fn note_write(&self, path: impl AsRef<std::path::Path>) {
+		self.vfs().note_write(self.resolve(path));
+	}
+
 	/// Whether stdin is a shell pipe, virtual file, or custom stream, and so should be treated
 	/// as implicit input rather than a terminal. `rg PATTERN` uses this to
 	/// decide between searching stdin and searching `.`.

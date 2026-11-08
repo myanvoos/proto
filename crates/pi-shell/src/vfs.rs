@@ -85,7 +85,7 @@ use std::{
 
 use bstr::{BStr, BString};
 use parking_lot::{Mutex, RwLock};
-use pi_vfs::FileKind as VfsKind;
+use pi_vfs::{FileKind as VfsKind, FsObserver, WriteTicket, held::HeldFiles};
 use tokio::{
 	runtime::Handle,
 	task::{JoinError, JoinHandle},
@@ -116,6 +116,11 @@ pub struct VfsFs {
 	fs:           Arc<RwLock<pi_vfs::Fs>>,
 	rt:           Handle,
 	observations: Arc<FsObservationLog>,
+	/// Regular files the host process had open when the current command
+	/// started, cached until the next observation drain: reading one would
+	/// release the SQLite locks the host holds on it
+	/// ([`pi_vfs::held::HeldFiles`]).
+	held:         Arc<Mutex<Option<Arc<HeldFiles>>>>,
 }
 
 impl VfsFs {
@@ -125,18 +130,40 @@ impl VfsFs {
 			fs: Arc::new(RwLock::new(fs)),
 			rt,
 			observations: Arc::new(FsObservationLog::default()),
+			held: Arc::new(Mutex::new(None)),
 		}
 	}
 
 	/// Take the file observations recorded since the last call, one per
 	/// path.
 	pub fn take_observations(&self) -> Vec<FsObservation> {
+		// The command ended: its file operations may have opened and closed
+		// stores, so the next command takes a fresh held-file snapshot.
+		*self.held.lock() = None;
 		self.observations.drain()
 	}
 
 	/// The filesystem operations start on.
 	pub fn filesystem(&self) -> pi_vfs::Fs {
 		self.fs.read().clone()
+	}
+
+	/// The filesystem pi's extras run on: the session filesystem, reporting
+	/// every read, write, removal and rename to the same observation log the
+	/// engine's own opens feed, and refusing to open a file the host holds
+	/// SQLite locks on.
+	pub fn observing_filesystem(&self) -> pi_vfs::Fs {
+		self.filesystem().with_observer(Arc::new(ObservingFs {
+			log:  Arc::clone(&self.observations),
+			held: self.held(),
+		}))
+	}
+
+	/// The host's held-file snapshot, taken on first use after the last
+	/// command ended.
+	fn held(&self) -> Arc<HeldFiles> {
+		let mut held = self.held.lock();
+		Arc::clone(held.get_or_insert_with(|| Arc::new(HeldFiles::snapshot())))
 	}
 
 	/// Replace the filesystem for operations started from now on (operations
@@ -178,6 +205,54 @@ impl VfsFs {
 	}
 }
 
+/// The observation side of [`VfsFs::observing_filesystem`]: pi's extras run
+/// on a plain [`pi_vfs::Fs`], so their reads, writes, removals and renames
+/// are reported here, through the same log the engine's own opens use.
+#[derive(Debug)]
+struct ObservingFs {
+	log:  Arc<FsObservationLog>,
+	held: Arc<HeldFiles>,
+}
+
+impl FsObserver for ObservingFs {
+	fn prepare_open(
+		&self,
+		path: &Path,
+		_read: bool,
+		write: bool,
+	) -> io::Result<Option<WriteTicket>> {
+		// Reading (or reopening for a write) a SQLite store the host holds
+		// would release its locks.
+		self.held.check(path)?;
+		if write {
+			Ok(self.log.prepare_write(path)?.map(WriteTicket::new))
+		} else {
+			Ok(None)
+		}
+	}
+
+	fn commit_write(&self, ticket: Option<WriteTicket>) {
+		self
+			.log
+			.commit_write(ticket.and_then(|ticket| ticket.downcast::<FsObservation>()));
+	}
+
+	fn record_read(&self, path: &Path, provider: Option<&pi_vfs::Metadata>) {
+		match provider {
+			Some(metadata) => self.log.record_read_provider(path, metadata),
+			None => self.log.record_read(path),
+		}
+	}
+
+	fn record_write(&self, path: &Path, provider: bool) {
+		if provider {
+			self.log.commit_provider_write(path);
+		} else {
+			self.log.record_write(path);
+		}
+	}
+}
+
 impl Fs for VfsFs {
 	fn open(&mut self, path: &BStr, flags: OpenFlags, mode: u32) -> FsPoll<Box<dyn File>> {
 		let host = match host_path(path) {
@@ -188,6 +263,11 @@ impl Fs for VfsFs {
 		let reading = flags.contains(OpenFlags::READ);
 		let current = self.fs.read().clone();
 		if current.is_native_local(&host) {
+			// Opening a SQLite store the host holds would release its locks
+			// before the shell's own read even starts.
+			if let Err(err) = self.held().check(&host) {
+				return FsPoll::Ready(Err(err));
+			}
 			let observation = if mutating {
 				match self.observations.prepare_write(&host) {
 					Ok(observation) => observation,

@@ -1108,7 +1108,10 @@ struct Listed {
 
 /// Everything the concurrent per-file searches of one directory operand share.
 struct DirSearch<M> {
+	/// Files are opened here without automatic read reports.
 	fs:       pi_vfs::Fs,
+	/// Reports the files that matched, as pi's `grep` does.
+	note:     pi_vfs::Fs,
 	/// The directory operand's files; a native tree's open through each
 	/// worker's [`FileOpener`]. `None` for a file operand.
 	listed:   Option<Listed>,
@@ -1239,7 +1242,11 @@ impl<M: Matcher + Send + Sync + 'static> DirSearch<M> {
 				let searched = self
 					.push_input(&mut input, display_path.as_os_str().as_encoded_bytes(), worker)
 					.await;
-				self.finish(display_path, searched, worker.take_out())
+				let found = self.finish(display_path, searched, worker.take_out());
+				if matches!(found.matched, Ok(true)) {
+					self.note.note_read(path);
+				}
+				found
 			},
 			Err(error) => {
 				let mut err = Vec::new();
@@ -1268,7 +1275,7 @@ async fn search_dir<M: Matcher + Clone + Send + Sync + 'static, W: Write + Send>
 	out: &mut W,
 	had_error: &mut bool,
 ) -> io::Result<bool> {
-	let vfs = host.vfs();
+	let vfs = host.search_vfs();
 	let (_guard, scope) = HaltGuard::new();
 	let layer = pi_walker::Fs::new(&vfs, resolved);
 	let walk_opts = walk::Options { hidden: true, follow_links, ..walk::Options::default() };
@@ -1306,6 +1313,7 @@ async fn search_dir<M: Matcher + Clone + Send + Sync + 'static, W: Write + Send>
 	let workers = if opts.line_buffered { 1 } else { walk_opts.parallelism(&layer) };
 	let shared = Arc::new(DirSearch {
 		fs:       vfs.clone(),
+		note:     host.vfs(),
 		listed:   Some(Listed { layer, files }),
 		halt:     Halt { scope, outer: Arc::clone(outer) },
 		operand:  operand.to_owned(),
@@ -1637,7 +1645,7 @@ async fn execute_search<M: Matcher + Clone + Send + Sync + 'static>(
 	max_count: Option<u64>,
 ) -> i32 {
 	let builder = build_searcher(cli, opts, max_count);
-	let fs = host.vfs();
+	let fs = host.search_vfs();
 	let (_guard, outer) = HaltGuard::new();
 	let mut out = host.stdout_writer();
 	let mut any_match = false;
@@ -1718,6 +1726,7 @@ async fn execute_search<M: Matcher + Clone + Send + Sync + 'static>(
 				}
 				let shared = DirSearch {
 					fs:       fs.clone(),
+					note:     host.vfs(),
 					listed:   None,
 					halt:     Halt { scope: Arc::clone(&outer), outer: Arc::clone(&outer) },
 					operand:  operand.clone(),

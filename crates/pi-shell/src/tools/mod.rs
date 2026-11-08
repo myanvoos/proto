@@ -146,12 +146,14 @@ impl ToolConfig {
 		self.extras.native(name)
 	}
 
-	/// The filesystem extras started now run on.
+	/// The filesystem extras started now run on: the session filesystem,
+	/// observing every file operation it performs (write receipts and the
+	/// stale-write guard, and the refusal to open a store the host holds).
 	pub fn filesystem(&self) -> pi_vfs::Fs {
 		self
 			.vfs
 			.as_ref()
-			.map_or_else(pi_vfs::Fs::native, VfsFs::filesystem)
+			.map_or_else(pi_vfs::Fs::native, VfsFs::observing_filesystem)
 	}
 
 	/// Whether `path` is a plain host filesystem object.

@@ -36,6 +36,8 @@ mod canonicalize;
 mod dir;
 mod error;
 mod file;
+/// Files the process holds open that an in-process read would unlock.
+pub mod held;
 mod fs;
 mod metadata;
 mod native;
@@ -56,7 +58,7 @@ pub use error::{
 pub use file::{File, FileHandle};
 #[cfg(unix)]
 pub use file::{POLL_SLICE, fd_reads_can_block, readable_within, reads_can_block, wait_readable};
-pub use fs::{BlockingFs, Fs};
+pub use fs::{BlockingFs, Fs, FsObserver, WriteTicket};
 pub use metadata::Metadata;
 pub use options::{
 	CanonicalizeOptions, DirOptions, MissingHandling, OpenOptions, ResolveMode, TempOptions,

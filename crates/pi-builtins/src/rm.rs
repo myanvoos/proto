@@ -192,6 +192,7 @@ pub fn safe_remove_file(host: &mut Host,
 
 	match dir_fd.unlink_at(&file_name, false) {
 		Ok(_) => {
+			host.note_write(path);
 			// Update progress bar for file removal
 			if let Some(pb) = progress_bar {
 				pb.inc(1);
@@ -225,6 +226,7 @@ pub fn safe_remove_empty_dir(host: &mut Host,
 
 	match dir_fd.unlink_at(&dir_name, true) {
 		Ok(_) => {
+			host.note_write(path);
 			// Update progress bar for directory removal
 			if let Some(pb) = progress_bar {
 				pb.inc(1);
@@ -281,6 +283,7 @@ fn handle_unlink(host: &mut Host,
 		show_error!(host, "cannot remove {}: {e}", entry_path.quote());
 		true
 	} else {
+		host.note_write(entry_path);
 		if is_dir {
 			verbose_removed_directory(host, entry_path, options);
 		} else {

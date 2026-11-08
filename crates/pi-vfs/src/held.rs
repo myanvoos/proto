@@ -11,7 +11,8 @@
 //! snapshots the process's descriptors through `/dev/fd` and refuses to read a
 //! SQLite store it holds. On Linux the engine's OFD-lock shim additionally
 //! prevents a close from releasing the locks at the source; this check keeps
-//! the read tool safe on every Unix.
+//! the read tool, the shell's builtins and its redirections safe on every
+//! Unix.
 
 use std::{collections::HashMap, fs::Metadata, path::Path};
 

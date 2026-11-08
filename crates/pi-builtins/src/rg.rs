@@ -1672,7 +1672,12 @@ async fn search_path<M: Matcher + Send + Sync + 'static, W: Write>(
 		},
 		None => Input::Source(stdio::Source::open(fs, path).await?),
 	};
-	process_input(&shared.matcher, scratch, input, Some(halt), display, opts, stats, out).await
+	let matched =
+		process_input(&shared.matcher, scratch, input, Some(halt), display, opts, stats, out).await?;
+	if matched {
+		shared.note.note_read(path);
+	}
+	Ok(matched)
 }
 
 fn report_path_error(
@@ -1695,7 +1700,10 @@ fn report_path_error(
 /// operands are files named on the command line and print under their
 /// operand spelling.
 struct DirSearch<M> {
+	/// Files are opened here without automatic read reports.
 	fs:         pi_vfs::Fs,
+	/// Reports the files that matched, as pi's `rg` does.
+	note:       pi_vfs::Fs,
 	halt:       Arc<AtomicBool>,
 	direct:     bool,
 	stdout:     Option<StdoutFile>,
@@ -1763,7 +1771,8 @@ fn dir_search<M: Clone>(
 	direct: bool,
 ) -> Arc<DirSearch<M>> {
 	Arc::new(DirSearch {
-		fs: host.vfs(),
+		fs: host.search_vfs(),
+		note: host.vfs(),
 		halt: halt.flag(),
 		direct,
 		stdout: host.stdout_file(),

@@ -15,7 +15,6 @@ pub mod fd;
 pub mod file_lock;
 pub mod glob;
 pub mod grep;
-pub mod held_files;
 pub mod highlight;
 pub mod html;
 pub mod iofs;

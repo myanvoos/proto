@@ -62,11 +62,70 @@ enum PairRoute<'a> {
 ///
 /// Clones, [`Fs::blocking`] views, [`Fs::with_cancellation`] views, and
 /// [`Fs::mount_file`] overlays share one provider and one close tracker.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Fs {
 	provider: Option<Arc<dyn FileSystem>>,
 	mounts:   Option<Arc<Vec<Arc<Mount>>>>,
 	scope:    Scope,
+	observer: Option<Arc<dyn FsObserver>>,
+	/// Whether opening a file for reading reports it automatically. A search
+	/// tool turns this off and reports the files it matched itself
+	/// ([`Fs::note_read`]), as pi's `grep`/`rg` do.
+	read_observations: bool,
+}
+
+/// State an [`FsObserver`] carries from [`FsObserver::prepare_open`] to
+/// [`FsObserver::commit_write`]: a host's pending write observation, for
+/// instance. Opaque to the facade.
+#[derive(Debug)]
+pub struct WriteTicket(Box<dyn std::any::Any + Send>);
+
+impl WriteTicket {
+	/// Carries `value` until the write commits.
+	pub fn new<T: std::any::Any + Send>(value: T) -> Self {
+		Self(Box::new(value))
+	}
+
+	/// The carried value, when it is a `T`.
+	pub fn downcast<T: std::any::Any + Send>(self) -> Option<T> {
+		self.0.downcast::<T>().ok().map(|value| *value)
+	}
+}
+
+/// Observes a facade's file operations: what a host turns into write receipts,
+/// a stale-write guard, or a refusal to open a file the process holds locked.
+///
+/// Every method has a no-op default, so an observer implements only what it
+/// cares about. The facade calls them on the calling thread, around the
+/// operation they describe.
+pub trait FsObserver: Send + Sync + fmt::Debug {
+	/// Before an open; an error refuses it (before any truncation).
+	fn prepare_open(
+		&self,
+		path: &Path,
+		read: bool,
+		write: bool,
+	) -> io::Result<Option<WriteTicket>> {
+		let _ = (path, read, write);
+		Ok(None)
+	}
+
+	/// After the open [`FsObserver::prepare_open`] prepared succeeded.
+	fn commit_write(&self, ticket: Option<WriteTicket>) {
+		drop(ticket);
+	}
+
+	/// A read of `path` opened; `provider` metadata when the facade routed the
+	/// read through a provider.
+	fn record_read(&self, path: &Path, provider: Option<&Metadata>) {
+		let _ = (path, provider);
+	}
+
+	/// A content-mutating operation that is not an open (a removal or rename)
+	/// succeeded.
+	fn record_write(&self, path: &Path, provider: bool) {
+		let _ = (path, provider);
+	}
 }
 
 impl fmt::Debug for Fs {
@@ -81,6 +140,7 @@ impl fmt::Debug for Fs {
 			.field("provider", &self.provider)
 			.field("mounts", &mounts)
 			.field("cancellable", &self.scope.cancel.is_some())
+			.field("observed", &self.observer.is_some())
 			.finish()
 	}
 }
@@ -701,6 +761,18 @@ fn create_options() -> OpenOptions {
 	options
 }
 
+impl Default for Fs {
+	fn default() -> Self {
+		Self {
+			provider:          None,
+			mounts:            None,
+			scope:             Scope::default(),
+			observer:          None,
+			read_observations: true,
+		}
+	}
+}
+
 impl Fs {
 	/// The host filesystem.
 	pub fn native() -> Self {
@@ -717,6 +789,80 @@ impl Fs {
 				closes:        Some(Arc::new(CloseTracker::default())),
 				creation_mask: None,
 			},
+			observer: None,
+			read_observations: true,
+		}
+	}
+
+	/// A view whose operations report to `observer`; clones share it, and
+	/// derived views ([`Fs::with_cancellation`], [`Fs::with_creation_mask`],
+	/// [`Fs::mount_file`], [`Fs::blocking`]) keep it.
+	pub fn with_observer(&self, observer: Arc<dyn FsObserver>) -> Self {
+		let mut fs = self.clone();
+		fs.observer = Some(observer);
+		fs
+	}
+
+	/// The installed observer, if any.
+	pub fn observer(&self) -> Option<&Arc<dyn FsObserver>> {
+		self.observer.as_ref()
+	}
+
+	/// A view that does not report reads automatically: a search tool reports
+	/// the files it matched with [`Fs::note_read`] instead, so a directory
+	/// scan does not arm the stale-write guard on every file it looked at.
+	pub fn without_read_observations(&self) -> Self {
+		let mut fs = self.clone();
+		fs.read_observations = false;
+		fs
+	}
+
+	/// Reports `path` as read, whatever this view's automatic read
+	/// observation says.
+	pub fn note_read(&self, path: impl AsRef<Path>) {
+		if let Some(observer) = &self.observer {
+			observer.record_read(path.as_ref(), None);
+		}
+	}
+
+	/// Reports a content mutation of `path` the caller performed itself,
+	/// outside the facade (a descriptor-relative unlink, say).
+	pub fn note_write(&self, path: impl AsRef<Path>) {
+		if let Some(observer) = &self.observer {
+			observer.record_write(path.as_ref(), false);
+		}
+	}
+
+	/// [`FsObserver::prepare_open`], when an observer is installed.
+	fn prepare_open(
+		&self,
+		path: &Path,
+		read: bool,
+		write: bool,
+	) -> io::Result<Option<WriteTicket>> {
+		match &self.observer {
+			Some(observer) => observer.prepare_open(path, read, write),
+			None => Ok(None),
+		}
+	}
+
+	fn commit_write(&self, ticket: Option<WriteTicket>) {
+		if let Some(observer) = &self.observer {
+			observer.commit_write(ticket);
+		}
+	}
+
+	fn record_read(&self, path: &Path, provider: Option<&Metadata>) {
+		if self.read_observations
+			&& let Some(observer) = &self.observer
+		{
+			observer.record_read(path, provider);
+		}
+	}
+
+	fn record_write(&self, path: &Path, provider: bool) {
+		if let Some(observer) = &self.observer {
+			observer.record_write(path, provider);
 		}
 	}
 
@@ -886,12 +1032,37 @@ impl Fs {
 		options: &OpenOptions,
 	) -> io::Result<File> {
 		let path = path.as_ref();
+		let read = options.is_read();
+		let write = options.is_write()
+			|| options.is_append()
+			|| options.is_truncate()
+			|| options.is_create()
+			|| options.is_create_new();
 		match self.route(path)? {
-			Route::Native => native_open_scoped_async(&self.scope, path, options).await,
-			Route::Provider(provider) => Ok(self
-				.guard(provider.open(path, options))
-				.await?
-				.bind(&self.scope)),
+			Route::Native => {
+				let ticket = self.prepare_open(path, read, write)?;
+				let file = native_open_scoped_async(&self.scope, path, options).await;
+				if file.is_ok() {
+					if write {
+						self.commit_write(ticket);
+					} else if read {
+						self.record_read(path, None);
+					}
+				}
+				file
+			},
+			Route::Provider(provider) => {
+				let file = self
+					.guard(provider.open(path, options))
+					.await?
+					.bind(&self.scope);
+				if write {
+					self.record_write(path, true);
+				} else if read && let Ok(metadata) = file.metadata_async().await {
+					self.record_read(path, Some(&metadata));
+				}
+				Ok(file)
+			},
 			Route::Mounted(file) => mount_open_async(file, options).await,
 		}
 	}
@@ -950,8 +1121,18 @@ impl Fs {
 	pub async fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 		let path = path.as_ref();
 		match self.route(path)? {
-			Route::Native => native_read_async(&self.scope, path).await,
-			Route::Provider(provider) => self.guard(provider.read(path)).await,
+			Route::Native => {
+				let contents = native_read_async(&self.scope, path).await?;
+				self.record_read(path, None);
+				Ok(contents)
+			},
+			Route::Provider(provider) => {
+				let contents = self.guard(provider.read(path)).await?;
+				if let Ok(metadata) = provider.metadata(path).await {
+					self.record_read(path, Some(&metadata));
+				}
+				Ok(contents)
+			},
 			Route::Mounted(file) => {
 				let file = mount_open_async(file, &read_options()).await?;
 				let mut contents = Vec::new();
@@ -969,8 +1150,19 @@ impl Fs {
 	pub async fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
 		let (path, contents) = (path.as_ref(), contents.as_ref());
 		match self.route(path)? {
-			Route::Native => std::fs::write(path, contents),
-			Route::Provider(provider) => self.guard(provider.write(path, contents)).await,
+			Route::Native => {
+				let ticket = self.prepare_open(path, false, true)?;
+				std::fs::write(path, contents)?;
+				self.commit_write(ticket);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				let result = self.guard(provider.write(path, contents)).await;
+				if result.is_ok() {
+					self.record_write(path, true);
+				}
+				result
+			},
 			Route::Mounted(file) => {
 				mount_open_async(file, &create_options())
 					.await?
@@ -1095,8 +1287,16 @@ impl Fs {
 	pub async fn remove_file(&self, path: impl AsRef<Path>) -> io::Result<()> {
 		let path = path.as_ref();
 		match self.route(path)? {
-			Route::Native => std::fs::remove_file(path),
-			Route::Provider(provider) => self.guard(provider.remove_file(path)).await,
+			Route::Native => {
+				std::fs::remove_file(path)?;
+				self.record_write(path, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.guard(provider.remove_file(path)).await?;
+				self.record_write(path, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(not_permitted()),
 		}
 	}
@@ -1104,8 +1304,16 @@ impl Fs {
 	pub async fn remove_dir(&self, path: impl AsRef<Path>) -> io::Result<()> {
 		let path = path.as_ref();
 		match self.route(path)? {
-			Route::Native => std::fs::remove_dir(path),
-			Route::Provider(provider) => self.guard(provider.remove_dir(path)).await,
+			Route::Native => {
+				std::fs::remove_dir(path)?;
+				self.record_write(path, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.guard(provider.remove_dir(path)).await?;
+				self.record_write(path, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(not_permitted()),
 		}
 	}
@@ -1113,8 +1321,16 @@ impl Fs {
 	pub async fn remove_dir_all(&self, path: impl AsRef<Path>) -> io::Result<()> {
 		let path = path.as_ref();
 		match self.route(path)? {
-			Route::Native => std::fs::remove_dir_all(path),
-			Route::Provider(provider) => self.guard(provider.remove_dir_all(path)).await,
+			Route::Native => {
+				std::fs::remove_dir_all(path)?;
+				self.record_write(path, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.guard(provider.remove_dir_all(path)).await?;
+				self.record_write(path, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(not_permitted()),
 		}
 	}
@@ -1124,8 +1340,19 @@ impl Fs {
 	pub async fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
 		let (from, to) = (from.as_ref(), to.as_ref());
 		match self.route_pair(from, to)? {
-			PairRoute::Native => std::fs::rename(from, to),
-			PairRoute::Provider(provider) => self.guard(provider.rename(from, to)).await,
+			PairRoute::Native => {
+				let ticket = self.prepare_open(to, false, true)?;
+				std::fs::rename(from, to)?;
+				self.record_write(from, false);
+				self.commit_write(ticket);
+				Ok(())
+			},
+			PairRoute::Provider(provider) => {
+				self.guard(provider.rename(from, to)).await?;
+				self.record_write(from, true);
+				self.record_write(to, true);
+				Ok(())
+			},
 		}
 	}
 
@@ -1133,7 +1360,13 @@ impl Fs {
 	pub async fn copy(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<u64> {
 		let (from, to) = (from.as_ref(), to.as_ref());
 		match (self.route(from)?, self.route(to)?) {
-			(Route::Native, Route::Native) => std::fs::copy(from, to),
+			(Route::Native, Route::Native) => {
+				let ticket = self.prepare_open(to, false, true)?;
+				let copied = std::fs::copy(from, to)?;
+				self.record_read(from, None);
+				self.commit_write(ticket);
+				Ok(copied)
+			},
 			(Route::Mounted(_), _) | (_, Route::Mounted(_)) => {
 				let source = self.open(from).await?;
 				let target = self.create(to).await?;
@@ -1151,7 +1384,9 @@ impl Fs {
 				Ok(copied)
 			},
 			(Route::Provider(provider), _) | (_, Route::Provider(provider)) => {
-				self.guard(provider.copy(from, to)).await
+				let copied = self.guard(provider.copy(from, to)).await?;
+				self.record_write(to, true);
+				Ok(copied)
 			},
 		}
 	}
@@ -1163,8 +1398,16 @@ impl Fs {
 	) -> io::Result<()> {
 		let (original, link) = (original.as_ref(), link.as_ref());
 		match self.route_pair(original, link)? {
-			PairRoute::Native => std::fs::hard_link(original, link),
-			PairRoute::Provider(provider) => self.guard(provider.hard_link(original, link)).await,
+			PairRoute::Native => {
+				std::fs::hard_link(original, link)?;
+				self.record_write(link, false);
+				Ok(())
+			},
+			PairRoute::Provider(provider) => {
+				self.guard(provider.hard_link(original, link)).await?;
+				self.record_write(link, true);
+				Ok(())
+			},
 		}
 	}
 
@@ -1182,8 +1425,16 @@ impl Fs {
 	) -> io::Result<()> {
 		let (target, link) = (target.as_ref(), link.as_ref());
 		match self.route(link)? {
-			Route::Native => native::symlink(target, link, kind),
-			Route::Provider(provider) => self.guard(provider.symlink(target, link, kind)).await,
+			Route::Native => {
+				native::symlink(target, link, kind)?;
+				self.record_write(link, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.guard(provider.symlink(target, link, kind)).await?;
+				self.record_write(link, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(already_exists()),
 		}
 	}
@@ -1443,6 +1694,21 @@ impl BlockingFs {
 		Self::default()
 	}
 
+	/// See [`Fs::without_read_observations`].
+	pub fn without_read_observations(&self) -> Self {
+		Self { fs: self.fs.without_read_observations(), runtime: self.runtime.clone() }
+	}
+
+	/// See [`Fs::note_read`].
+	pub fn note_read(&self, path: impl AsRef<Path>) {
+		self.fs.note_read(path);
+	}
+
+	/// See [`Fs::note_write`].
+	pub fn note_write(&self, path: impl AsRef<Path>) {
+		self.fs.note_write(path);
+	}
+
 	/// The async facade this view wraps.
 	pub const fn as_async(&self) -> &Fs {
 		&self.fs
@@ -1512,10 +1778,33 @@ impl BlockingFs {
 
 	pub fn open_with(&self, path: impl AsRef<Path>, options: &OpenOptions) -> io::Result<File> {
 		let path = path.as_ref();
+		let read = options.is_read();
+		let write = options.is_write()
+			|| options.is_append()
+			|| options.is_truncate()
+			|| options.is_create()
+			|| options.is_create_new();
 		match self.fs.route(path)? {
-			Route::Native => native_open_scoped(&self.fs.scope, path, options),
+			Route::Native => {
+				let ticket = self.fs.prepare_open(path, read, write)?;
+				let file = native_open_scoped(&self.fs.scope, path, options);
+				if file.is_ok() {
+					if write {
+						self.fs.commit_write(ticket);
+					} else if read {
+						self.fs.record_read(path, None);
+					}
+				}
+				file
+			},
 			Route::Provider(provider) => {
-				Ok(self.run(provider.open(path, options))?.bind(&self.fs.scope))
+				let file = self.run(provider.open(path, options))?.bind(&self.fs.scope);
+				if write {
+					self.fs.record_write(path, true);
+				} else if read && let Ok(metadata) = file.metadata() {
+					self.fs.record_read(path, Some(&metadata));
+				}
+				Ok(file)
 			},
 			Route::Mounted(file) => mount_open(file, options),
 		}
@@ -1574,8 +1863,18 @@ impl BlockingFs {
 	pub fn read(&self, path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 		let path = path.as_ref();
 		match self.fs.route(path)? {
-			Route::Native => native_read(&self.fs.scope, path),
-			Route::Provider(provider) => self.run(provider.read(path)),
+			Route::Native => {
+				let contents = native_read(&self.fs.scope, path)?;
+				self.fs.record_read(path, None);
+				Ok(contents)
+			},
+			Route::Provider(provider) => {
+				let contents = self.run(provider.read(path))?;
+				if let Ok(metadata) = self.run(provider.metadata(path)) {
+					self.fs.record_read(path, Some(&metadata));
+				}
+				Ok(contents)
+			},
 			Route::Mounted(file) => {
 				let mut contents = Vec::new();
 				io::Read::read_to_end(&mut mount_open(file, &read_options())?, &mut contents)?;
@@ -1592,8 +1891,19 @@ impl BlockingFs {
 	pub fn write(&self, path: impl AsRef<Path>, contents: impl AsRef<[u8]>) -> io::Result<()> {
 		let (path, contents) = (path.as_ref(), contents.as_ref());
 		match self.fs.route(path)? {
-			Route::Native => std::fs::write(path, contents),
-			Route::Provider(provider) => self.run(provider.write(path, contents)),
+			Route::Native => {
+				let ticket = self.fs.prepare_open(path, false, true)?;
+				std::fs::write(path, contents)?;
+				self.fs.commit_write(ticket);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				let result = self.run(provider.write(path, contents));
+				if result.is_ok() {
+					self.fs.record_write(path, true);
+				}
+				result
+			},
 			Route::Mounted(file) => {
 				io::Write::write_all(&mut mount_open(file, &create_options())?, contents)
 			},
@@ -1705,8 +2015,16 @@ impl BlockingFs {
 	pub fn remove_file(&self, path: impl AsRef<Path>) -> io::Result<()> {
 		let path = path.as_ref();
 		match self.fs.route(path)? {
-			Route::Native => std::fs::remove_file(path),
-			Route::Provider(provider) => self.run(provider.remove_file(path)),
+			Route::Native => {
+				std::fs::remove_file(path)?;
+				self.fs.record_write(path, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.run(provider.remove_file(path))?;
+				self.fs.record_write(path, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(not_permitted()),
 		}
 	}
@@ -1714,8 +2032,16 @@ impl BlockingFs {
 	pub fn remove_dir(&self, path: impl AsRef<Path>) -> io::Result<()> {
 		let path = path.as_ref();
 		match self.fs.route(path)? {
-			Route::Native => std::fs::remove_dir(path),
-			Route::Provider(provider) => self.run(provider.remove_dir(path)),
+			Route::Native => {
+				std::fs::remove_dir(path)?;
+				self.fs.record_write(path, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.run(provider.remove_dir(path))?;
+				self.fs.record_write(path, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(not_permitted()),
 		}
 	}
@@ -1723,8 +2049,16 @@ impl BlockingFs {
 	pub fn remove_dir_all(&self, path: impl AsRef<Path>) -> io::Result<()> {
 		let path = path.as_ref();
 		match self.fs.route(path)? {
-			Route::Native => std::fs::remove_dir_all(path),
-			Route::Provider(provider) => self.run(provider.remove_dir_all(path)),
+			Route::Native => {
+				std::fs::remove_dir_all(path)?;
+				self.fs.record_write(path, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.run(provider.remove_dir_all(path))?;
+				self.fs.record_write(path, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(not_permitted()),
 		}
 	}
@@ -1733,8 +2067,19 @@ impl BlockingFs {
 	pub fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
 		let (from, to) = (from.as_ref(), to.as_ref());
 		match self.fs.route_pair(from, to)? {
-			PairRoute::Native => std::fs::rename(from, to),
-			PairRoute::Provider(provider) => self.run(provider.rename(from, to)),
+			PairRoute::Native => {
+				let ticket = self.fs.prepare_open(to, false, true)?;
+				std::fs::rename(from, to)?;
+				self.fs.record_write(from, false);
+				self.fs.commit_write(ticket);
+				Ok(())
+			},
+			PairRoute::Provider(provider) => {
+				self.run(provider.rename(from, to))?;
+				self.fs.record_write(from, true);
+				self.fs.record_write(to, true);
+				Ok(())
+			},
 		}
 	}
 
@@ -1742,7 +2087,13 @@ impl BlockingFs {
 	pub fn copy(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<u64> {
 		let (from, to) = (from.as_ref(), to.as_ref());
 		match (self.fs.route(from)?, self.fs.route(to)?) {
-			(Route::Native, Route::Native) => std::fs::copy(from, to),
+			(Route::Native, Route::Native) => {
+				let ticket = self.fs.prepare_open(to, false, true)?;
+				let copied = std::fs::copy(from, to)?;
+				self.fs.record_read(from, None);
+				self.fs.commit_write(ticket);
+				Ok(copied)
+			},
 			(Route::Mounted(_), _) | (_, Route::Mounted(_)) => {
 				let source = self.open(from)?;
 				let target = self.create(to)?;
@@ -1751,7 +2102,9 @@ impl BlockingFs {
 				Ok(copied)
 			},
 			(Route::Provider(provider), _) | (_, Route::Provider(provider)) => {
-				self.run(provider.copy(from, to))
+				let copied = self.run(provider.copy(from, to))?;
+				self.fs.record_write(to, true);
+				Ok(copied)
 			},
 		}
 	}
@@ -1759,8 +2112,16 @@ impl BlockingFs {
 	pub fn hard_link(&self, original: impl AsRef<Path>, link: impl AsRef<Path>) -> io::Result<()> {
 		let (original, link) = (original.as_ref(), link.as_ref());
 		match self.fs.route_pair(original, link)? {
-			PairRoute::Native => std::fs::hard_link(original, link),
-			PairRoute::Provider(provider) => self.run(provider.hard_link(original, link)),
+			PairRoute::Native => {
+				std::fs::hard_link(original, link)?;
+				self.fs.record_write(link, false);
+				Ok(())
+			},
+			PairRoute::Provider(provider) => {
+				self.run(provider.hard_link(original, link))?;
+				self.fs.record_write(link, true);
+				Ok(())
+			},
 		}
 	}
 
@@ -1777,8 +2138,16 @@ impl BlockingFs {
 	) -> io::Result<()> {
 		let (target, link) = (target.as_ref(), link.as_ref());
 		match self.fs.route(link)? {
-			Route::Native => native::symlink(target, link, kind),
-			Route::Provider(provider) => self.run(provider.symlink(target, link, kind)),
+			Route::Native => {
+				native::symlink(target, link, kind)?;
+				self.fs.record_write(link, false);
+				Ok(())
+			},
+			Route::Provider(provider) => {
+				self.run(provider.symlink(target, link, kind))?;
+				self.fs.record_write(link, true);
+				Ok(())
+			},
 			Route::Mounted(_) => Err(already_exists()),
 		}
 	}

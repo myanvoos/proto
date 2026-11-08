@@ -3,14 +3,14 @@
 use napi::{JsString, bindgen_prelude::*};
 use napi_derive::napi;
 
-use crate::held_files;
+use pi_vfs::held;
 
 /// Whether `path` is a SQLite database or `-shm` index this process holds open.
 /// Reading its bytes in-process and closing the handle would release the
 /// process's SQLite locks.
 #[napi(catch_unwind)]
 pub fn is_held_sqlite_store(path: String) -> bool {
-	held_files::is_held_sqlite_store(path)
+	held::is_held_sqlite_store(path)
 }
 
 /// Drop cached directory listings.
