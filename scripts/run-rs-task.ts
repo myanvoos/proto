@@ -17,12 +17,11 @@ const RUST_AFFECTING_FILE_NAMES = [
 
 // Remote-tracking trunks the branch is diffed against (a local `main` can carry the commits being checked).
 const TRUNKS = ["upstream/main", "origin/main"] as const satisfies readonly string[];
-const VENDORED_FORK_EXCLUDES = [
-	"--exclude",
-	"brush-core",
-	"--exclude",
-	"brush-parser",
-] as const satisfies readonly string[];
+// grep-searcher's upstream ripgrep code predates the workspace clippy policy,
+// but the fork's own `search_push` (src/searcher/push.rs, see its README.md)
+// carries tests, so it is exempt from the lint gates only and still runs under
+// test:rs.
+const VENDORED_FORK_EXCLUDES = ["--exclude", "grep-searcher"] as const satisfies readonly string[];
 const TASK_COMMANDS = {
 	"check:rs": [
 		["cargo", "fmt", "--all", "--", "--check"],

@@ -118,12 +118,12 @@ On non-PR events both jobs run on `proto-kata` pods. `rust_validate` runs plain 
 
 ```bash
 bun run test:rs                                            # nextest + doctests via scripts/run-rs-task.ts
-cargo clippy --workspace --exclude brush-core --no-deps -- -D warnings
+cargo clippy --workspace --exclude grep-searcher --no-deps -- -D warnings
 cargo fmt --all --check
 ```
 
 - Cargo reads `[lints]` directly, so the lint policy is automatic per crate: crates with `[lints] workspace = true` get the strict workspace policy, pi-builtins' manifest allowances apply to itself.
-- `--exclude brush-core` mirrors `VENDORED_FORK_EXCLUDES` in `scripts/run-rs-task.ts` — the vendored fork is not held to workspace gates.
+- `--exclude grep-searcher` mirrors `VENDORED_FORK_EXCLUDES` in `scripts/run-rs-task.ts` — the vendored ripgrep fork predates the workspace clippy policy and is not held to its gates.
 
 `native_addons` on main runs `scripts/build-natives.sh linux-arm64 linux-musl-arm64 linux-musl-x64-baseline linux-x64-baseline linux-x64-modern --dest "$RUNNER_TEMP/native-addons"` — strictly sequential inside the script so the heavy links never overlap (concurrent links OOM'd kata pods historically). It uploads `$RUNNER_TEMP/native-addons/*.node` as the `native-addons` artifact; because the glob matches files directly in the directory, they land at the archive root under their target-true names. Downstream jobs use `.github/actions/native-artifacts` to download that artifact and copy the requested targets into place (renaming musl addons back to canonical filenames) without rebuilding.
 

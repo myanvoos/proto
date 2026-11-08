@@ -18,7 +18,7 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 - **Package entrypoint** (`packages/natives/native/index.js`): loads the `.node` addon and exports generated N-API bindings.
 - **Rust N-API module layer** (`crates/pi-natives/src/*`): JS-facing shell/PTY/process/key exports and callback bridging.
-- **Runtime core** (`crates/pi-shell/src/*`): brush shell execution, cancellation cleanup, minimizer integration, command fixups, and cross-platform process references.
+- **Runtime core** (`crates/pi-shell/src/*`): the bash 5.3 engine (`bash/`), persistent sessions (`session.rs`, `child_session.rs`), the pi-vfs host, host callouts (`tools/`), utilities as engine commands (`extras.rs`), cancellation cleanup, minimizer integration, and cross-platform process references.
 - **Consumers** (`packages/coding-agent`, `packages/tui`): higher-level session policy, output artifact/minimizer handling, render policy, and UI key handling.
 
 ## Shell subsystem (`shell`)
@@ -38,14 +38,14 @@ Persistent `Shell` also exposes `liveBackgroundJobCount()`, which silently reaps
 
 ### Session creation and environment model
 
-Rust creates `brush_core::Shell` with:
+Rust creates a `pi_shell::session::Session` on the engine with:
 
-- inherited environment disabled (`do_not_inherit_env: true`), followed by explicit environment reconstruction from host env,
+- an explicit environment rebuilt from the host env (the engine never inherits the process environment implicitly),
 - profile and rc loading skipped,
-- bash-mode builtins, with `exec` and `suspend` disabled,
-- native `sleep`, `timeout`, and `nohup` builtins registered,
-- skip-list for shell-sensitive vars (`PS1`, `PWD`, `SHLVL`, bash function exports, etc.),
-- a non-exported `env="$env"` fallback so PowerShell-style `$env:NAME` survives brush parameter expansion unless the user shadows `env`.
+- the engine's bash builtins, with `exec` and `suspend` withheld by the host (`extras.rs`),
+- native `sleep`/`timeout`/`nohup`/`git` host callouts registered through `tools/`,
+- a skip-list for shell-sensitive vars (`PS1`, `PWD`, `SHLVL`, exported functions, etc.),
+- pi's virtual filesystem (`vfs::VfsFs` over `pi-vfs`) as the engine's filesystem, so relative paths and redirections resolve against the session's cwd and providers.
 
 Session env behavior:
 

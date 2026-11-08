@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/myanvoos/proto/main/scripts/install
 
 ## Highlights
 
-- **One execution surface, deeply tooled:** the main tool an agent uses is bash with an embedded shell (Rust `brush` fork), which contains in-process `rg`/`fd`/PTY builtins. We keep the always-loaded tool registry deliberately small. 
+- **One execution surface, deeply tooled:** the main tool an agent uses is bash with an embedded shell (Rust bash engine), which contains in-process `rg`/`fd`/PTY builtins. We keep the always-loaded tool registry deliberately small. 
 - **Code as a first-class surface:** ordinary Python commands are fresh native processes;
   `import proto_harness as harness` explicitly adds tools, model calls, and orchestration.
   Use `harness.store` for session-owned rich values or `harness.kernel("analysis")` for a
@@ -71,12 +71,14 @@ install compatibility).
 | Crate                                      | Description                                                                                         |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------- |
 | **[pi-natives](crates/pi-natives)**        | Core Rust native addon (N-API `cdylib`) used by `pi-natives`; aggregates the crates below |
-| **[pi-shell](crates/pi-shell)**            | Embedded shell / PTY / process management (wraps `brush-*`)                                          |
+| **[pi-shell](crates/pi-shell)**            | Embedded bash 5.3 engine, persistent sessions, PTY / process management, and the API `pi-natives` exports |
 | **[pi-ast](crates/pi-ast)**                | tree-sitter-based code outlines and AST utilities (50+ language grammars)                            |
 | **[pi-iso](crates/pi-iso)**                | Worker isolation backend resolver: APFS clones, btrfs/zfs reflinks, overlayfs, projfs, rcopy         |
 | **[pi-walker](crates/pi-walker)**          | Parallel ignore-aware filesystem walker with the scan cache shared by grep, glob, and workspace      |
-| **[brush-core](crates/vendor/brush-core)** | Vendored fork of [brush-shell](https://github.com/reubeno/brush) for embedded bash execution          |
-| **[pi-builtins](crates/pi-builtins)**      | Bash builtins (cd, echo, test, printf, read, export, …), 67 in-process CLI utilities, and the kernel bridge |
+| **[pi-vfs](crates/pi-vfs)**                | The engine's virtual filesystem host: providers, `Fs`, and the native unix/windows backends          |
+| **[pi-vcs](crates/pi-vcs)**                | In-process git (gitoxide) and jujutsu (jj-lib) for the shell's `git` callout                        |
+| **[pi-diff](crates/pi-diff)**              | Unified/structured diff primitives shared by `pi-iso` and `pi-builtins`                              |
+| **[pi-builtins](crates/pi-builtins)**      | In-process CLI utilities and process builtins behind the engine's `extras` entry point               |
 
 ## Documentation
 
@@ -86,5 +88,5 @@ orchestration, session host, …) and per-tool contracts in
 
 ## License
 
-[MIT](LICENSE). Vendored code, including `crates/vendor/brush-core`, keeps its upstream
+[MIT](LICENSE). Vendored code, including `crates/vendor/grep-searcher`, keeps its upstream
 license — see `THIRD-PARTY-NOTICES.txt`.
