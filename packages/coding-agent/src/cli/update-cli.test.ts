@@ -90,10 +90,11 @@ describe("updateViaBinaryAt behind a foreign symlink", () => {
 		await fs.chmod(dispatcherPath, 0o755);
 		await fs.symlink("launch", aliasPath);
 		const fetchImpl = vi.fn(async () => new Response());
+		// Resolve the expected path before the update promise exists: the rejection
+		// must be handled in the same turn, or Bun reports it as unhandled.
+		const expected = `Refusing to replace ${await fs.realpath(dispatcherPath)}`;
 
-		await expect(updateThroughAlias(aliasPath, fetchImpl)).rejects.toThrow(
-			`Refusing to replace ${await fs.realpath(dispatcherPath)}`,
-		);
+		await expect(updateThroughAlias(aliasPath, fetchImpl)).rejects.toThrow(expected);
 		expect(fetchImpl).not.toHaveBeenCalled();
 		expect(await Bun.file(dispatcherPath).text()).toBe(dispatcher);
 	});
