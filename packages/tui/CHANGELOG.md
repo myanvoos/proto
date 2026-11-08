@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Added
 
 - Spinners across the working row, live tool cards, and the terminal title share one cadence, and the TUI repaints no faster than a configurable ceiling while keystroke echo stays at 30 fps.

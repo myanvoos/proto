@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Added
 
 - Cleanup registrations accept a `deadlineMs` that holds process exit open for a pending save, up to that callback's own deadline.

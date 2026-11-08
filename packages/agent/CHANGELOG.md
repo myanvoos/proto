@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Fixed
 
 - Compact a fixed compaction trigger that sits past the window's prompt budget before the next request overflows.

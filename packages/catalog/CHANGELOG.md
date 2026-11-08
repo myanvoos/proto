@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Added
 
 - Gate standard Responses WebSockets to the official OpenAI Responses endpoint, with model and request opt-in both required.

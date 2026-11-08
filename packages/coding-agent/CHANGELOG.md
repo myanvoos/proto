@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Added
 
 - Added protofs isolated checkouts: with `orchestrator.isolation.mode=auto` and a `protofs` binary on `PATH`, isolated workers run in copy-on-write checkouts instead of native clones (`protofs.enabled`, `protofs.path`), and the system prompt tells agents to open checkouts instead of git worktrees or copies.

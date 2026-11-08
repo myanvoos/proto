@@ -145,7 +145,7 @@ export declare class TtyWriter {
 
 export declare function __ompInstallTokioRuntime(): void
 
-export declare function __piNativesV20_1_2(): void
+export declare function __piNativesV20_2_0(): void
 
 /**
  * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns

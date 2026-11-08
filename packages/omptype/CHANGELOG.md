@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Breaking Changes
 
 - `fromJsonSchema` now returns an opaque validator for the whole document, so object-shape methods (`.pick()`, `.props`, …) no longer apply to imported schemas, and malformed or unresolvable `$ref`s throw `invalid $ref`/`unresolved $ref`.

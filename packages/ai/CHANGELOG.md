@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.0] - 2026-11-08
+
 ### Added
 
 - Opt into catalog-gated WebSockets for standard OpenAI Responses with `preferWebsockets`; socket-local continuation reuses `previous_response_id` anchors without forcing stored responses.
