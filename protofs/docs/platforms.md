@@ -1,0 +1,162 @@
+# Platforms and frontends
+
+One daemon serves every checkout as a folder of a single mount.
+
+| OS | default frontend | `serve -proto` alternatives | needs |
+| --- | --- | --- | --- |
+| macOS | NFSv3 | `smb` | nothing |
+| Linux | FUSE | `nfs`, `smb` (mounting them needs root) | `fusermount3` |
+| Windows | WinFsp where installed and the SMB client dials only port 445, else SMB | `smb`, `winfsp` | [WinFsp](https://winfsp.dev) for `winfsp` |
+
+## NFS
+
+NFS is served by the `nfs` package: NFSv3 with its MOUNT protocol, and
+NFSv4.0, on one port. File handles are the export's stable node ids, so they
+survive renames and daemon restarts. Automatic mounts use NFSv3 with
+client-local locks. The macOS mount uses
+`noresvport,locallocks,nobrowse,intr,rwsize=1048576` and normal attribute
+caching (the client's default timeouts are 5 to 60 s). After creating or
+removing a checkout the daemon `statfs`es its own mount, making the client
+revalidate the export root so new checkouts show up immediately. The export
+root is read-only; cross-checkout rename returns EXDEV so `mv` copies.
+
+The server also accepts NFSv4.0 clients on the same port. These may receive
+read delegations, recalled on changes through another protocol, `pull`,
+reattach, checkout removal, and folder edits in cache and local paths reported
+by the folder watcher (FSEvents on macOS, inotify on Linux,
+ReadDirectoryChangesW on Windows). Live folder paths are not delegated while
+the watcher does not cover their folder: on Linux beyond the
+`fs.inotify.max_user_watches` limit, or until a moved or deleted folder exists
+again. NFSv4.0 is not the automatic mount: its stateful open and close traffic
+substantially slows cold Cargo builds on macOS.
+
+## FUSE
+
+`serve -proto fuse` (the Linux default) mounts through `fusermount3`, with the
+export's stable node ids as inode numbers and one-second entry and attribute
+timeouts.
+
+## SMB
+
+`serve -proto smb` serves the `protofs` share, to guests on macOS and Linux and
+to one account on Windows (below), with Unix modes, executable bits, symlinks,
+byte-range locks and change notifications; macOS smbfs caches negative lookups
+for about two seconds.
+
+SMB2.1+ file leases allow read and handle caching, recalled on conflicting
+opens, rename/deletion, and daemon or watched-folder changes. Unwatched live
+paths are not leased. Write caching, including exclusive/batch oplocks, is not
+granted: daemon-side snapshots and diffs have no client-flush barrier.
+Directory leasing is not supported.
+
+The server resolves a CREATE of an existing name with one lookup (a lookup
+succeeds only through directories, so symlinked components are walked only
+when it fails), opens no backend file for attribute-only and delete opens, and
+answers the QUERY_INFO requests Windows sends after each CREATE from that
+lookup until any command that could change a file runs, for at most a second.
+CREATE and CLOSE of different names, and renames and deletions of files, run in
+parallel; renames and deletions of directories, delete-on-close of directories
+and creates that follow links run alone.
+
+## Windows
+
+### SMB
+
+The daemon maps its share onto the mount drive (`WNetAddConnection4W`, as
+`net use` does) and refuses a drive mapped elsewhere. The SMB client dials
+another port only from Windows 11 24H2 (build 26100), so older builds serve on
+`127.0.0.1:445`, which the Server service holds until it is stopped
+(`sc config LanmanServer start= disabled` and `net stop LanmanServer /y`, from
+an elevated prompt; this ends the machine's own file sharing); the daemon says
+so when it cannot bind. Drive mappings belong to a logon session, so a daemon
+started over ssh maps `O:` for that session only.
+
+Windows 11 24H2 and Server 2025 refuse anonymous NTLM, guest logons and
+unsigned sessions by default, so on Windows the server accepts one account,
+`protofs`, with a random 128-bit password, and its sessions are NTLMv2
+authenticated and signed. The password is kept in `smb-password` in the state
+directory, readable by the daemon's user alone, so a mapping a previous run
+left reconnects to the next; it is passed to the SMB client as an SSPI
+identity, never on a command line, and never logged. Deleting the file makes
+the next start create another password.
+
+The daemon opens host files with delete sharing and renames with POSIX
+semantics, so clients can rename, replace and delete files other handles hold
+open, as on Unix; because Windows never renames a directory while a file below
+it is open, `snap`, `fork` and `rm` first close the checkout's upper
+descriptors, which reopen in the next generation.
+
+Served on loopback, files are owned by the daemon's user and primary group,
+as on the WinFsp drive, so Git's ownership check accepts checkouts with no
+`safe.directory` entry. A share served on another address keeps reporting the
+Unix-ID owner `S-1-22-1-0`.
+
+### WinFsp
+
+`serve -proto winfsp` mounts the drive through [WinFsp](https://winfsp.dev), a
+filesystem driver installed once per machine (installing needs an
+administrator; mounting does not), as the network volume `\\protofs\O`, with no
+SMB and no port. It is the Windows default where WinFsp is installed and
+the SMB client dials only port 445; elsewhere SMB stays the default, being faster.
+
+Files look as they do to Windows SMB clients: case-sensitive names,
+`FILE_ATTRIBUTE_READONLY` as the owner write bit, node ids as file indexes,
+symlinks as described below. Open files can be deleted and renamed over, as on
+Unix. The driver caches metadata for one second and never caches data.
+
+### Links
+
+Both frontends report a symlink whose target is a directory with
+`FILE_ATTRIBUTE_DIRECTORY`, as NTFS directory symlinks are: Windows tools enter
+only links marked so. Opened as itself, such a link counts as a directory, so
+`rmdir` removes it. `CreateSymbolicLink`, `mklink /D` and junction tools
+create directory links on the drive; a junction is stored as a symlink to its
+target. `mklink /J` refuses network drives before asking the daemon.
+A link created with a target that names its own checkout through the drive
+(`O:\app\x`) or the share (`\\127.0.0.1\protofs\app\x`, as Bun writes them) is
+stored relative to the link: served as written, it would lead the daemon back
+into its own mount.
+
+The SMB server follows links itself, since Windows refuses by default to
+follow links between network paths. Over SMB 3 it flags an open that
+followed a link at the end of its path with `SMB2_CREATE_FLAG_REPARSEPOINT`;
+without the flag, Windows would describe the link by its target for its
+metadata cache lifetime, and realpath in tools such as tsc and Bun would
+stop seeing it.
+
+### Unix modes and Defender
+
+Unix mode bits that NTFS cannot hold (execute, setuid, setgid, sticky, and any
+mode but 0644/0755 or their read-only forms) live in an `:protofs.mode` alternate
+data stream of each upper and layer file, so they follow renames, hard links
+and snapshots; the state directory must be on NTFS or ReFS for such modes. New
+files get 0644 and directories 0755, as with a umask of 022.
+
+Microsoft Defender scans every file the daemon writes into its state and every
+file Windows reads over SMB; excluding the state directory
+(`Add-MpPreference -ExclusionPath $env:LOCALAPPDATA\protofs`, as administrator)
+cut a first capture of a 12k-file repository from 4.8 s to 3.7 s on the test
+VM.
+
+Defender dominates WinFsp's speed: it reads a file again on every open of a
+WinFsp volume, and path exclusions do not match WinFsp volumes. In a Windows 11
+arm64 VM a no-op `go build ./...` of this repository took 3.6 s with the drive
+as a local disk, 1.2 s as a network volume, which Defender scans less, and
+0.85 s over SMB. Excluding the opening process from Defender
+(`Add-MpPreference -ExclusionProcess`) cut an open and close from 400 µs to
+49 µs, against SMB's 53 µs.
+
+## Live paths and metadata
+
+Lookups of live (cache and local) paths prove that the folder's ancestor
+directories are real directories, not symlinks; a proof is reused for one
+second, the frontends' attribute lifetime, and live directory listings take
+their entries' metadata from the listing itself. A checkout's own files are
+described from its in-memory index, which every change made through protofs
+refreshes; only a file open for writing is looked up on the host.
+
+A live symlink whose absolute target lies inside the folder reads as the same
+path relative to the link, so in a checkout it names the checkout's copy:
+Bun on Windows links workspace packages in `node_modules` by absolute path.
+Absolute targets outside the folder stay as stored. Windows junctions, in
+live paths and in source alike, read as the directory symlinks they act as.

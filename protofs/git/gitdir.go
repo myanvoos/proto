@@ -1,0 +1,377 @@
+package git
+
+import (
+	"context"
+	"crypto/sha1"
+	"errors"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+)
+
+// A checkout of a repository gets a private git directory instead of a worktree of
+// the user's repository: HEAD, refs, config and the index are copies taken at
+// capture, and "objects" links to an object directory shared by every checkout on
+// the same base, which borrows the user's objects through alternates. Commits
+// made in a checkout land there; the user's repository is never written.
+
+// PrepareObjects creates a base's shared object directory that reads the repository's objects through alternates.
+func (r *Repo) PrepareObjects(dir string) error {
+	for _, sub := range []string{"info", "pack"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(filepath.Join(dir, "info", "alternates"), []byte(filepath.Join(r.CommonDir, "objects")+"\n"), 0o644)
+}
+
+// ModuleDir returns where sub, a repository nested in r's work tree, keeps its git
+// directory relative to r's: "modules/<name>" for a submodule absorbed into r (its
+// .git a gitfile into r's modules directory, as git submodule lays it out), or ""
+// for any other nested repository. A checkout gives an absorbed submodule a private
+// git directory at that path below the root's, where git looks for it.
+func (r *Repo) ModuleDir(sub *Repo) string {
+	gitdir := realPath(sub.GitDir)
+	if gitdir != realPath(sub.CommonDir) {
+		return "" // a linked work tree of the submodule
+	}
+	for _, own := range []string{r.GitDir, r.CommonDir} {
+		rel, err := filepath.Rel(filepath.Join(realPath(own), "modules"), gitdir)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "modules/" + filepath.ToSlash(rel)
+		}
+	}
+	return ""
+}
+
+// realPath resolves p's symlinks so paths git reports through different spellings
+// compare equal; a path that cannot be resolved is compared as given.
+func realPath(p string) string {
+	if real, err := filepath.EvalSymlinks(p); err == nil {
+		return real
+	}
+	return filepath.Clean(p)
+}
+
+// MakeGitdir writes a checkout's private git directory from the repository's current
+// HEAD, refs and config, the captured index, and a link to the shared objects.
+func (r *Repo) MakeGitdir(ctx context.Context, gitdir, objects, index string) error {
+	if err := os.Mkdir(gitdir, 0o755); err != nil {
+		return err
+	}
+	copies := []struct {
+		src, dst string
+		required bool
+	}{
+		{filepath.Join(r.GitDir, "HEAD"), "HEAD", true},
+		{filepath.Join(r.CommonDir, "config"), "config", true},
+		{filepath.Join(r.GitDir, "config.worktree"), "config.worktree", false},
+		{filepath.Join(r.CommonDir, "packed-refs"), "packed-refs", false},
+		{filepath.Join(r.CommonDir, "shallow"), "shallow", false},
+		{filepath.Join(r.CommonDir, "info", "exclude"), filepath.Join("info", "exclude"), false},
+		{filepath.Join(r.CommonDir, "refs"), "refs", true},
+	}
+	for _, c := range copies {
+		err := copyTree(c.src, filepath.Join(gitdir, c.dst))
+		if err != nil && (c.required || !errors.Is(err, os.ErrNotExist)) {
+			return err
+		}
+	}
+	if err := copyFile(index, filepath.Join(gitdir, "index")); err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := emptyIndex(filepath.Join(gitdir, "index")); err != nil {
+			return err
+		}
+	}
+	if err := os.Symlink(objects, filepath.Join(gitdir, "objects")); err != nil {
+		return err
+	}
+	// The checkout is its own work tree (the directory holding the .git file), and its
+	// files keep their mtimes but not their inodes, so stat checks stay minimal.
+	return configure(ctx, gitdir,
+		[]string{"--unset-all", "core.worktree"},
+		[]string{"--bool", "core.bare", "false"},
+		[]string{"core.checkStat", "minimal"},
+		[]string{"--bool", "core.trustctime", "false"},
+		[]string{"--bool", "core.untrackedCache", "false"},
+		[]string{"--bool", "core.fsmonitor", "false"},
+	)
+}
+
+// UnsetModuleWorktrees removes core.worktree from every submodule git directory
+// below a private git directory restored for another checkout, as MakeGitdir does
+// at creation: git records it when it (re)connects a submodule, as a path into the
+// checkout it ran in, and each restored directory must serve the checkout whose
+// .git file points at it.
+func UnsetModuleWorktrees(ctx context.Context, gitdir string) error {
+	modules, err := moduleGitdirs(gitdir)
+	if err != nil {
+		return err
+	}
+	for _, m := range modules {
+		if err := configure(ctx, filepath.Join(gitdir, filepath.FromSlash(m)), []string{"--unset-all", "core.worktree"}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// configure applies git config edits, each the arguments of one git config call,
+// to gitdir's own config file.
+func configure(ctx context.Context, gitdir string, edits ...[]string) error {
+	config := filepath.Join(gitdir, "config")
+	for _, args := range edits {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"config", "--file", config}, args...)...)
+		if _, err := run(cmd); err != nil {
+			var exit *exec.ExitError
+			// Exit 5 is git config's "nothing to unset".
+			if errors.As(err, &exit) && exit.ExitCode() == 5 {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// moduleGitdirs lists the submodule git directories below gitdir where git keeps
+// them, modules/<name> and recursively <module>/modules/<name>, as slash paths
+// relative to gitdir. A name may hold slashes, so any directory below modules/
+// holding a HEAD file is a git directory and any other is walked through.
+func moduleGitdirs(gitdir string) ([]string, error) {
+	var found []string
+	var walk func(dir, rel string) error
+	walk = func(dir, rel string) error {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			sub, subRel := filepath.Join(dir, e.Name()), rel+"/"+e.Name()
+			if info, err := os.Lstat(filepath.Join(sub, "HEAD")); err == nil && info.Mode().IsRegular() {
+				found = append(found, subRel)
+				err = walk(filepath.Join(sub, "modules"), subRel+"/modules")
+			} else {
+				err = walk(sub, subRel)
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	err := walk(filepath.Join(gitdir, "modules"), "modules")
+	return found, err
+}
+
+// CopyGitdir copies a private git directory to the new path dst, linking the copy's
+// objects to the shared directory instead of copying them. The registry uses it only
+// for snapshots taken by builds that saved a whole directory copy per snapshot.
+func CopyGitdir(src, dst, objects string) error {
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == "objects" {
+			continue
+		}
+		if err := copyTree(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+			return err
+		}
+	}
+	return os.Symlink(objects, filepath.Join(dst, "objects"))
+}
+
+// MarkCheckout sets protofs.checkout to name in a private git directory's own config, so
+// only this directory identifies as an protofs checkout (inherited user config and the
+// source repo stay unmarked). The registry calls it whenever it creates or reopens a
+// checkout; it edits the file in place of exec'ing git config, keeps every other line,
+// and leaves the file untouched when the marker already names the checkout.
+func MarkCheckout(gitdir, name string) error {
+	path := filepath.Join(gitdir, "config")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	marked := markConfig(string(data), name)
+	if marked == string(data) {
+		return nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(gitdir, ".config-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	_, err = f.WriteString(marked)
+	if err == nil {
+		err = f.Chmod(info.Mode().Perm())
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// markConfig rewrites git config text so its [protofs] section holds exactly one
+// checkout = name, placed right after the first [protofs] header (or in a new section
+// at the end); every other line, comments and subsections included, is kept.
+func markConfig(config, name string) string {
+	var out []string
+	insert, inSection, continued := -1, false, false
+	for _, line := range strings.SplitAfter(config, "\n") {
+		if line == "" {
+			continue
+		}
+		if continued {
+			continued = continuesLine(line)
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			end := strings.IndexByte(trimmed, ']')
+			if end < 0 {
+				inSection = false
+				out = append(out, line)
+				continue
+			}
+			inSection = strings.EqualFold(strings.TrimSpace(trimmed[1:end]), "protofs")
+			if inSection && isCheckoutKey(trimmed[end+1:]) {
+				// "[protofs] checkout = old" keeps its header and loses the old value.
+				continued = continuesLine(line)
+				line = trimmed[:end+1] + "\n"
+			}
+			out = append(out, line)
+			if inSection && insert < 0 {
+				insert = len(out)
+			}
+			continue
+		}
+		if inSection && isCheckoutKey(trimmed) {
+			continued = continuesLine(line)
+			continue
+		}
+		out = append(out, line)
+	}
+	entry := "\tcheckout = " + configValue(name) + "\n"
+	if insert < 0 {
+		if n := len(out); n != 0 && !strings.HasSuffix(out[n-1], "\n") {
+			out[n-1] += "\n"
+		}
+		out = append(out, "[protofs]\n", entry)
+	} else {
+		out = append(out[:insert], append([]string{entry}, out[insert:]...)...)
+	}
+	return strings.Join(out, "")
+}
+
+// isCheckoutKey reports whether a config line inside a section sets the checkout variable.
+func isCheckoutKey(line string) bool {
+	line = strings.TrimSpace(line)
+	key := line
+	if i := strings.IndexAny(line, "= \t"); i >= 0 {
+		key = line[:i]
+	}
+	return strings.EqualFold(key, "checkout")
+}
+
+// continuesLine reports whether a config line ends in an unescaped backslash, which
+// continues its value on the next line.
+func continuesLine(line string) bool {
+	line = strings.TrimRight(line, "\r\n")
+	n := len(line) - len(strings.TrimRight(line, `\`))
+	return n%2 == 1
+}
+
+// configValue spells a git config value, quoting and escaping it when git would
+// otherwise trim, split or misread it.
+func configValue(v string) string {
+	if v != "" && v == strings.TrimSpace(v) && !strings.ContainsAny(v, "\"\\#;\n\t") {
+		return v
+	}
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`, "\t", `\t`)
+	return `"` + r.Replace(v) + `"`
+}
+
+// WriteGitfile points a checkout's root at its private git directory.
+func WriteGitfile(root, gitdir string) error {
+	content, err := Gitfile(gitdir)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(root, ".git"), content, 0o644)
+}
+
+// ParseGitfile returns the git directory a .git file's content points at, as
+// written (relative paths are relative to the file's directory), and false for
+// content that is not a gitfile.
+func ParseGitfile(content []byte) (string, bool) {
+	line, _, _ := strings.Cut(string(content), "\n")
+	gitdir, ok := strings.CutPrefix(strings.TrimRight(line, "\r"), "gitdir: ")
+	return gitdir, ok && gitdir != ""
+}
+
+// Gitfile is the content of a .git file that points at the absolute git directory gitdir.
+func Gitfile(gitdir string) ([]byte, error) {
+	if strings.ContainsAny(gitdir, "\r\n") {
+		return nil, errors.New("git directory path contains a newline")
+	}
+	return []byte("gitdir: " + gitdir + "\n"), nil
+}
+
+// copyTree copies a file, symlink or directory tree to the new path dst.
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case d.Type()&fs.ModeSymlink != 0:
+			link, err := os.Readlink(p)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case d.IsDir():
+			return os.MkdirAll(target, 0o755)
+		default:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			return copyFile(p, target)
+		}
+	})
+}
+
+// emptyIndex writes a valid empty version-two index for an unborn repository.
+func emptyIndex(name string) error {
+	const header = "DIRC\x00\x00\x00\x02\x00\x00\x00\x00"
+	checksum := sha1.Sum([]byte(header))
+	return os.WriteFile(name, append([]byte(header), checksum[:]...), 0o600)
+}
