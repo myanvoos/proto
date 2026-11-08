@@ -231,6 +231,45 @@ install_protofs() {
     echo "✓ Installed protofs to ${INSTALL_DIR}/protofs"
 }
 
+# Install the in-process protofs shared library beside proto. Musl targets ship
+# only the executable fallback, and older releases publish no library at all, so
+# every failure warns instead of failing the proto install.
+install_protofs_library() {
+    if [ "$PLATFORM" = "linux-musl" ]; then
+        echo "  libprotofs is not built for musl; proto will run the protofs executable."
+        return
+    fi
+
+    case "$PLATFORM" in
+        darwin) PROTOFS_LIBRARY_EXT="dylib" ;;
+        *)      PROTOFS_LIBRARY_EXT="so" ;;
+    esac
+    PROTOFS_LIBRARY="libprotofs-${PLATFORM}-${ARCH}.${PROTOFS_LIBRARY_EXT}"
+    PROTOFS_LIBRARY_URL="https://github.com/${REPO}/releases/download/${LATEST}/${PROTOFS_LIBRARY}"
+    PROTOFS_LIBRARY_PATH="${INSTALL_DIR}/${PROTOFS_LIBRARY}"
+
+    echo "Downloading ${PROTOFS_LIBRARY}..."
+    if [ "$AUTH_DOWNLOAD" = true ]; then
+        if ! gh release download "$LATEST" --repo "$REPO" --pattern "$PROTOFS_LIBRARY" --output "$PROTOFS_LIBRARY_PATH" --clobber; then
+            echo "  libprotofs not available in this release; proto will run the protofs executable."
+            rm -f "$PROTOFS_LIBRARY_PATH"
+            return
+        fi
+    else
+        if ! curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$PROTOFS_LIBRARY_URL" -o "$PROTOFS_LIBRARY_PATH"; then
+            echo "  libprotofs not available in this release; proto will run the protofs executable."
+            rm -f "$PROTOFS_LIBRARY_PATH"
+            return
+        fi
+    fi
+    if [ ! -s "$PROTOFS_LIBRARY_PATH" ]; then
+        echo "  libprotofs was downloaded but is empty; proto will run the protofs executable."
+        rm -f "$PROTOFS_LIBRARY_PATH"
+        return
+    fi
+    echo "✓ Installed ${PROTOFS_LIBRARY} to ${PROTOFS_LIBRARY_PATH}"
+}
+
 # Install binary from GitHub releases
 install_binary() {
     # Detect platform
@@ -315,6 +354,7 @@ install_binary() {
     fi
 
     install_protofs
+    install_protofs_library
 
     echo ""
     echo "✓ Installed proto to ${INSTALL_DIR}/proto"

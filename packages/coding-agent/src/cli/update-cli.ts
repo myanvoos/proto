@@ -604,6 +604,29 @@ function getProtofsBinaryName(): string {
 	return `protofs-${getBinaryName().slice(BINARY_NAME.length + 1)}`;
 }
 
+/** Release asset name for the in-process protofs library; undefined on unsupported or musl hosts. */
+export function getProtofsLibraryName(): string | undefined {
+	const platform = process.platform;
+	if (platform !== "darwin" && platform !== "linux") return undefined;
+	if (platform === "linux" && isMuslLinux()) return undefined;
+	const arch = process.arch;
+	if (arch !== "x64" && arch !== "arm64") return undefined;
+	return `libprotofs-${platform}-${arch}.${platform === "darwin" ? "dylib" : "so"}`;
+}
+
+/** The sibling library the running binary would load, if an install placed one beside it. */
+function siblingProtofsLibraryPath(targetPath: string): string | undefined {
+	const name = getProtofsLibraryName();
+	if (!name) return undefined;
+	const dir = path.dirname(targetPath);
+	const extension = path.extname(name);
+	for (const candidate of [name, `libprotofs${extension}`]) {
+		const full = path.join(dir, candidate);
+		if (fs.existsSync(full)) return full;
+	}
+	return undefined;
+}
+
 /** Refresh the protofs sidecar beside the proto binary; older releases or installs without one are skipped. */
 async function updateSiblingProtofs(
 	targetPath: string,
@@ -641,6 +664,52 @@ async function updateSiblingProtofs(
 		console.log(
 			chalk.yellow(
 				`protofs sidecar not updated: ${err instanceof Error ? err.message : String(err)}. Reinstall to refresh it.`,
+			),
+		);
+	}
+}
+
+/**
+ * Refresh the sibling `libprotofs` shared library, which proto loads for the
+ * in-process daemon. Installs without one (source installs, musl, older
+ * releases) are skipped; a failed refresh warns and keeps the old library.
+ */
+export async function updateSiblingProtofsLibrary(
+	targetPath: string,
+	expectedVersion: string,
+	options: { fetchImpl?: Fetch; githubToken?: string } = {},
+): Promise<void> {
+	const libraryName = getProtofsLibraryName();
+	const libraryPath = siblingProtofsLibraryPath(targetPath);
+	if (!libraryName || !libraryPath) return;
+	try {
+		const asset = await getReleaseBinaryAsset(expectedVersion, libraryName, options.fetchImpl, options.githubToken);
+		const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
+		const tempPath = `${libraryPath}.${attempt}.new`;
+		const backupPath = `${libraryPath}.${attempt}.bak`;
+		console.log(chalk.dim(`Downloading ${libraryName}…`));
+		await downloadVerifiedBinary({
+			url: asset.url,
+			targetPath: tempPath,
+			expectedSize: asset.size,
+			expectedDigest: asset.digest,
+			fetchImpl: options.fetchImpl,
+		});
+		await withFileLock(libraryPath, async () => {
+			await replaceBinaryForUpdate({
+				targetPath: libraryPath,
+				tempPath,
+				backupPath,
+				expectedVersion,
+				verifyInstalledVersion: async () => ({ ok: true, path: libraryPath }),
+			});
+			await sweepStaleUpdateArtifacts(libraryPath);
+		});
+		console.log(chalk.dim(`Updated sibling ${libraryName} at ${libraryPath}`));
+	} catch (err) {
+		console.log(
+			chalk.yellow(
+				`protofs library not updated: ${err instanceof Error ? err.message : String(err)}. Reinstall to refresh it.`,
 			),
 		);
 	}
@@ -967,6 +1036,7 @@ export async function runUpdate(opts: { force: boolean; check: boolean }): Promi
 				validateExistingTarget: target.validateExistingTarget,
 			});
 			await updateSiblingProtofs(target.path, release.version);
+			await updateSiblingProtofsLibrary(target.path, release.version);
 			if (target.replacesSymlink) {
 				console.log(
 					chalk.yellow(

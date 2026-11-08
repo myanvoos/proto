@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseReportedVersion, resolveUpdateTargetFromPath, updateViaBinaryAt } from "./update-cli";
+import {
+	getProtofsLibraryName,
+	parseReportedVersion,
+	resolveUpdateTargetFromPath,
+	updateSiblingProtofsLibrary,
+	updateViaBinaryAt,
+} from "./update-cli";
 
 const tempDirs: string[] = [];
 
@@ -13,8 +20,40 @@ async function makeTempDir(): Promise<string> {
 }
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	for (const dir of tempDirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
 });
+
+function sha256(data: Uint8Array): string {
+	return createHash("sha256").update(data).digest("hex");
+}
+
+/** A release whose only asset is `assetName`; `includeAsset: false` models an older release. */
+function releaseFetch(assetName: string, body: Uint8Array, includeAsset = true) {
+	const url = `https://github.com/myanvoos/proto/releases/download/v19.9.9/${assetName}`;
+	const metadata = {
+		tag_name: "v19.9.9",
+		draft: false,
+		prerelease: false,
+		assets: includeAsset
+			? [
+					{
+						name: assetName,
+						state: "uploaded",
+						size: body.byteLength,
+						digest: `sha256:${sha256(body)}`,
+						browser_download_url: url,
+					},
+				]
+			: [],
+	};
+	return vi.fn(async (input: string | URL | Request) => {
+		const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+		if (href.endsWith("/releases/tags/v19.9.9")) return new Response(JSON.stringify(metadata));
+		if (href === url) return new Response(body);
+		return new Response("missing", { status: 404 });
+	});
+}
 
 describe("parseReportedVersion", () => {
 	it("reads proto's version output, including prerelease suffixes", () => {
@@ -69,5 +108,52 @@ describe("updateViaBinaryAt behind a foreign symlink", () => {
 			"does not report a proto version when run directly",
 		);
 		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+});
+
+describe("updateSiblingProtofsLibrary", () => {
+	it("replaces the sibling library with the verified release asset", async () => {
+		const dir = await makeTempDir();
+		const libraryName = getProtofsLibraryName();
+		expect(libraryName).toBeDefined();
+		if (!libraryName) return;
+		const libraryPath = path.join(dir, libraryName);
+		await Bun.write(libraryPath, "old library");
+		const next = new TextEncoder().encode("new library");
+		const fetchImpl = releaseFetch(libraryName, next);
+
+		await updateSiblingProtofsLibrary(path.join(dir, "proto"), "19.9.9", { fetchImpl, githubToken: "test-token" });
+
+		expect(await Bun.file(libraryPath).text()).toBe("new library");
+		expect(fetchImpl).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not create a library when the install has none", async () => {
+		const dir = await makeTempDir();
+		const libraryName = getProtofsLibraryName();
+		expect(libraryName).toBeDefined();
+		if (!libraryName) return;
+		const fetchImpl = releaseFetch(libraryName, new Uint8Array());
+
+		await updateSiblingProtofsLibrary(path.join(dir, "proto"), "19.9.9", { fetchImpl });
+
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(await Bun.file(path.join(dir, libraryName)).exists()).toBe(false);
+	});
+
+	it("keeps the existing library when the release publishes none", async () => {
+		const dir = await makeTempDir();
+		const libraryName = getProtofsLibraryName();
+		expect(libraryName).toBeDefined();
+		if (!libraryName) return;
+		const libraryPath = path.join(dir, libraryName);
+		await Bun.write(libraryPath, "old library");
+		const fetchImpl = releaseFetch(libraryName, new Uint8Array(), false);
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await updateSiblingProtofsLibrary(path.join(dir, "proto"), "19.9.9", { fetchImpl });
+
+		expect(await Bun.file(libraryPath).text()).toBe("old library");
+		expect(log.mock.calls.flat().join("\n")).toContain("protofs library not updated");
 	});
 });

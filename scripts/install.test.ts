@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils/temp";
 
-async function runInstaller(dir: TempDir, access: "public" | "private" | "denied", ref?: string) {
+async function runInstaller(
+	dir: TempDir,
+	access: "public" | "private" | "denied",
+	ref?: string,
+	library: "present" | "missing" = "present",
+) {
 	const executables = {
 		uname: '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo x86_64 ;; *) exit 64 ;; esac\n',
 		curl: `#!/bin/sh
@@ -21,6 +26,9 @@ case "$url" in
     cp "$TEST_BINARY" "$output" ;;
   https://github.com/myanvoos/proto/releases/download/v20.0.1/protofs-linux-x64)
     cp "$TEST_PROTOFS_BINARY" "$output" ;;
+  https://github.com/myanvoos/proto/releases/download/v20.0.1/libprotofs-linux-x64.so)
+    [ "$TEST_LIBRARY_ACCESS" = present ] || exit 65
+    cp "$TEST_PROTOFS_LIBRARY" "$output" ;;
   *) exit 65 ;;
 esac
 `,
@@ -48,6 +56,9 @@ elif [ "$1 $2" = "release download" ]; then
   case "$pattern" in
     proto-linux-x64) cp "$TEST_BINARY" "$output" ;;
     protofs-linux-x64) cp "$TEST_PROTOFS_BINARY" "$output" ;;
+    libprotofs-linux-x64.so)
+      [ "$TEST_LIBRARY_ACCESS" = present ] || exit 68
+      cp "$TEST_PROTOFS_LIBRARY" "$output" ;;
     *) exit 68 ;;
   esac
 else
@@ -62,6 +73,7 @@ fi
 	}
 	await Bun.write(dir.join("fixture-binary"), '#!/bin/sh\n[ "$1" = --version ] || exit 70\necho 20.0.1\n');
 	await Bun.write(dir.join("fixture-protofs"), '#!/bin/sh\n[ "$1" = version ] || exit 70\necho "protofs test"\n');
+	await Bun.write(dir.join("fixture-protofs-library"), "fixture libprotofs shared library\n");
 	await Bun.write(dir.join("gh.log"), "");
 	const child = Bun.spawn(
 		["sh", path.join(import.meta.dir, "install.sh"), "--binary", ...(ref ? ["--ref", ref] : [])],
@@ -74,6 +86,8 @@ fi
 				TEST_RELEASE_ACCESS: access,
 				TEST_BINARY: dir.join("fixture-binary"),
 				TEST_PROTOFS_BINARY: dir.join("fixture-protofs"),
+				TEST_PROTOFS_LIBRARY: dir.join("fixture-protofs-library"),
+				TEST_LIBRARY_ACCESS: library,
 				TEST_GH_LOG: dir.join("gh.log"),
 				TEST_API_SUFFIX: ref ? `tags/${ref}` : "latest",
 			},
@@ -107,6 +121,9 @@ for (const scenario of [
 		});
 		expect(await new Response(installedProtofs.stdout).text()).toBe("protofs test\n");
 		expect(await installedProtofs.exited).toBe(0);
+		expect(await Bun.file(dir.join("installed/libprotofs-linux-x64.so")).text()).toBe(
+			"fixture libprotofs shared library\n",
+		);
 		if (scenario.access === "public") expect(result.ghLog).toBe("");
 		else {
 			expect(result.ghLog).toContain(
@@ -114,9 +131,22 @@ for (const scenario of [
 			);
 			expect(result.ghLog).toContain("release download v20.0.1 --repo myanvoos/proto --pattern proto-linux-x64");
 			expect(result.ghLog).toContain("release download v20.0.1 --repo myanvoos/proto --pattern protofs-linux-x64");
+			expect(result.ghLog).toContain(
+				"release download v20.0.1 --repo myanvoos/proto --pattern libprotofs-linux-x64.so",
+			);
 		}
 	});
 }
+
+test("a release without libprotofs still installs proto and warns instead of failing", async () => {
+	using dir = TempDir.createSync("@proto-installer-");
+	const result = await runInstaller(dir, "public", undefined, "missing");
+	expect(result.exitCode, result.stderr).toBe(0);
+	expect(result.stdout).toContain("libprotofs not available in this release");
+	expect(await Bun.file(dir.join("installed/proto")).exists()).toBe(true);
+	expect(await Bun.file(dir.join("installed/protofs")).exists()).toBe(true);
+	expect(await Bun.file(dir.join("installed/libprotofs-linux-x64.so")).exists()).toBe(false);
+});
 
 test("inaccessible private release reports required access without installing a binary", async () => {
 	using dir = TempDir.createSync("@proto-installer-");

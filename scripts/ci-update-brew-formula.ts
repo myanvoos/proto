@@ -96,12 +96,35 @@ export function renderFormula(version: string, sums: Record<string, string>): st
     end
   end
 
+  resource "libprotofs" do
+    if OS.mac? && Hardware::CPU.arm?
+      url "https://github.com/${REPO}/releases/download/v#{version}/libprotofs-darwin-arm64.dylib",
+          using: :nounzip
+      sha256 "${sums["libprotofs-darwin-arm64.dylib"]}"
+    elsif OS.mac?
+      url "https://github.com/${REPO}/releases/download/v#{version}/libprotofs-darwin-x64.dylib",
+          using: :nounzip
+      sha256 "${sums["libprotofs-darwin-x64.dylib"]}"
+    elsif Hardware::CPU.arm?
+      url "https://github.com/${REPO}/releases/download/v#{version}/libprotofs-linux-arm64.so",
+          using: :nounzip
+      sha256 "${sums["libprotofs-linux-arm64.so"]}"
+    else
+      url "https://github.com/${REPO}/releases/download/v#{version}/libprotofs-linux-x64.so",
+          using: :nounzip
+      sha256 "${sums["libprotofs-linux-x64.so"]}"
+    end
+  end
+
   def install
     bin.install Dir["proto-*"].first => "proto"
     (bin/"proto").chmod 0555
     resource("protofs").stage do
       bin.install Dir["protofs-*"].first => "protofs"
       (bin/"protofs").chmod 0555
+    end
+    resource("libprotofs").stage do
+      bin.install Dir["libprotofs-*"].first
     end
     with_env(HOME: buildpath) do
       generate_completions_from_executable(bin/"proto", "completions", shells: [:bash, :zsh, :fish])
@@ -129,6 +152,10 @@ async function main(): Promise<void> {
 		"protofs-darwin-x64",
 		"protofs-linux-arm64",
 		"protofs-linux-x64",
+		"libprotofs-darwin-arm64.dylib",
+		"libprotofs-darwin-x64.dylib",
+		"libprotofs-linux-arm64.so",
+		"libprotofs-linux-x64.so",
 	];
 	const sums: Record<string, string> = {};
 	for (const name of targets) sums[name] = sha256For(assets, name);

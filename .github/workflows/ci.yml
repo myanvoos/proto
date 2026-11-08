@@ -298,7 +298,14 @@ jobs:
               RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
               BINARY_PATH: ${{ matrix.binary_path }}
               PROTOFS_PATH: packages/coding-agent/binaries/protofs-${{ matrix.target_id }}
-           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH" "$PROTOFS_PATH"
+           run: |
+              set -euo pipefail
+              assets=("$BINARY_PATH" "$PROTOFS_PATH")
+              for library in packages/coding-agent/binaries/libprotofs-${{ matrix.target_id }}.*; do
+                [ -e "$library" ] || continue
+                assets+=("$library")
+              done
+              sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "${assets[@]}"
 
    release_binary_darwin:
       name: "Release binary: ${{ matrix.target_id }}"
@@ -365,7 +372,14 @@ jobs:
               RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
               BINARY_PATH: ${{ matrix.binary_path }}
               PROTOFS_PATH: packages/coding-agent/binaries/protofs-${{ matrix.target_id }}
-           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH" "$PROTOFS_PATH"
+           run: |
+              set -euo pipefail
+              assets=("$BINARY_PATH" "$PROTOFS_PATH")
+              for library in packages/coding-agent/binaries/libprotofs-${{ matrix.target_id }}.*; do
+                [ -e "$library" ] || continue
+                assets+=("$library")
+              done
+              sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "${assets[@]}"
 
    release_github:
       name: Publish GitHub release
@@ -394,6 +408,7 @@ jobs:
               gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
                 --pattern 'proto-linux-*' --pattern 'proto-darwin-*' \
                 --pattern 'protofs-linux-*' --pattern 'protofs-darwin-*' \
+                --pattern 'libprotofs-*' \
                 --dir packages/coding-agent/binaries
          - name: Remove intermediate native addons
            env:
@@ -414,6 +429,7 @@ jobs:
               bun run ci:release:checksums SHA256SUMS.txt \
                 packages/coding-agent/binaries/proto-* \
                 packages/coding-agent/binaries/protofs-* \
+                packages/coding-agent/binaries/libprotofs-* \
                 packages/browser-relay/dist/proto-browser-relay-extension.zip \
                 LICENSE \
                 THIRD-PARTY-NOTICES.txt
@@ -426,6 +442,7 @@ jobs:
               sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" \
                 packages/coding-agent/binaries/proto-* \
                 packages/coding-agent/binaries/protofs-* \
+                packages/coding-agent/binaries/libprotofs-* \
                 packages/browser-relay/dist/proto-browser-relay-extension.zip \
                 LICENSE THIRD-PARTY-NOTICES.txt SHA256SUMS.txt
               gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
