@@ -142,7 +142,9 @@ test("retains background jobs from a replacement shell after cancellation", asyn
 		abort.abort();
 		expect((await interrupted).cancelled).toBe(true);
 
-		await executeBash("sleep 30 &", { sessionKey });
+		// `liveBackgroundJobCount` counts external `&` children; the in-process
+		// `sleep` builtin would leave nothing for the retain logic to see.
+		await executeBash("sh -c 'sleep 30' &", { sessionKey });
 		firstRun.resolve({
 			exitCode: undefined,
 			cancelled: true,

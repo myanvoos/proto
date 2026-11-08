@@ -49,7 +49,7 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 
 ` +
 				`${chalk.bold("Notes:")}
-  Runs in a persistent brush-core shell session.
+  Runs in a persistent in-house shell session.
   Variables and functions defined in one command persist for the next.
 
 `,
@@ -60,6 +60,11 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 		if (active) {
 			void shellSession.abort();
 			return;
+		}
+		try {
+			shellSession.forceClose();
+		} catch {
+			// The session lock is held by a run that is still draining; process exit follows.
 		}
 		rl.close();
 		process.exit(0);
@@ -124,5 +129,6 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 	} finally {
 		process.off("SIGINT", interruptHandler);
 		rl.close();
+		await shellSession.close().catch(() => undefined);
 	}
 }

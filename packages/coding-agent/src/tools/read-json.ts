@@ -302,8 +302,9 @@ async function runJq(
 	const onAbort = () => run.abort();
 	signal?.addEventListener("abort", onAbort, { once: true });
 
+	const shell = new Shell();
 	try {
-		const result = await new Shell().run(
+		const result = await shell.run(
 			{ command, timeoutMs: JSON_QUERY_TIMEOUT_MS, signal: run.signal },
 			(err, chunk) => {
 				if (err) callbackError = true;
@@ -331,6 +332,7 @@ async function runJq(
 	} finally {
 		clearTimeout(abortTimer);
 		signal?.removeEventListener("abort", onAbort);
+		await shell.close().catch(() => undefined);
 		await fs.rm(stderrPath, { force: true });
 	}
 }
