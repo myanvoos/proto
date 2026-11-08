@@ -66,6 +66,7 @@ impl ExecState {
 			checkpoint: None,
 			writes: VecDeque::new(),
 			status: 0,
+			signal: None,
 			sub_status: None,
 			wait_for: Vec::new(),
 			exec_as: None,
@@ -97,6 +98,7 @@ impl ExecState {
 			checkpoint,
 			writes,
 			status,
+			signal,
 			sub_status,
 			wait_for,
 			exec_as,
@@ -123,6 +125,7 @@ impl ExecState {
 		*checkpoint = None;
 		writes.clear();
 		*status = 0;
+		*signal = None;
 		*sub_status = None;
 		wait_for.clear();
 		*exec_as = None;
@@ -4237,12 +4240,20 @@ fn keep_sourced_positional(k: &mut Kernel, store: &mut dyn StateStore, vp: &mut 
 	}
 }
 
+/// The signal a wait status named, when its number fits the compact
+/// stage-record slot (signal numbers do).
+fn signal_number(number: i32) -> Option<std::num::NonZeroU8> {
+	u8::try_from(number).ok().and_then(std::num::NonZeroU8::new)
+}
+
 /// Wait for what the command started.
 fn await_(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, op: Op, line: u32) -> Option<Flow> {
 	let platform = k.engine.config().platform;
 	let waiting = st(vp).waiting;
 	// An external this vproc ran finished (a `SIGCHLD` trap owes a run).
 	let mut reaped = false;
+	// The signal a wait status named, distinct from an explicit `exit 128+n`.
+	let mut signal = None;
 	let status = match waiting {
 		// Back from a frame the builtin pushed: it runs again
 		// (`Control::Resume`).
@@ -4373,7 +4384,10 @@ fn await_(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, op: Op, line: u32) ->
 		},
 		Some(Awaited::Call(id)) => match k.results.remove(&id) {
 			Some(CallOutcome::Exit(n)) => n,
-			Some(CallOutcome::Signaled(sig)) => sig.exit_status(platform),
+			Some(CallOutcome::Signaled(sig)) => {
+				signal = signal_number(i32::from(sig.number(platform)));
+				sig.exit_status(platform)
+			},
 			Some(CallOutcome::Error(msg)) => {
 				let tool = st(vp).argv[0].clone();
 				k.diag(cx, vp, line, Diag::Tool { tool, msg });
@@ -4426,17 +4440,19 @@ fn await_(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, op: Op, line: u32) ->
 				},
 				Some(ExitStatus::Signaled(sig)) => {
 					reaped = true;
+					signal = signal_number(i32::from(sig.number(platform)));
 					if replacing && let Some(run) = run {
 						k.exec_signals.insert(run, i32::from(sig.number(platform)));
 					}
 					sig.exit_status(platform)
 				},
-				Some(ExitStatus::SignaledRaw(signal)) => {
+				Some(ExitStatus::SignaledRaw(number)) => {
 					reaped = true;
+					signal = signal_number(number);
 					if replacing && let Some(run) = run {
-						k.exec_signals.insert(run, signal);
+						k.exec_signals.insert(run, number);
 					}
-					128 + signal
+					128 + number
 				},
 				None => lost(k, vp, cx, op, line, Lost::Ext { vpid: vp.vpid, pid }),
 			};
@@ -4470,6 +4486,7 @@ fn await_(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, op: Op, line: u32) ->
 	let s = st(vp);
 	s.waiting = None;
 	s.status = status;
+	s.signal = signal;
 	s.stage = Stage::Output;
 	None
 }
@@ -4614,6 +4631,7 @@ fn sigpipe_ignored(store: &mut dyn StateStore, vp: &Vproc) -> bool {
 fn finish(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, op: Op) -> Flow {
 	let e = st(vp);
 	let (status, t0, control) = (e.status, e.t0, e.control);
+	let signal = e.signal.map(|signal| i32::from(signal.get()));
 	let in_shell = matches!(e.target, Some(Target::Function(_) | Target::Intrinsic(_)));
 	vp.status = status;
 	vp.pipestatus.clear();
@@ -4623,7 +4641,7 @@ fn finish(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, op: Op) -> Flow {
 		// next command's `CmdStart` may share it.
 		let end = k.read_clock(cx);
 		let dur_ns = if t0 > 0 { end.saturating_sub(t0) } else { 0 };
-		let data = EventData::CmdEnd { status, dur_ns, pipestatus: &[] };
+		let data = EventData::CmdEnd { status, dur_ns, pipestatus: &[], signal };
 		k.emit_op_at(cx, vp, op.node, data, end);
 	}
 	let sc = vp

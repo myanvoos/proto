@@ -192,6 +192,7 @@ pub(crate) fn invocation(
 	stdio: &[FdRef; 3],
 	extra_fds: &[(i32, FdRef)],
 	umask: u32,
+	tag: crate::bash::CmdTag,
 	config: &ToolConfig,
 ) -> Invocation {
 	let argv = argv
@@ -205,11 +206,11 @@ pub(crate) fn invocation(
 		.iter()
 		.map(|(name, value)| (name.to_str_lossy().into_owned(), value.to_str_lossy().into_owned()))
 		.collect();
-	invocation.stdio = stdio.each_ref().map(open_fd);
+	invocation.stdio = stdio.each_ref().map(|fd| open_fd(fd, tag));
 	invocation.fds = extra_fds
 		.iter()
 		.filter(|(_, fd)| fd.is_open())
-		.map(|(number, fd)| (*number, open_fd(fd)))
+		.map(|(number, fd)| (*number, open_fd(fd, tag)))
 		.collect();
 	invocation.reported_error = config.reported_error.get();
 	invocation
@@ -217,7 +218,7 @@ pub(crate) fn invocation(
 
 /// The descriptor an extra gets for the engine fd object `fd` (see the
 /// module docs).
-fn open_fd(fd: &FdRef) -> Fd {
+fn open_fd(fd: &FdRef, tag: crate::bash::CmdTag) -> Fd {
 	if !fd.is_open() {
 		return Fd::Closed;
 	}
@@ -226,7 +227,7 @@ fn open_fd(fd: &FdRef) -> Fd {
 	{
 		return Fd::File(file);
 	}
-	Fd::Vfs(pi_vfs::File::from_handle(FdHandle { fd: Mutex::new(Some(fd.clone())) }))
+	Fd::Vfs(pi_vfs::File::from_handle(FdHandle { fd: Mutex::new(Some(fd.clone())), tag }))
 }
 
 /// A duplicate of the OS handle of an engine fd object, close-on-exec.
@@ -263,7 +264,10 @@ fn duplicate(_handle: OsHandle) -> io::Result<std::fs::File> {
 struct FdHandle {
 	/// `None` once closed: the object is released with the last descriptor
 	/// of the extra, not when the provider file is collected.
-	fd: Mutex<Option<FdRef>>,
+	fd:  Mutex<Option<FdRef>>,
+	/// The executing command's tag, so its stage records the bytes an extra
+	/// writes through an engine pipe or an observed stream.
+	tag: crate::bash::CmdTag,
 }
 
 impl FdHandle {
@@ -300,7 +304,8 @@ impl pi_vfs::FileHandle for FdHandle {
 				Poll::Pending => Ok(0),
 			};
 		}
-		std::future::poll_fn(|cx| fd.poll_write(cx, buf)).await
+		let tag = self.tag;
+		std::future::poll_fn(|cx| fd.poll_write_tagged(cx, buf, tag)).await
 	}
 
 	async fn seek(&self, pos: SeekFrom) -> io::Result<u64> {

@@ -762,7 +762,7 @@ impl Inner {
 				n.res = Some(resolved);
 				n.redirs = redirs.to_vec();
 			},
-			EventData::CmdEnd { status, dur_ns, pipestatus } => {
+			EventData::CmdEnd { status, dur_ns, pipestatus, .. } => {
 				n.live = n.live.saturating_sub(1);
 				n.st = Some(status);
 				n.fails += u32::from(status != 0);

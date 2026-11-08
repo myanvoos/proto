@@ -245,6 +245,24 @@ pub trait EventSink: Send + Sync {
 	fn wants_output(&self) -> bool {
 		false
 	}
+	/// Whether the sink attributes a command's stdout and stderr separately
+	/// even when the run's capture merges them. Such a sink makes the host
+	/// give each of an external's streams its own relay; a sink that only
+	/// needs the merged text keeps one relay and its write order.
+	fn split_output(&self) -> bool {
+		false
+	}
+	/// Bytes written into one of the engine's pipeline pipes, attributed to
+	/// the command that wrote them. `merged` when the pipe also carried that
+	/// command's stderr (`2>&1 |`). These bytes never reached the run's
+	/// visible capture, so a sink that only records visible output ignores
+	/// them.
+	fn pipe_output(&self, _tag: Option<crate::bash::ids::CmdTag>, _merged: bool, _bytes: &[u8]) {}
+	/// Whether the sink records pipeline-pipe bytes ([`Self::pipe_output`]).
+	/// Only such a sink makes the host tag and observe the engine's pipes.
+	fn wants_pipe_output(&self) -> bool {
+		false
+	}
 	/// Pin the actual root submission before stepping a persistent session.
 	/// Descendant submissions are reported by explicit engine lineage instead.
 	fn run_submitted(&self, _run: RunId) {}
@@ -825,6 +843,10 @@ pub enum EventData<'a> {
 		dur_ns:     u64,
 		/// `PIPESTATUS` for pipelines.
 		pipestatus: &'a [i32],
+		/// Signal that terminated the command, when the wait status named
+		/// one (distinct from an explicit `exit 128+n`).
+		#[serde(skip_serializing_if = "Option::is_none")]
+		signal:     Option<i32>,
 	},
 	/// A variable was assigned.
 	Assign {

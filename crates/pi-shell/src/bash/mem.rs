@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bash::{
 	fs::{File, FileKind, SeekFrom},
-	host::{OsHandle, PipeMirror},
+	host::{OsHandle, PipeMirror, PipeOutput},
 };
 
 /// Capacity of a [`pipe`] in bytes (bash and Linux use 64 KiB).
@@ -41,6 +41,12 @@ pub struct PipeState {
 	/// dropped once the last writer or the last reader is gone. Not imaged:
 	/// a restored pipe is untapped.
 	mirror:  Option<Arc<dyn PipeMirror>>,
+	/// Receives the stage-tagged bytes written into the pipe
+	/// ([`pipe_with`]); closed with the pipe like `mirror`.
+	output:  Option<Arc<dyn PipeOutput>>,
+	/// The pipe carries the writing command's stdout and stderr together
+	/// (`2>&1 |`), so its bytes are one merged stream.
+	merged:  bool,
 }
 
 impl PipeState {
@@ -77,18 +83,22 @@ pub struct PipeWriter(Arc<Mutex<PipeState>>);
 /// `BrokenPipe` once every reader is gone (the engine turns that into a
 /// virtual `SIGPIPE`, status 141).
 pub fn pipe() -> (PipeReader, PipeWriter) {
-	let state = Arc::new(Mutex::new(PipeState { readers: 1, writers: 1, ..PipeState::default() }));
-	(PipeReader(Arc::clone(&state)), PipeWriter(state))
+	pipe_with(None, None, false)
 }
 
-/// A [`pipe`] whose written bytes are also handed to `mirror`
-/// ([`Host::pipe_tap`](crate::bash::Host::pipe_tap)), which is closed once the
-/// last writer or the last reader is gone.
-pub fn tapped_pipe(mirror: Arc<dyn PipeMirror>) -> (PipeReader, PipeWriter) {
+/// A pipe with an optional protolens mirror and an optional stage-output
+/// observer.
+pub fn pipe_with(
+	mirror: Option<Arc<dyn PipeMirror>>,
+	output: Option<Arc<dyn PipeOutput>>,
+	merged: bool,
+) -> (PipeReader, PipeWriter) {
 	let state = Arc::new(Mutex::new(PipeState {
 		readers: 1,
 		writers: 1,
-		mirror: Some(mirror),
+		mirror,
+		output,
+		merged,
 		..PipeState::default()
 	}));
 	(PipeReader(Arc::clone(&state)), PipeWriter(state))
@@ -182,12 +192,13 @@ impl File for PipeReader {
 	}
 }
 
-impl File for PipeWriter {
-	fn poll_read(&mut self, _cx: &mut Context<'_>, _buf: &mut [u8]) -> Poll<io::Result<usize>> {
-		unsupported()
-	}
-
-	fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+impl PipeWriter {
+	fn write_into(
+		&mut self,
+		cx: &mut Context<'_>,
+		buf: &[u8],
+		tag: Option<crate::bash::ids::CmdTag>,
+	) -> Poll<io::Result<usize>> {
 		let mut s = self.0.lock();
 		if s.readers == 0 {
 			return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
@@ -202,8 +213,37 @@ impl File for PipeWriter {
 		if let Some(mirror) = &s.mirror {
 			mirror.write(&buf[..n]);
 		}
+		if let Some(output) = &s.output {
+			output.write(tag, s.merged, &buf[..n]);
+		}
 		s.wake_all();
 		Poll::Ready(Ok(n))
+	}
+}
+
+impl File for PipeWriter {
+	fn poll_read(&mut self, _cx: &mut Context<'_>, _buf: &mut [u8]) -> Poll<io::Result<usize>> {
+		unsupported()
+	}
+
+	fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+		self.write_into(cx, buf, None)
+	}
+
+	fn poll_write_tagged(
+		&mut self,
+		cx: &mut Context<'_>,
+		buf: &[u8],
+		tag: Option<crate::bash::ids::CmdTag>,
+	) -> Poll<io::Result<usize>> {
+		self.write_into(cx, buf, tag)
+	}
+
+	/// A stage-observed pipe is tagged in the writer's vproc fd table, so
+	/// both in-process writes and an external's pump carry the command's
+	/// [`CmdTag`](crate::bash::CmdTag) into [`PipeOutput`].
+	fn tags_output(&self) -> bool {
+		self.0.lock().output.is_some()
 	}
 
 	fn poll_flush(&mut self, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -423,6 +463,21 @@ impl File for MemFile {
 
 	fn poll_write(&mut self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
 		self.file().poll_write(cx, buf)
+	}
+
+	fn poll_write_tagged(
+		&mut self,
+		cx: &mut Context<'_>,
+		buf: &[u8],
+		tag: Option<crate::bash::ids::CmdTag>,
+	) -> Poll<io::Result<usize>> {
+		self.file().poll_write_tagged(cx, buf, tag)
+	}
+
+	/// A memory object is tagged only when its end is an observed pipe
+	/// ([`PipeWriter::tags_output`]).
+	fn tags_output(&self) -> bool {
+		self.file_ref().tags_output()
 	}
 
 	fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {

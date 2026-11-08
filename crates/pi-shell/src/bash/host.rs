@@ -237,6 +237,13 @@ pub trait Host {
 	fn pipe_tap(&mut self) -> Option<Arc<dyn PipeTap>> {
 		None
 	}
+	/// Observer of the bytes pipelines carry, asked once per pipeline
+	/// started: each pipe between two stages reports every byte written into
+	/// it together with the writing command's [`CmdTag`](crate::bash::CmdTag)
+	/// ([`PipeOutput`]). `None` (the default) observes no pipe.
+	fn pipe_output(&mut self) -> Option<Arc<dyn PipeOutput>> {
+		None
+	}
 	/// Observe an event, synchronously at a safepoint.
 	///
 	/// Must not re-enter the [`Shell`](crate::bash::Shell). The event borrows
@@ -630,6 +637,19 @@ pub trait PipeMirror: Send + Sync {
 	/// The pipe carries no more: its last writer or its last reader is gone.
 	/// Called once.
 	fn close(&self);
+}
+
+/// Receives the stage-tagged bytes written into a pipeline pipe
+/// ([`Host::pipe_output`]).
+///
+/// Called with the pipe's lock held, from whoever writes into it (an
+/// in-process builtin or the pump of an external): implementations must be
+/// quick and must not touch the shell.
+pub trait PipeOutput: Send + Sync {
+	/// `bytes` were written into the pipe by command `tag` (absent for a
+	/// writer with no executing command). `merged` when the pipe carries
+	/// the writer's stderr too (`2>&1 |`).
+	fn write(&self, tag: Option<crate::bash::ids::CmdTag>, merged: bool, bytes: &[u8]);
 }
 
 /// How an external process ended.

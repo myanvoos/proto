@@ -146,7 +146,13 @@ pub enum HistoryData {
 		redirs:   Vec<RedirInfo>,
 	},
 	/// Command ended.
-	CmdEnd { status: i32, dur_ns: u64, pipestatus: Vec<i32> },
+	CmdEnd {
+		status:     i32,
+		dur_ns:     u64,
+		pipestatus: Vec<i32>,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		signal:     Option<i32>,
+	},
 	/// Pipeline entered.
 	Pipeline,
 	/// Branch decision.
@@ -230,10 +236,11 @@ impl HistoryData {
 					.collect(),
 				resolved,
 			},
-			EventData::CmdEnd { status, dur_ns, pipestatus } => Self::CmdEnd {
+			EventData::CmdEnd { status, dur_ns, pipestatus, signal } => Self::CmdEnd {
 				status,
 				dur_ns,
 				pipestatus: pipestatus.iter().take(ARG_ITEMS).copied().collect(),
+				signal,
 			},
 			EventData::Pipeline { .. } => Self::Pipeline,
 			EventData::Branch { construct, taken, status } => {

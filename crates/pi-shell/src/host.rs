@@ -137,6 +137,21 @@ impl StdStreams {
 		stdout.as_ref()?.dup().ok()
 	}
 
+	/// Identity of the capture generation: the `output_key` prefix its stream
+	/// files report.
+	fn capture_key(&self) -> usize {
+		Arc::as_ptr(&self.slots.lock()).addr()
+	}
+
+	/// A dup of stream `index`'s underlying descriptor, held by a relay so
+	/// the run's reader stays open while a background job still holds the
+	/// capture, exactly as if the job wrote to it directly.
+	fn text_guard(&self, index: usize) -> Option<Box<dyn File>> {
+		let slots = Arc::clone(&self.slots.lock());
+		let slot = slots.get(index)?.lock();
+		slot.as_ref()?.dup().ok()
+	}
+
 	/// Remove every stream, closing the files installed last.
 	pub fn clear(&self) {
 		let order = self.write_order.lock().clone();
@@ -328,6 +343,9 @@ pub struct PiHost {
 	events:         Option<Arc<dyn crate::bash::EventSink>>,
 	/// Whether the event sink also wants externals' output attributed.
 	observe_output: bool,
+	/// Whether the event sink attributes stdout and stderr separately even
+	/// when the run's capture merges them.
+	split_output:   bool,
 }
 
 /// What launching an external needs of a [`PiHost`], owned and cheap to
@@ -343,6 +361,9 @@ struct Launcher {
 	/// Decodes what externals write into a text sink; `None` where output
 	/// needs none ([`output_decode::external_output_decoding`]).
 	decoding: Option<Arc<dyn OutputDecoding>>,
+	/// Give an external's stdout and stderr separate relays even when their
+	/// sink is one merged capture, so each keeps its descriptor.
+	split:    bool,
 }
 
 /// A text sink a relay forwards into.
@@ -354,14 +375,16 @@ enum TextSink {
 }
 
 impl TextSink {
-	fn is_same(&self, other: &Self) -> bool {
+	/// Whether `other` is the same final stream. With `split`, two
+	/// descriptors of one merged capture stay distinct relays so each write
+	/// keeps its own stream; only an exact descriptor (an alias like
+	/// `exec 3>&1`) shares one.
+	fn is_same(&self, other: &Self, split: bool) -> bool {
 		match (self, other) {
 			(Self::Run, Self::Run) => true,
 			(Self::Capture(a), Self::Capture(b)) => {
 				a.same(b)
-					|| a
-						.output_key()
-						.is_some_and(|key| b.output_key() == Some(key))
+					|| (!split && a.output_key().is_some_and(|key| b.output_key() == Some(key)))
 			},
 			_ => false,
 		}
@@ -400,15 +423,29 @@ impl Launcher {
 			let Some(sink) = self.text_sink_of(stdio) else {
 				continue;
 			};
-			let os = if let Some(&(_, os)) = routed.iter().find(|(known, _)| known.is_same(&sink)) {
+			let os = if let Some(&(_, os)) = routed
+				.iter()
+				.find(|(known, _)| known.is_same(&sink, self.split))
+			{
 				os
 			} else {
-				let end = match &sink {
-					TextSink::Run => match self.streams.text_sink() {
-						Some(file) => End::File(file),
-						None => continue,
+				let (end, guard) = match &sink {
+					TextSink::Run => {
+						let Some(file) = self.streams.text_sink() else {
+							continue;
+						};
+						(End::File(file), self.streams.text_guard(1))
 					},
-					TextSink::Capture(fd) => End::Fd(fd.clone()),
+					TextSink::Capture(fd) => {
+						// The run's own stream files keep the reader open
+						// while a background job still writes; a command
+						// substitution's capture has no such reader.
+						let guard = fd
+							.output_key()
+							.filter(|(slots, _)| *slots == self.streams.capture_key())
+							.and_then(|(_, index)| self.streams.text_guard(index as usize));
+						(End::Fd(fd.clone()), guard)
+					},
 				};
 				let text = match &sink {
 					TextSink::Run => true,
@@ -417,7 +454,7 @@ impl Launcher {
 							|| (fd.observes_output() && self.streams.text.load(Ordering::Acquire))
 					},
 				};
-				let os = relays.attach(end, text)?;
+				let os = relays.attach(end, text, guard)?;
 				routed.push((sink, os));
 				os
 			};
@@ -525,6 +562,7 @@ impl PiHost {
 				observer: None,
 				spawns:   SpawnLog::default(),
 				decoding: output_decode::external_output_decoding(),
+				split:    false,
 			},
 			tools: ToolConfig::default(),
 			runtime,
@@ -536,6 +574,7 @@ impl PiHost {
 			pipe_tap: None,
 			events: None,
 			observe_output: false,
+			split_output: false,
 		}
 	}
 
@@ -574,6 +613,14 @@ impl PiHost {
 	/// sink; only such a sink makes the host relay external output.
 	pub fn set_observe_output(&mut self, observe: bool) {
 		self.observe_output = observe;
+	}
+
+	/// Whether the event sink attributes an external's stdout and stderr
+	/// separately ([`crate::bash::EventSink::split_output`]). Set by the
+	/// session from the sink.
+	pub fn set_split_output(&mut self, split: bool) {
+		self.split_output = split;
+		self.launcher.split = split;
 	}
 
 	/// Where builtins report an error their exit status hides (jq after a
@@ -659,6 +706,7 @@ impl crate::bash::Host for PiHost {
 			&inv.stdio,
 			inv.extra_fds,
 			inv.umask,
+			inv.tag,
 			&self.tools,
 		);
 		// The table's spelling selects the extra (`sg` stays `sg`).
@@ -737,6 +785,16 @@ impl crate::bash::Host for PiHost {
 
 	fn pipe_tap(&mut self) -> Option<Arc<dyn crate::bash::PipeTap>> {
 		self.pipe_tap.clone()
+	}
+
+	fn pipe_output(&mut self) -> Option<Arc<dyn crate::bash::PipeOutput>> {
+		self
+			.events
+			.as_ref()
+			.filter(|events| events.wants_pipe_output())
+			.map(|events| {
+				Arc::new(StagePipes { events: Arc::clone(events) }) as Arc<dyn crate::bash::PipeOutput>
+			})
 	}
 
 	fn fs(&mut self) -> &mut dyn Fs {
@@ -943,6 +1001,18 @@ fn protected_processes() -> Vec<(i32, i32)> {
 #[cfg(not(unix))]
 fn protected_processes() -> Vec<(i32, i32)> {
 	i32::try_from(std::process::id()).map_or_else(|_| Vec::new(), |me| vec![(me, me)])
+}
+
+/// Reports the bytes crossing a pipeline pipe to the run's event sink, which
+/// attributes them to the writing command's stage.
+struct StagePipes {
+	events: Arc<dyn crate::bash::EventSink>,
+}
+
+impl crate::bash::PipeOutput for StagePipes {
+	fn write(&self, tag: Option<crate::bash::CmdTag>, merged: bool, bytes: &[u8]) {
+		self.events.pipe_output(tag, merged, bytes);
+	}
 }
 
 /// An external reported to a [`SpawnObserver`].

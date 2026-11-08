@@ -2908,7 +2908,7 @@ fn dispatch(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, o
 					.get(op.node as usize)
 					.is_some_and(|n| n.kind == NodeKind::Pipeline);
 				let pipestatus: &[i32] = if pipeline { &vp.pipestatus } else { &[] };
-				let data = EventData::CmdEnd { status, dur_ns, pipestatus };
+				let data = EventData::CmdEnd { status, dur_ns, pipestatus, signal: None };
 				k.emit_op_at(cx, vp, op.node, data, end);
 			}
 			Flow::Next
@@ -3978,6 +3978,7 @@ fn spawn(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, op: 
 			SpawnKind::Pipeline => {
 				let n = info.stages.len();
 				let tap = cx.host.pipe_tap();
+				let output = cx.host.pipe_output();
 				// `lastpipe` without job control: the last stage runs here. zsh
 				// runs it in the current shell but under sh emulation
 				// (`execcmd_exec`'s `last1 == 2 && input &&
@@ -4012,10 +4013,7 @@ fn spawn(k: &mut Kernel, vp: &mut Vproc, cx: &mut Cx<'_>, unit: &Arc<Unit>, op: 
 							let consumer = stage_text(unit, info, i + 1);
 							tap.open(BStr::new(&producer), BStr::new(&consumer))
 						});
-						let (r, w) = match mirror {
-							Some(mirror) => mem::tapped_pipe(mirror),
-							None => mem::pipe(),
-						};
+						let (r, w) = mem::pipe_with(mirror, output.clone(), stage.pipe_stderr);
 						let w = FdRef::mem(w);
 						fds.set(1, Some(w.clone()));
 						if stage.pipe_stderr {

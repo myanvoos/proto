@@ -142,7 +142,12 @@ fn expanded(seq: u64, key: NodeKey, resolved: ResolvedKind) -> HistoryEvent {
 	})
 }
 fn end(seq: u64, key: NodeKey, status: i32) -> HistoryEvent {
-	event(seq, Some(key), HistoryData::CmdEnd { status, dur_ns: 10, pipestatus: Vec::new() })
+	event(seq, Some(key), HistoryData::CmdEnd {
+		status,
+		dur_ns: 10,
+		pipestatus: Vec::new(),
+		signal: None,
+	})
 }
 fn assignment(seq: u64, key: Option<NodeKey>, value: &str) -> HistoryEvent {
 	event(seq, key, HistoryData::Assign {

@@ -636,6 +636,9 @@ impl Driver {
 		self
 			.host
 			.set_observe_output(events.as_ref().is_some_and(|sink| sink.wants_output()));
+		self
+			.host
+			.set_split_output(events.as_ref().is_some_and(|sink| sink.split_output()));
 		self.host.set_event_sink(events);
 		self
 			.host
@@ -685,6 +688,7 @@ impl Driver {
 		self.host.set_pipe_tap(None);
 		self.host.set_event_sink(None);
 		self.host.set_observe_output(false);
+		self.host.set_split_output(false);
 		self.shell.set_event_mask(EventMask::NONE);
 		self.host.set_reported_error(None);
 		self.host.set_cancel(None);

@@ -236,7 +236,7 @@ impl EventSink for StageTrace {
 				}
 				.into();
 			},
-			EventData::CmdEnd { status, dur_ns, .. } => {
+			EventData::CmdEnd { status, dur_ns, signal, .. } => {
 				let Some(tag) = ev.command_tag() else {
 					return;
 				};
@@ -245,6 +245,7 @@ impl EventSink for StageTrace {
 					return;
 				};
 				stage.exit_code = Some(*status);
+				stage.signal = *signal;
 				stage.state = "exited";
 				stage.elapsed_ms = Some(*dur_ns / 1_000_000);
 			},
@@ -260,13 +261,28 @@ impl EventSink for StageTrace {
 	}
 
 	fn wants_output(&self) -> bool {
-		// In-process writes (builtins, callouts such as `protolens`) carry
-		// their tag through the host's stream files. An external's output
-		// would only be attributable by spawning it on a pipe instead of
-		// `exec`ing its subshell, which changes signal delivery for the
-		// background jobs pi's cancellation relies on; the stage record keeps
-		// its own output only where the engine already tags it.
-		false
+		// A stage's own output is the bytes its command wrote to the run's
+		// visible streams, an external's included. The host gives each
+		// stream its own relay, so the writer's descriptor reaches
+		// `output_tagged` even when the run merges stdout and stderr; the
+		// command's spawn, process group and cancellation are unchanged.
+		true
+	}
+
+	/// A stage card splits stdout and stderr, so an external's streams get
+	/// separate relays even when the run's capture merges them.
+	fn split_output(&self) -> bool {
+		true
+	}
+
+	/// Pipeline pipes never reach the run's visible capture; their bytes are
+	/// the writing stage's output.
+	fn pipe_output(&self, tag: Option<CmdTag>, merged: bool, bytes: &[u8]) {
+		self.output_tagged(tag, 0, 1, merged, bytes);
+	}
+
+	fn wants_pipe_output(&self) -> bool {
+		true
 	}
 
 	fn output_tagged(&self, tag: Option<CmdTag>, t_ns: u64, fd: i32, _merged: bool, bytes: &[u8]) {
@@ -336,6 +352,20 @@ impl EventSink for TeeSink {
 
 	fn wants_output(&self) -> bool {
 		self.sinks.iter().any(|sink| sink.wants_output())
+	}
+
+	fn split_output(&self) -> bool {
+		self.sinks.iter().any(|sink| sink.split_output())
+	}
+
+	fn pipe_output(&self, tag: Option<CmdTag>, merged: bool, bytes: &[u8]) {
+		for sink in &self.sinks {
+			sink.pipe_output(tag, merged, bytes);
+		}
+	}
+
+	fn wants_pipe_output(&self) -> bool {
+		self.sinks.iter().any(|sink| sink.wants_pipe_output())
 	}
 
 	fn run_submitted(&self, run: crate::bash::RunId) {

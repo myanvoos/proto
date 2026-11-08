@@ -1470,6 +1470,9 @@ pub struct ExecState {
 	/// Command output still to be written.
 	pub writes:      VecDeque<PendingWrite>,
 	pub status:      i32,
+	/// Signal that terminated the awaited command, when its wait status
+	/// named one (`128+n` alone does not). A signal number fits a byte.
+	pub signal:      Option<std::num::NonZeroU8>,
 	/// Status of the last command substitution (`$?` of `x=$(…)`).
 	pub sub_status:  Option<i32>,
 	/// Children `wait` waits for.

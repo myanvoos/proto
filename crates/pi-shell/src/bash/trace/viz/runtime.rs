@@ -226,7 +226,7 @@ impl<'a> Runtime<'a> {
 						observation.resolved = Some(*resolved);
 						observation.redirs = redirs;
 					},
-					HistoryData::CmdEnd { status, dur_ns, pipestatus } => {
+					HistoryData::CmdEnd { status, dur_ns, pipestatus, .. } => {
 						observation.live = observation.live.saturating_sub(1);
 						observation.status = Some(*status);
 						observation.duration_ns += dur_ns;

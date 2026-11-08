@@ -42,7 +42,7 @@ use std::{
 };
 
 use crate::{
-	bash::{ExitStatus, ExtProc, OsHandle, ProcEvent, Signal},
+	bash::{ExitStatus, ExtProc, File, OsHandle, ProcEvent, Signal},
 	sys::pump::{
 		BUF, BURST, End, PollIo, orphan,
 		os::{self, OsPipe, Timer},
@@ -117,10 +117,19 @@ struct Relay {
 	target:   Option<u64>,
 	/// The hold grace, once the drain waits on a held character.
 	grace:    Option<Timer>,
+	/// A descriptor of the run's capture the relay keeps open, so a
+	/// background job writing into it still holds the reader open as it
+	/// would through direct inheritance.
+	_keep:    Option<Box<dyn File>>,
 }
 
 impl Relay {
-	fn new(pipe: OsPipe, decoder: Option<Box<dyn ByteDecoder>>, sink: End) -> Self {
+	fn new(
+		pipe: OsPipe,
+		decoder: Option<Box<dyn ByteDecoder>>,
+		sink: End,
+		keep: Option<Box<dyn File>>,
+	) -> Self {
 		Self {
 			pipe: Some(pipe),
 			decoder,
@@ -133,6 +142,7 @@ impl Relay {
 			phase: Phase::Reading,
 			target: None,
 			grace: None,
+			_keep: keep,
 		}
 	}
 
@@ -285,8 +295,14 @@ impl<'a> Relays<'a> {
 	}
 
 	/// Set up a relay into `sink`, decoding only explicitly designated text
-	/// sinks. Returns the OS handle the program writes to.
-	pub(crate) fn attach(&mut self, sink: End, text: bool) -> io::Result<OsHandle> {
+	/// sinks. `keep` holds the run's capture open while the relay lives.
+	/// Returns the OS handle the program writes to.
+	pub(crate) fn attach(
+		&mut self,
+		sink: End,
+		text: bool,
+		keep: Option<Box<dyn File>>,
+	) -> io::Result<OsHandle> {
 		let (pipe, writer) = os::pipe(false)?;
 		self.set.push(Relay::new(
 			pipe,
@@ -295,6 +311,7 @@ impl<'a> Relays<'a> {
 				.filter(|_| text)
 				.map(|decoding| decoding.decoder()),
 			sink,
+			keep,
 		));
 		let os = writer_handle(&writer);
 		self.writers.push(writer);
@@ -468,6 +485,7 @@ mod tests {
 			.attach(
 				End::File(Box::new(super::super::StdFile::new(output.try_clone().unwrap()))),
 				false,
+				None,
 			)
 			.unwrap();
 		relays.writers[0].write_all(b"\xff\xc3\0").unwrap();
