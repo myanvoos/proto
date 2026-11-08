@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Expose shell file observations, protolens dispatch records and stage records from `Shell.run`, and report missing AST grammars on ast-grep results.
+
 ### Fixed
 
 - Send Wayland double and triple clicks as held, spaced presses instead of microseconds apart, so Qt apps on KDE Plasma (such as Kate) see them as multi-clicks rather than single clicks.

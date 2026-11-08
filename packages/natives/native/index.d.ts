@@ -147,119 +147,259 @@ export declare function __ompInstallTokioRuntime(): void
 
 export declare function __piNativesV20_1_2(): void
 
+/**
+ * Apply ast-grep rewrite rules to matching files; honors `dryRun` and returns
+ * a promise.
+ */
 export declare function astEdit(options: AstReplaceOptions): Promise<AstReplaceResult>
 
+/** One ast-grep match with source range and optional meta-variables. */
 export interface AstFindMatch {
+  /** Display path of the matching file. */
   path: string
+  /** Matched source text. */
   text: string
+  /** Start byte offset in the file (UTF-8 byte index). */
   byteStart: number
+  /** End byte offset in the file (exclusive UTF-8 byte index). */
   byteEnd: number
+  /** 1-based start line. */
   startLine: number
+  /** 1-based start column. */
   startColumn: number
+  /** 1-based end line. */
   endLine: number
+  /** 1-based end column. */
   endColumn: number
+  /** Meta-variable name to captured text, when `includeMeta` was enabled. */
   metaVariables?: Record<string, string>
 }
 
+/** Options for `astGrep`: patterns, scan scope, and match limits. */
 export interface AstFindOptions {
+  /** ast-grep patterns to search for (OR across patterns). */
   patterns?: Array<string>
+  /** Language override; otherwise inferred from file extension per candidate. */
   lang?: string
+  /**
+   * Single file or directory to scan (combined with `glob` when set): a
+   * host path or an absolute `scheme://` URL.
+   */
   path?: string
+  /** Optional glob filter relative to the search root. */
   glob?: string
+  /** Rule selector for multi-rule ast-grep configurations. */
   selector?: string
+  /** Pattern strictness; defaults to smart matching when omitted. */
   strictness?: AstMatchStrictness
+  /** Maximum matches to return after `offset` (default applies when omitted). */
   limit?: number
+  /** Number of leading matches to skip before applying `limit`. */
   offset?: number
+  /** When true, include meta-variable bindings per match. */
   includeMeta?: boolean
+  /**
+   * Reserved for contextual snippets; not used by the current native find
+   * path.
+   */
   context?: number
+  /** Optional cancellation handle (library-specific). */
   signal?: unknown
+  /** Wall-clock timeout for the worker task in milliseconds. */
   timeoutMs?: number
 }
 
+/** Aggregated search statistics and any parse or compile diagnostics. */
 export interface AstFindResult {
+  /** Page of matches after sort, offset, and limit. */
   matches: Array<AstFindMatch>
+  /** Total matches found before paging (can exceed `matches.length`). */
   totalMatches: number
+  /** Distinct files that contained at least one match. */
   filesWithMatches: number
+  /** Files examined for the query. */
   filesSearched: number
+  /** True when results were truncated by `limit`. */
   limitReached: boolean
+  /** Non-fatal parse or pattern errors collected during the run. */
   parseErrors?: Array<string>
+  /**
+   * Languages whose on-demand grammar is not installed; their files were
+   * skipped (see `wasmGrammarFor`).
+   */
+  missingGrammars?: Array<string>
 }
 
+/**
+ * Search source files with ast-grep patterns; returns a promise resolved on a
+ * worker thread.
+ */
 export declare function astGrep(options: AstFindOptions): Promise<AstFindResult>
 
+/**
+ * Match ast-grep patterns against an in-memory source string; returns a
+ * promise resolved on a worker thread.
+ *
+ * This is the file-free counterpart to [`ast_grep`]: callers that already hold
+ * the source (streaming buffers, generated code, editor contents) avoid a
+ * temp-file round trip. `lang` is required since there is no path to infer it
+ * from.
+ */
 export declare function astMatch(options: AstMatchOptions): Promise<AstMatchResult>
 
+/**
+ * Options for `astMatch`: run ast-grep patterns against an in-memory source
+ * string instead of files on disk.
+ */
 export interface AstMatchOptions {
+  /** Source code to match against (parsed in memory, never read from disk). */
   source: string
+  /** Language of `source` (required; e.g. "ts", "tsx", "rust", "python"). */
   lang: string
+  /** ast-grep patterns to search for (OR across patterns). */
   patterns: Array<string>
+  /** Rule selector for multi-rule ast-grep configurations. */
   selector?: string
+  /** Pattern strictness; defaults to smart matching when omitted. */
   strictness?: AstMatchStrictness
+  /** Maximum matches to return after `offset` (default applies when omitted). */
   limit?: number
+  /** Number of leading matches to skip before applying `limit`. */
   offset?: number
+  /** When true, include meta-variable bindings per match. */
   includeMeta?: boolean
+  /** Optional cancellation handle (library-specific). */
   signal?: unknown
+  /** Wall-clock timeout for the worker task in milliseconds. */
   timeoutMs?: number
 }
 
+/** Result of an in-memory `astMatch` run. */
 export interface AstMatchResult {
+  /** Page of matches after sort, offset, and limit. */
   matches: Array<AstFindMatch>
+  /** Total matches found before paging (can exceed `matches.length`). */
   totalMatches: number
+  /** True when results were truncated by `limit`. */
   limitReached: boolean
+  /** Non-fatal parse or pattern-compile errors collected during the run. */
   parseErrors?: Array<string>
 }
 
+/** ast-grep pattern strictness (controls how patterns match syntax). */
 export declare enum AstMatchStrictness {
+  /** Match at the concrete syntax tree level. */
   Cst = 'cst',
+  /** Balanced default suitable for most searches. */
   Smart = 'smart',
+  /** Match at the AST level. */
   Ast = 'ast',
+  /** More permissive matching. */
   Relaxed = 'relaxed',
+  /** Match structural signatures. */
   Signature = 'signature',
+  /** Template-style pattern matching. */
   Template = 'template',
 }
 
+/**
+ * One textual replacement applied to a file (before/after slice and
+ * coordinates).
+ */
 export interface AstReplaceChange {
+  /** File path for this change. */
   path: string
+  /** Original matched text. */
   before: string
+  /** Replacement text. */
   after: string
+  /** Start byte offset of the replaced span. */
   byteStart: number
+  /** End byte offset of the replaced span (exclusive). */
   byteEnd: number
+  /**
+   * Length of deleted text in bytes (may differ from `byteEnd - byteStart`
+   * for edge cases).
+   */
   deletedLength: number
+  /** 1-based start line of the match. */
   startLine: number
+  /** 1-based start column. */
   startColumn: number
+  /** 1-based end line. */
   endLine: number
+  /** 1-based end column. */
   endColumn: number
 }
 
+/** Per-file replacement count after an `astEdit` run. */
 export interface AstReplaceFileChange {
+  /** File that had replacements. */
   path: string
+  /** Number of replacements in that file. */
   count: number
 }
 
+/**
+ * Options for `astEdit`: rewrite rules, scan scope, safety limits, and
+ * dry-run.
+ */
 export interface AstReplaceOptions {
+  /** Map of pattern string to replacement template. */
   rewrites?: Record<string, string>
+  /**
+   * Language override applied to every file; otherwise inferred per file, so
+   * mixed-language paths rewrite each file in its own language.
+   */
   lang?: string
+  /**
+   * Single file or directory to rewrite: a host path or an absolute
+   * `scheme://` URL.
+   */
   path?: string
+  /** Optional glob filter within the search root. */
   glob?: string
+  /** Rule selector for multi-rule configurations. */
   selector?: string
+  /** Pattern strictness for rewrites. */
   strictness?: AstMatchStrictness
+  /** When true (default), compute changes without writing files. */
   dryRun?: boolean
+  /** Cap on replacement applications across all files. */
   maxReplacements?: number
+  /** Cap on distinct files that may be modified. */
   maxFiles?: number
+  /** Fail the operation when a file cannot be parsed for rewriting. */
   failOnParseError?: boolean
+  /** Optional cancellation handle. */
   signal?: unknown
+  /** Wall-clock timeout for the worker task in milliseconds. */
   timeoutMs?: number
 }
 
+/** Summary of an ast-grep rewrite pass, including whether disk writes occurred. */
 export interface AstReplaceResult {
+  /** Individual replacement records (may be large). */
   changes: Array<AstReplaceChange>
+  /** Replacement counts grouped by file. */
   fileChanges: Array<AstReplaceFileChange>
+  /** Total replacements applied or previewed. */
   totalReplacements: number
+  /** Files that had at least one replacement. */
   filesTouched: number
+  /** Files considered for rewriting. */
   filesSearched: number
+  /** False when `dryRun` prevented writing. */
   applied: boolean
+  /** True when limits stopped further replacements. */
   limitReached: boolean
+  /** Parse or pattern errors when not failing the whole operation. */
   parseErrors?: Array<string>
+  /**
+   * Languages whose on-demand grammar is not installed; their files were
+   * skipped (see `wasmGrammarFor`).
+   */
+  missingGrammars?: Array<string>
 }
 
 export interface AxNode {
@@ -333,8 +473,11 @@ export interface ClipboardImage {
 
 export declare function codeOutline(options: OutlineOptions): OutlineResult
 
+/** A context line (before or after a match). */
 export interface ContextLine {
+  /** 1-indexed line number in the source file. */
   lineNumber: number
+  /** Raw line content (trimmed line ending). */
   line: string
 }
 
@@ -484,9 +627,13 @@ export interface FileMutation {
   after?: string
 }
 
+/** Resolved filesystem entry kind for glob filters and match metadata. */
 export declare enum FileType {
+  /** Regular file. */
   File = 1,
+  /** Directory. */
   Dir = 2,
+  /** Symbolic link. */
   Symlink = 3,
 }
 
@@ -503,27 +650,44 @@ export declare enum FsObservationKind {
   Write = 'write',
 }
 
+/** Fuzzy file path search for autocomplete. */
 export declare function fuzzyFind(options: FuzzyFindOptions): Promise<FuzzyFindResult>
 
+/** A single match in fuzzy find results. */
 export interface FuzzyFindMatch {
+  /** Relative path from the search root (uses `/` separators). */
   path: string
+  /** Whether this entry is a directory. */
   isDirectory: boolean
+  /** Match quality score (higher is better). */
   score: number
 }
 
+/** Options for fuzzy file path search. */
 export interface FuzzyFindOptions {
+  /** Fuzzy query to match against file paths (case-insensitive). */
   query: string
+  /** Directory to search. */
   path: string
+  /** Include hidden files (default: false). */
   hidden?: boolean
+  /** Respect .gitignore (default: true). */
   gitignore?: boolean
+  /** Reuse unchanged directory listings across calls (default: false). */
   cache?: boolean
+  /** Maximum number of matches to return (default: 100). */
   maxResults?: number
+  /** Abort signal for cancelling the operation. */
   signal?: unknown
+  /** Timeout in milliseconds for the operation. */
   timeoutMs?: number
 }
 
+/** Result of fuzzy file path search. */
 export interface FuzzyFindResult {
+  /** Matched entries (up to `maxResults`). */
   matches: Array<FuzzyFindMatch>
+  /** Total number of matches found (may exceed `matches.len()`). */
   totalMatches: number
 }
 
@@ -531,84 +695,197 @@ export declare function getSupportedLanguages(): Array<string>
 
 export declare function getWorkProfile(lastSeconds: number): WorkProfile
 
+/**
+ * Find filesystem entries matching a glob pattern.
+ *
+ * Resolves the search root, runs the glob search, and optionally streams each
+ * returned match through `on_match`.
+ *
+ * # Errors
+ * Returns an error when the search path cannot be resolved, the path is not a
+ * directory, the glob pattern is invalid, or cancellation/timeout is
+ * triggered.
+ */
 export declare function glob(options: GlobOptions, onMatch?: ((error: Error | null, match: GlobMatch) => void) | undefined | null): Promise<GlobResult>
 
+/** A single filesystem entry from a directory scan. */
 export interface GlobMatch {
+  /** Relative path from the search root, using forward slashes. */
   path: string
+  /** Resolved filesystem type for the match. */
   fileType: FileType
+  /** Modification time in milliseconds since Unix epoch. */
   mtime?: number
+  /** File size in bytes for regular files. */
   size?: number
 }
 
+/** Input options for `glob`, including traversal, filtering, and cancellation. */
 export interface GlobOptions {
+  /** Glob pattern to match (e.g., "*.ts"). */
   pattern: string
+  /** Directory to search: a host path or an absolute `scheme://` URL. */
   path: string
+  /**
+   * Filter by file type: "file", "dir", or "symlink". Symlinks are
+   * matched for file/dir filters based on their target type.
+   */
   fileType?: FileType
+  /** Match simple patterns recursively by default (`*.ts` -> recursive). */
   recursive?: boolean
+  /** Include hidden files (default: false). */
   hidden?: boolean
+  /** Maximum number of results to return. */
   maxResults?: number
+  /** Respect .gitignore files (default: true). */
   gitignore?: boolean
+  /** Reuse unchanged directory listings across calls (default: false). */
   cache?: boolean
+  /** Sort results by mtime (most recent first) before applying limit. */
   sortByMtime?: boolean
+  /**
+   * Include `node_modules` entries when the pattern does not explicitly
+   * mention them.
+   */
   includeNodeModules?: boolean
+  /** Abort signal for cancelling the operation. */
   signal?: unknown
+  /** Timeout in milliseconds for the operation. */
   timeoutMs?: number
 }
 
+/** Result payload returned by a glob operation. */
 export interface GlobResult {
+  /** Matched filesystem entries. */
   matches: Array<GlobMatch>
+  /** Number of returned matches (`matches.len()`), clamped to `u32::MAX`. */
   totalMatches: number
 }
 
+/**
+ * Search files for a regex pattern.
+ *
+ * # Arguments
+ * - `options`: Pattern, path, filters, and output mode.
+ * - `on_match`: Optional callback invoked per returned match/result, after the
+ *   search.
+ *
+ * # Returns
+ * Aggregated results across matching files.
+ */
 export declare function grep(options: GrepOptions, onMatch?: ((error: Error | null, match: GrepMatch) => void) | undefined | null): Promise<GrepResult>
 
+/** A single match in a grep result. */
 export interface GrepMatch {
+  /** File path for the match (relative for directory searches). */
   path: string
+  /** 1-indexed line number (0 for count-only entries). */
   lineNumber: number
+  /** The matched line content (empty for count-only entries). */
   line: string
+  /** Context lines before the match. */
   contextBefore?: Array<ContextLine>
+  /** Context lines after the match. */
   contextAfter?: Array<ContextLine>
+  /** Whether the line was truncated. */
   truncated?: boolean
+  /**
+   * 1-indexed character column where the first match on a truncated line
+   * starts; the truncated `line` shows a window around it.
+   */
   column?: number
+  /** Per-file match count (count mode only). */
   matchCount?: number
 }
 
+/** Options for searching files on disk. */
 export interface GrepOptions {
+  /** Regex pattern to search for. */
   pattern: string
+  /** Directory or file to search: a host path or an absolute `scheme://` URL. */
   path: string
+  /**
+   * Glob filter for file paths (e.g., "*.ts"); a matched directory selects
+   * every file under it.
+   */
   glob?: string
+  /** Filter by file type (e.g., "js", "py", "rust"). */
   type?: string
+  /** Case-insensitive search. */
   ignoreCase?: boolean
+  /** Enable multiline matching. */
   multiline?: boolean
+  /** Include hidden files (default: true). */
   hidden?: boolean
+  /** Respect .gitignore files (default: true). */
   gitignore?: boolean
+  /** Maximum number of matches to return. */
   maxCount?: number
+  /** Skip first N matches. */
   offset?: number
+  /** Lines of context before matches. */
   contextBefore?: number
+  /** Lines of context after matches. */
   contextAfter?: number
+  /** Lines of context before/after matches (legacy). */
   context?: number
+  /** Truncate lines longer than this (characters). */
   maxColumns?: number
+  /** Output mode (content, filesWithMatches, or count). */
   mode?: GrepOutputMode
+  /**
+   * Maximum matches collected per file (content mode). Keeps one hot file
+   * from exhausting the global `max_count` budget before other files are
+   * reached.
+   */
   maxCountPerFile?: number
+  /** Abort signal for cancelling the operation. */
   signal?: unknown
+  /** Timeout in milliseconds for the operation. */
   timeoutMs?: number
 }
 
+/** Output mode for [`search`] and [`grep`] (string values match JS callers). */
 export declare enum GrepOutputMode {
+  /** Emit matched lines (and optional context lines). */
   Content = 'content',
+  /** Emit per-file or total counts instead of line content. */
   Count = 'count',
+  /** Emit one row per file that matched, without line content. */
   FilesWithMatches = 'filesWithMatches',
 }
 
+/** Result of searching files. */
 export interface GrepResult {
+  /** Matches or per-file counts, depending on output mode. */
   matches: Array<GrepMatch>
+  /**
+   * Total matches across all files, or matched file count in filesWithMatches
+   * mode.
+   */
   totalMatches: number
+  /** Number of files with at least one match. */
   filesWithMatches: number
+  /** Number of files searched. */
   filesSearched: number
+  /** Whether the limit/offset stopped the search early. */
   limitReached?: boolean
+  /** Number of files skipped because they exceed the size limit. */
   skippedOversized?: number
 }
 
+/**
+ * Quick check if content matches a pattern.
+ *
+ * # Arguments
+ * - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
+ * - `pattern`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
+ * - `ignore_case`: Case-insensitive matching.
+ * - `multiline`: Enable multiline regex mode.
+ *
+ * # Returns
+ * True if any match exists; false on no match.
+ */
 export declare function hasMatch(content: string | Uint8Array, pattern: string | Uint8Array, ignoreCase?: boolean | undefined | null, multiline?: boolean | undefined | null): boolean
 
 export declare function highlightCode(code: string, lang: string | undefined | null, colors: HighlightColors): string
@@ -635,6 +912,14 @@ export interface HtmlToMarkdownOptions {
   hiddenContent?: string
 }
 
+/**
+ * Drop cached directory listings.
+ *
+ * The engine-era walker validates each cached listing against the directory's
+ * device/inode and timestamp, so a changed directory is listed again without
+ * explicit invalidation. The binding stays for callers that request it; the
+ * optional path is accepted and ignored.
+ */
 export declare function invalidateFsScanCache(path?: string | undefined | null): void
 
 /**
@@ -652,6 +937,8 @@ export declare enum IsoBackendKind {
   Zfs = 2,
   LinuxReflink = 3,
   Overlayfs = 4,
+  WindowsBlockClone = 5,
+  Projfs = 6,
   Rcopy = 7,
 }
 
@@ -708,24 +995,66 @@ export interface LineRange {
   endLine: number
 }
 
+/**
+ * Walk the workspace once and return tree entries plus AGENTS.md candidates.
+ *
+ * File-level ignore rules for AGENTS.md are bypassed by checking each
+ * traversed directory directly when `collectAgentsMd` is enabled, but ignored
+ * directories are still pruned by the walk and are not searched.
+ */
 export declare function listWorkspace(options: ListWorkspaceOptions): Promise<ListWorkspaceResult>
 
+/** Input options for `listWorkspace`, the single-pass workspace startup scan. */
 export interface ListWorkspaceOptions {
+  /** Directory to scan. */
   path: string
+  /** Maximum depth for returned tree entries. Root children are depth 1. */
   maxDepth: number
+  /** Include hidden files and directories. Default: false. */
   hidden?: boolean
+  /** Respect .gitignore files. Default: true. */
   gitignore?: boolean
+  /**
+   * Also surface AGENTS.md files in directories at depth 1..=4, even when
+   * gitignore would otherwise hide the file. Walks deeper than `maxDepth`
+   * to find them. Default: false.
+   */
   collectAgentsMd?: boolean
+  /**
+   * Report unreadable directories instead of silently skipping them: an
+   * unreadable root fails the scan, and unreadable subdirectories are
+   * returned in `directoryErrors` while the walk continues. Default: false
+   * (startup discovery stays best-effort).
+   */
   reportDirectoryErrors?: boolean
+  /**
+   * Prune dependency, VCS, build-output, and cache directory names
+   * (`node_modules`, `.git`, `dist`, `target`, …); `false` lists them too.
+   * Hidden entries still require `hidden: true`; ignored entries require
+   * `gitignore: false`. Default: true.
+   */
   pruneExcludedDirs?: boolean
+  /** Timeout in milliseconds for the operation. */
   timeoutMs?: number
+  /** Abort signal for cancelling the operation. */
   signal?: unknown
 }
 
+/** Result payload returned by a workspace scan. */
 export interface ListWorkspaceResult {
+  /** Entries within `maxDepth`, with mtime and regular-file size metadata. */
   entries: Array<GlobMatch>
+  /**
+   * Directory-scoped AGENTS.md files within depth 1..=4 (capped at 200).
+   * Always empty when `collectAgentsMd` is false.
+   */
   agentsMdFiles: Array<string>
+  /** True when any output cap was hit. */
   truncated: boolean
+  /**
+   * Subdirectories whose contents could not be listed. Always empty unless
+   * `reportDirectoryErrors` is set.
+   */
   directoryErrors?: Array<WorkspaceDirectoryError>
 }
 
@@ -752,12 +1081,22 @@ export declare function macOSSpellCheckerAvailable(): boolean
 
 export declare function macOSSpellingGuesses(text: string, start: number, length: number): Promise<Array<string>>
 
+/** A single match in the content. */
 export interface Match {
+  /** 1-indexed line number. */
   lineNumber: number
+  /** The matched line content. */
   line: string
+  /** Context lines before the match. */
   contextBefore?: Array<ContextLine>
+  /** Context lines after the match. */
   contextAfter?: Array<ContextLine>
+  /** Whether the line was truncated. */
   truncated?: boolean
+  /**
+   * 1-indexed character column where the first match on a truncated line
+   * starts; the truncated `line` shows a window around it.
+   */
   column?: number
 }
 
@@ -946,25 +1285,52 @@ export declare function readImageFromClipboard(): Promise<ClipboardImage | undef
  */
 export declare function scanShellEmbeddedCode(command: string): ShellEmbeddedCode
 
+/**
+ * Search content for a pattern (one-shot, compiles pattern each time).
+ * For repeated searches with the same pattern, use [`grep`] with file filters.
+ *
+ * # Arguments
+ * - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
+ * - `options`: Regex settings, context, and output mode.
+ *
+ * # Returns
+ * Match list plus counts/limit status; errors are surfaced in `error`.
+ */
 export declare function search(content: string | Uint8Array, options: SearchOptions): SearchResult
 
+/** Options for searching file content. */
 export interface SearchOptions {
+  /** Regex pattern to search for. */
   pattern: string
+  /** Case-insensitive search. */
   ignoreCase?: boolean
+  /** Enable multiline matching. */
   multiline?: boolean
+  /** Maximum number of matches to return. */
   maxCount?: number
+  /** Skip first N matches. */
   offset?: number
+  /** Lines of context before matches. */
   contextBefore?: number
+  /** Lines of context after matches. */
   contextAfter?: number
+  /** Lines of context before/after matches (legacy). */
   context?: number
+  /** Truncate lines longer than this (characters). */
   maxColumns?: number
+  /** Output mode (content or count). */
   mode?: GrepOutputMode
 }
 
+/** Result of searching content. */
 export interface SearchResult {
+  /** All matches found. */
   matches: Array<Match>
+  /** Total number of matches (may exceed `matches.len()` due to offset/limit). */
   matchCount: number
+  /** Whether the limit was reached. */
   limitReached: boolean
+  /** Error message, if any. */
   error?: string
 }
 
@@ -1114,8 +1480,11 @@ export interface WorkProfile {
   sampleCount: number
 }
 
+/** A subdirectory the scan could not list. */
 export interface WorkspaceDirectoryError {
+  /** Forward-slash path relative to the scan root. */
   path: string
+  /** Platform error, e.g. `Permission denied (os error 13)`. */
   error: string
 }
 
