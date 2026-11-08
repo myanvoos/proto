@@ -257,6 +257,10 @@ jobs:
          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4.4"
+         - uses: actions/setup-go@v5
+           with:
+              go-version-file: protofs/go.mod
+              cache-dependency-path: protofs/go.sum
          - name: Cache bun dependencies
            uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
            with:
@@ -293,7 +297,8 @@ jobs:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
               BINARY_PATH: ${{ matrix.binary_path }}
-           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH"
+              PROTOFS_PATH: packages/coding-agent/binaries/protofs-${{ matrix.target_id }}
+           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH" "$PROTOFS_PATH"
 
    release_binary_darwin:
       name: "Release binary: ${{ matrix.target_id }}"
@@ -325,6 +330,10 @@ jobs:
          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
            with:
               bun-version: "1.4.4"
+         - uses: actions/setup-go@v5
+           with:
+              go-version-file: protofs/go.mod
+              cache-dependency-path: protofs/go.sum
          - name: Cache bun dependencies
            uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
            with:
@@ -355,7 +364,8 @@ jobs:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               RELEASE_TAG: ${{ needs.release_metadata.outputs.release-tag }}
               BINARY_PATH: ${{ matrix.binary_path }}
-           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH"
+              PROTOFS_PATH: packages/coding-agent/binaries/protofs-${{ matrix.target_id }}
+           run: sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" "$BINARY_PATH" "$PROTOFS_PATH"
 
    release_github:
       name: Publish GitHub release
@@ -383,6 +393,7 @@ jobs:
            run: |
               gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
                 --pattern 'proto-linux-*' --pattern 'proto-darwin-*' \
+                --pattern 'protofs-linux-*' --pattern 'protofs-darwin-*' \
                 --dir packages/coding-agent/binaries
          - name: Remove intermediate native addons
            env:
@@ -402,6 +413,7 @@ jobs:
            run: |
               bun run ci:release:checksums SHA256SUMS.txt \
                 packages/coding-agent/binaries/proto-* \
+                packages/coding-agent/binaries/protofs-* \
                 packages/browser-relay/dist/proto-browser-relay-extension.zip \
                 LICENSE \
                 THIRD-PARTY-NOTICES.txt
@@ -413,6 +425,7 @@ jobs:
               set -euo pipefail
               sh scripts/ci-stage-release-assets.sh "$RELEASE_TAG" \
                 packages/coding-agent/binaries/proto-* \
+                packages/coding-agent/binaries/protofs-* \
                 packages/browser-relay/dist/proto-browser-relay-extension.zip \
                 LICENSE THIRD-PARTY-NOTICES.txt SHA256SUMS.txt
               gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \

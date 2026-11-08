@@ -1,23 +1,54 @@
 # protofs checkouts
 
-`protofs` is an optional isolated-checkout backend. Instead of cloning a repository for an
-isolated worker, proto opens a **protofs checkout**: a copy-on-write view of the repository served
-by the `protofs` daemon. A checkout is ready in about a second at any repository size, keeps its
-own private git dir, and captures and merges changes through the same isolation pipeline as a
-native workspace.
+`protofs` is an optional isolated-checkout backend, vendored from the OVN filesystem daemon
+(see `protofs/UPSTREAM.md`) and built by proto's own build step. It is not downloaded or installed
+as a separate tool: `bun run build:protofs` produces a sidecar binary, and release installs place it
+beside `proto`.
 
-Proto uses protofs only when the binary is installed. Without it, `orchestrator.isolation.mode=auto`
-keeps using the native PAL backends (APFS clone, btrfs, ZFS, reflink, overlayfs, or recursive copy).
+Instead of cloning a repository for an isolated worker, proto opens a **protofs checkout**: a
+copy-on-write view of the repository served by the `protofs` daemon. A checkout is ready in about a
+second at any repository size, keeps its own private git dir, and captures and merges changes
+through the same isolation pipeline as a native workspace.
+
+Proto uses protofs only when a binary is available. Without one,
+`orchestrator.isolation.mode=auto` keeps using the native PAL backends (APFS clone, btrfs, ZFS,
+reflink, overlayfs, or recursive copy).
+
+## Building
+
+```sh
+bun run build:protofs                                  # host target
+bun scripts/build-protofs.ts --target linux-x64        # one target
+bun scripts/build-protofs.ts --target darwin-arm64 --out /tmp/protofs
+```
+
+Targets: `darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`, `linux-musl-x64`,
+`linux-musl-arm64`. The default output is
+`packages/coding-agent/binaries/protofs-<target>`. Builds use `CGO_ENABLED=0`,
+`-trimpath`, and `-ldflags "-s -w"`. Go 1.27.3 or newer is required.
+
+## Binary resolution
+
+`protofs.enabled` defaults to on. When it is on, proto resolves the daemon in this order:
+
+1. explicit `protofs.path`;
+2. `protofs-<platform>-<arch>` beside the running `proto` binary, then `protofs` beside it;
+3. the development build `packages/coding-agent/binaries/protofs-<platform>-<arch>`, then
+   `protofs/protofs` from the repository;
+4. `protofs` on `PATH`.
+
+Release installs download `protofs-<target>` beside `proto` and install it as `protofs`. `proto
+update` refreshes that sibling best effort. Homebrew installs both binaries from the same formula.
 
 ## Settings
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `protofs.enabled` | `true` | Use protofs when the binary is found. Turning this off removes the checkout guidance from the system prompt and keeps isolated workers on native backends. |
-| `protofs.path` | unset | protofs executable. Unset looks for `protofs` on `PATH`. |
+| `protofs.enabled` | `true` | Use protofs when a binary is found. Turning this off removes the checkout guidance from the system prompt and keeps isolated workers on native backends. |
+| `protofs.path` | unset | Explicit protofs executable, overriding every bundled or PATH candidate. |
 
-`protofs.enabled` alone is not enough: the executable must resolve on `PATH` (or at
-`protofs.path`). When it does not, proto stays on the native backend and does not fail a spawn.
+`protofs.enabled` alone is not enough: a candidate must exist. When none does, proto stays on the
+native backend and does not fail a spawn.
 
 ## Isolated workers
 
@@ -74,7 +105,18 @@ records and tool cards are unchanged.
 
 ## Requirements
 
-- A `protofs` binary that speaks admin protocol version 5.
+- Go 1.27.3 or newer to build the vendored daemon (`brew install go` locally; CI uses
+  `actions/setup-go` with `protofs/go.mod`).
 - A Unix-domain admin socket (proto has no Windows support).
 - Git repository isolation still requires a git repository: protofs supplies the checkout, while
   capture and merge use the same git helpers as native isolation.
+- On Linux, checkouts use FUSE (`fusermount3`, the `fuse3` package). On macOS they use NFSv3 and
+  need no kernel extension or root.
+
+## State and configuration
+
+The daemon keeps state in `~/.local/state/protofs` (or `$XDG_STATE_HOME/protofs`) and checkouts in
+`~/checkouts` unless the user manifest overrides them. The per-folder manifest is
+`.proto/protofs.yml`; the user manifest is `~/.proto/protofs.yml`. `PROTOFS_STATE`, `PROTOFS_MOUNT`,
+`PROTOFS_MEMORY`, `PROTOFS_BLOB_CACHE`, and the relay variables mirror the upstream `OVNFS_*`
+variables.

@@ -5,6 +5,7 @@
 ### Added
 
 - Added protofs isolated checkouts: with `orchestrator.isolation.mode=auto` and a `protofs` binary on `PATH`, isolated workers run in copy-on-write checkouts instead of native clones (`protofs.enabled`, `protofs.path`), and the system prompt tells agents to open checkouts instead of git worktrees or copies.
+- Vendored the protofs daemon under `protofs/` and build it with `bun run build:protofs`; binary installs, `proto update`, and Homebrew now ship the sibling `protofs` binary.
 - Adopt the Devin CLI's saved credentials as a `devin` account with the `devin-cli` login, so chat, discovery and usage no longer require `DEVIN_API_KEY`.
 - Sign in to a Windsurf Enterprise seat with the `devin-windsurf` login, which stores the exchanged seat key as a `devin` account.
 - Added opt-in `proto gc --compress` (or `gc.compress`), which stores sessions idle for `gc.compressAfterDays` (default 7) with APFS transparent compression; they stay resumable and searchable.

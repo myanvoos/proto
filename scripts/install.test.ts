@@ -19,6 +19,8 @@ case "$url" in
     printf '{"tag_name":"v20.0.1"}\\n' ;;
   https://github.com/myanvoos/proto/releases/download/v20.0.1/proto-linux-x64)
     cp "$TEST_BINARY" "$output" ;;
+  https://github.com/myanvoos/proto/releases/download/v20.0.1/protofs-linux-x64)
+    cp "$TEST_PROTOFS_BINARY" "$output" ;;
   *) exit 65 ;;
 esac
 `,
@@ -42,8 +44,12 @@ elif [ "$1 $2" = "release download" ]; then
     esac
     shift
   done
-  [ "$repo" = myanvoos/proto ] && [ "$pattern" = proto-linux-x64 ] || exit 68
-  cp "$TEST_BINARY" "$output"
+  [ "$repo" = myanvoos/proto ] || exit 68
+  case "$pattern" in
+    proto-linux-x64) cp "$TEST_BINARY" "$output" ;;
+    protofs-linux-x64) cp "$TEST_PROTOFS_BINARY" "$output" ;;
+    *) exit 68 ;;
+  esac
 else
   exit 69
 fi
@@ -55,6 +61,7 @@ fi
 		await fs.chmod(executable, 0o755);
 	}
 	await Bun.write(dir.join("fixture-binary"), '#!/bin/sh\n[ "$1" = --version ] || exit 70\necho 20.0.1\n');
+	await Bun.write(dir.join("fixture-protofs"), '#!/bin/sh\n[ "$1" = version ] || exit 70\necho "protofs test"\n');
 	await Bun.write(dir.join("gh.log"), "");
 	const child = Bun.spawn(
 		["sh", path.join(import.meta.dir, "install.sh"), "--binary", ...(ref ? ["--ref", ref] : [])],
@@ -66,6 +73,7 @@ fi
 				PI_INSTALL_DIR: dir.join("installed"),
 				TEST_RELEASE_ACCESS: access,
 				TEST_BINARY: dir.join("fixture-binary"),
+				TEST_PROTOFS_BINARY: dir.join("fixture-protofs"),
 				TEST_GH_LOG: dir.join("gh.log"),
 				TEST_API_SUFFIX: ref ? `tags/${ref}` : "latest",
 			},
@@ -93,12 +101,19 @@ for (const scenario of [
 		const installed = Bun.spawn([dir.join("installed/proto"), "--version"], { stdout: "pipe", stderr: "pipe" });
 		expect(await new Response(installed.stdout).text()).toBe("20.0.1\n");
 		expect(await installed.exited).toBe(0);
+		const installedProtofs = Bun.spawn([dir.join("installed/protofs"), "version"], {
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		expect(await new Response(installedProtofs.stdout).text()).toBe("protofs test\n");
+		expect(await installedProtofs.exited).toBe(0);
 		if (scenario.access === "public") expect(result.ghLog).toBe("");
 		else {
 			expect(result.ghLog).toContain(
 				`api repos/myanvoos/proto/releases/${scenario.ref ? `tags/${scenario.ref}` : "latest"}`,
 			);
 			expect(result.ghLog).toContain("release download v20.0.1 --repo myanvoos/proto --pattern proto-linux-x64");
+			expect(result.ghLog).toContain("release download v20.0.1 --repo myanvoos/proto --pattern protofs-linux-x64");
 		}
 	});
 }

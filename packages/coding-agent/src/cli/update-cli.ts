@@ -600,6 +600,52 @@ function getBinaryName(): string {
 	return `${BINARY_NAME}-${os}-${archName}`;
 }
 
+function getProtofsBinaryName(): string {
+	return `protofs-${getBinaryName().slice(BINARY_NAME.length + 1)}`;
+}
+
+/** Refresh the protofs sidecar beside the proto binary; older releases or installs without one are skipped. */
+async function updateSiblingProtofs(
+	targetPath: string,
+	expectedVersion: string,
+	options: { fetchImpl?: Fetch; githubToken?: string } = {},
+): Promise<void> {
+	const protofsPath = path.join(path.dirname(targetPath), "protofs");
+	if (!(await Bun.file(protofsPath).exists())) return;
+	try {
+		const binaryName = getProtofsBinaryName();
+		const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
+		const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
+		const tempPath = `${protofsPath}.${attempt}.new`;
+		const backupPath = `${protofsPath}.${attempt}.bak`;
+		console.log(chalk.dim(`Downloading ${binaryName}…`));
+		await downloadVerifiedBinary({
+			url: asset.url,
+			targetPath: tempPath,
+			expectedSize: asset.size,
+			expectedDigest: asset.digest,
+			fetchImpl: options.fetchImpl,
+		});
+		await withFileLock(protofsPath, async () => {
+			await replaceBinaryForUpdate({
+				targetPath: protofsPath,
+				tempPath,
+				backupPath,
+				expectedVersion,
+				verifyInstalledVersion: async () => ({ ok: true, path: protofsPath }),
+			});
+			await sweepStaleUpdateArtifacts(protofsPath);
+		});
+		console.log(chalk.dim(`Updated sibling protofs at ${protofsPath}`));
+	} catch (err) {
+		console.log(
+			chalk.yellow(
+				`protofs sidecar not updated: ${err instanceof Error ? err.message : String(err)}. Reinstall to refresh it.`,
+			),
+		);
+	}
+}
+
 function resolveOmpPath(): string | undefined {
 	return $which(BINARY_NAME) ?? undefined;
 }
@@ -920,6 +966,7 @@ export async function runUpdate(opts: { force: boolean; check: boolean }): Promi
 			await updateViaBinaryAt(target.path, release.version, {
 				validateExistingTarget: target.validateExistingTarget,
 			});
+			await updateSiblingProtofs(target.path, release.version);
 			if (target.replacesSymlink) {
 				console.log(
 					chalk.yellow(

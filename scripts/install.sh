@@ -203,6 +203,34 @@ install_from_source() {
     echo "Run 'proto' to get started!"
 }
 
+# Install the protofs sidecar beside proto. Older releases do not publish it, so
+# a missing or unusable sidecar warns instead of failing the proto install.
+install_protofs() {
+    PROTOFS_BINARY="protofs-${PLATFORM}-${ARCH}"
+    PROTOFS_URL="https://github.com/${REPO}/releases/download/${LATEST}/${PROTOFS_BINARY}"
+    echo "Downloading ${PROTOFS_BINARY}..."
+    if [ "$AUTH_DOWNLOAD" = true ]; then
+        if ! gh release download "$LATEST" --repo "$REPO" --pattern "$PROTOFS_BINARY" --output "${INSTALL_DIR}/protofs" --clobber; then
+            echo "  protofs sidecar not available in this release; proto will use a PATH protofs if present."
+            rm -f "${INSTALL_DIR}/protofs"
+            return
+        fi
+    else
+        if ! curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$PROTOFS_URL" -o "${INSTALL_DIR}/protofs"; then
+            echo "  protofs sidecar not available in this release; proto will use a PATH protofs if present."
+            rm -f "${INSTALL_DIR}/protofs"
+            return
+        fi
+    fi
+    chmod +x "${INSTALL_DIR}/protofs"
+    if ! "${INSTALL_DIR}/protofs" version >/dev/null 2>&1; then
+        echo "  protofs was downloaded but cannot start; proto will use a PATH protofs if present."
+        rm -f "${INSTALL_DIR}/protofs"
+        return
+    fi
+    echo "✓ Installed protofs to ${INSTALL_DIR}/protofs"
+}
+
 # Install binary from GitHub releases
 install_binary() {
     # Detect platform
@@ -285,6 +313,8 @@ install_binary() {
         fi
         exit 1
     fi
+
+    install_protofs
 
     echo ""
     echo "✓ Installed proto to ${INSTALL_DIR}/proto"
