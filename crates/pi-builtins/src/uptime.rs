@@ -764,9 +764,13 @@ mod tests {
 
 	#[cfg(target_vendor = "apple")]
 	#[test]
-	fn live_since_matches_kern_boottime() {
+	fn live_since_matches_reported_boot_time() {
 		let (host, _) = Host::for_test("uptime", "", std::env::temp_dir());
-		let boot = system_boot_time(&host).expect("kern.boottime");
+		// The live default file may carry its own boot record, so compare with
+		// the same source the command reads rather than the kernel fallback.
+		let boot = read_utmp(&host, OsStr::new(UTMP_FILE), false)
+			.boot_time
+			.expect("live boot time");
 		let (code, out, err) = run_with_env(&[("TZ", "UTC")], &["-s"]);
 		assert_eq!((code, err.as_str()), (0, ""));
 		assert_eq!(out, format!("{}\n", since_line(boot, &utc())));

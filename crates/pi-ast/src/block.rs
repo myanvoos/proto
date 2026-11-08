@@ -1208,7 +1208,7 @@ mod tests {
 			eprintln!("skipping: repository corpus unavailable at {}", root.display());
 			return;
 		}
-		let files = repo_files(Some(768 * 1024)).await;
+		let files = repo_files(Some(2 * 1024 * 1024)).await;
 		if files.is_empty() {
 			eprintln!("skipping: repository corpus scan found no sources at {}", root.display());
 			return;
