@@ -23,6 +23,8 @@ async fn run(shell: &Shell, script: &str) -> Arc<RunTrace> {
 				..ShellRunOptions::default()
 			},
 			None,
+			None,
+			None,
 			().into(),
 		)
 		.await
@@ -271,7 +273,13 @@ async fn previously_unobserved_alias_definition_announces_canonical_body_to_each
 	let setup = "shopt -s expand_aliases\nalias native_viz_say='printf retained'\nnative_viz_f() { \
 	             native_viz_say; }";
 	let outcome = shell
-		.run(ShellRunOptions { command: setup.into(), ..ShellRunOptions::default() }, None, ().into())
+		.run(
+			ShellRunOptions { command: setup.into(), ..ShellRunOptions::default() },
+			None,
+			None,
+			None,
+			().into(),
+		)
 		.await
 		.unwrap();
 	assert_eq!(outcome.exit_code, Some(0));

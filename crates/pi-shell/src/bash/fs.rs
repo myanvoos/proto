@@ -266,6 +266,13 @@ pub trait File: Send {
 	fn observes_output(&self) -> bool {
 		false
 	}
+	/// Whether this handle should be tagged with the executing command's
+	/// [`CmdTag`](crate::bash::CmdTag) so a sink can attribute in-process
+	/// writes to their stage. Unlike [`Self::observes_output`], this never
+	/// asks the host to relay external output.
+	fn tags_output(&self) -> bool {
+		false
+	}
 	/// Opaque run-generation/capture identity for sharing an external relay
 	/// when stdout and stderr lead to the same visible byte stream.
 	fn output_key(&self) -> Option<(usize, i32)> {

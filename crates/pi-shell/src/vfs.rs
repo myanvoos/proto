@@ -96,6 +96,7 @@ use crate::{
 		DirEntry, DirIter, File, FileKind, Fs, FsPending, FsPoll, OpenFlags, OsHandle, Stat,
 		fs::{Access, SeekFrom, StatKind, TempNode, TempPurpose},
 	},
+	observe::{FsObservation, FsObservationLog},
 	sys::{StdFile, StdFs},
 };
 
@@ -112,14 +113,25 @@ const SYNTHETIC_DEV: u64 = u64::MAX;
 /// to operations every clone starts afterwards.
 #[derive(Clone)]
 pub struct VfsFs {
-	fs: Arc<RwLock<pi_vfs::Fs>>,
-	rt: Handle,
+	fs:           Arc<RwLock<pi_vfs::Fs>>,
+	rt:           Handle,
+	observations: Arc<FsObservationLog>,
 }
 
 impl VfsFs {
 	/// Serve `fs`, running provider operations on `rt`.
 	pub fn new(fs: pi_vfs::Fs, rt: Handle) -> Self {
-		Self { fs: Arc::new(RwLock::new(fs)), rt }
+		Self {
+			fs: Arc::new(RwLock::new(fs)),
+			rt,
+			observations: Arc::new(FsObservationLog::default()),
+		}
+	}
+
+	/// Take the file observations recorded since the last call, one per
+	/// path.
+	pub fn take_observations(&self) -> Vec<FsObservation> {
+		self.observations.drain()
 	}
 
 	/// The filesystem operations start on.
@@ -168,21 +180,47 @@ impl VfsFs {
 
 impl Fs for VfsFs {
 	fn open(&mut self, path: &BStr, flags: OpenFlags, mode: u32) -> FsPoll<Box<dyn File>> {
-		let rt = self.rt.clone();
-		self.route(
-			path,
-			|| match StdFs::default().open(path, flags, mode) {
-				FsPoll::Ready(Err(err)) => FsPoll::Ready(Err(name_the_limit(err))),
+		let host = match host_path(path) {
+			Ok(host) => host.to_path_buf(),
+			Err(err) => return FsPoll::Ready(Err(err)),
+		};
+		let mutating = flags.is_mutating() || flags.contains(OpenFlags::WRITE);
+		let reading = flags.contains(OpenFlags::READ);
+		let current = self.fs.read().clone();
+		if current.is_native_local(&host) {
+			let observation = if mutating {
+				match self.observations.prepare_write(&host) {
+					Ok(observation) => observation,
+					Err(err) => return FsPoll::Ready(Err(err)),
+				}
+			} else {
+				None
+			};
+			let opened = match StdFs::default().open(path, flags, mode) {
+				FsPoll::Ready(Err(err)) => return FsPoll::Ready(Err(name_the_limit(err))),
 				opened => opened,
-			},
-			move |fs, path| async move {
-				let file = fs
-					.open_with(&path, &open_options(flags, mode))
-					.await
-					.map_err(name_the_limit)?;
-				Ok(engine_file(file, rt, flags).await)
-			},
-		)
+			};
+			if mutating {
+				self.observations.commit_write(observation);
+			} else if reading {
+				self.observations.record_read(host);
+			}
+			return opened;
+		}
+		let rt = self.rt.clone();
+		let observations = Arc::clone(&self.observations);
+		FsPoll::Pending(Box::new(Spawned(self.rt.spawn(async move {
+			let file = current
+				.open_with(&host, &open_options(flags, mode))
+				.await
+				.map_err(name_the_limit)?;
+			if mutating {
+				observations.commit_provider_write(&host);
+			} else if reading && let Ok(metadata) = file.metadata_async().await {
+				observations.record_read_provider(&host, &metadata);
+			}
+			Ok(engine_file(file, rt, flags).await)
+		}))))
 	}
 
 	fn stat(&mut self, path: &BStr, follow: bool) -> FsPoll<Stat> {
@@ -273,23 +311,55 @@ impl Fs for VfsFs {
 	}
 
 	fn unlink(&mut self, path: &BStr) -> FsPoll<()> {
-		self.route(
-			path,
-			|| StdFs::default().unlink(path),
-			|fs, path| async move { fs.remove_file(&path).await },
-		)
+		let host = match host_path(path) {
+			Ok(host) => host.to_path_buf(),
+			Err(err) => return FsPoll::Ready(Err(err)),
+		};
+		let current = self.fs.read().clone();
+		if current.is_native_local(&host) {
+			let result = StdFs::default().unlink(path);
+			if matches!(&result, FsPoll::Ready(Ok(()))) {
+				self.observations.record_write(host);
+			}
+			return result;
+		}
+		let observations = Arc::clone(&self.observations);
+		FsPoll::Pending(Box::new(Spawned(self.rt.spawn(async move {
+			current.remove_file(&host).await?;
+			observations.commit_provider_write(&host);
+			Ok(())
+		}))))
 	}
 
 	fn rename(&mut self, from: &BStr, to: &BStr) -> FsPoll<()> {
+		let from_host = match host_path(from) {
+			Ok(host) => host.to_path_buf(),
+			Err(err) => return FsPoll::Ready(Err(err)),
+		};
 		let to_host = match host_path(to) {
 			Ok(t) => t.to_path_buf(),
 			Err(err) => return FsPoll::Ready(Err(err)),
 		};
-		self.route(
-			from,
-			|| StdFs::default().rename(from, to),
-			|fs, from| async move { fs.rename(&from, &to_host).await },
-		)
+		let current = self.fs.read().clone();
+		if current.is_native_local(&from_host) {
+			let observation = match self.observations.prepare_write(&to_host) {
+				Ok(observation) => observation,
+				Err(err) => return FsPoll::Ready(Err(err)),
+			};
+			let result = StdFs::default().rename(from, to);
+			if matches!(&result, FsPoll::Ready(Ok(()))) {
+				self.observations.record_write(from_host);
+				self.observations.commit_write(observation);
+			}
+			return result;
+		}
+		let observations = Arc::clone(&self.observations);
+		FsPoll::Pending(Box::new(Spawned(self.rt.spawn(async move {
+			current.rename(&from_host, &to_host).await?;
+			observations.commit_provider_write(&from_host);
+			observations.commit_provider_write(&to_host);
+			Ok(())
+		}))))
 	}
 
 	fn symlink(&mut self, target: &BStr, path: &BStr) -> FsPoll<()> {
@@ -337,11 +407,24 @@ impl Fs for VfsFs {
 	}
 
 	fn rmdir(&mut self, path: &BStr) -> FsPoll<()> {
-		self.route(
-			path,
-			|| StdFs::default().rmdir(path),
-			|fs, path| async move { fs.remove_dir(&path).await },
-		)
+		let host = match host_path(path) {
+			Ok(host) => host.to_path_buf(),
+			Err(err) => return FsPoll::Ready(Err(err)),
+		};
+		let current = self.fs.read().clone();
+		if current.is_native_local(&host) {
+			let result = StdFs::default().rmdir(path);
+			if matches!(&result, FsPoll::Ready(Ok(()))) {
+				self.observations.record_write(host);
+			}
+			return result;
+		}
+		let observations = Arc::clone(&self.observations);
+		FsPoll::Pending(Box::new(Spawned(self.rt.spawn(async move {
+			current.remove_dir(&host).await?;
+			observations.commit_provider_write(&host);
+			Ok(())
+		}))))
 	}
 
 	fn chmod(&mut self, path: &BStr, mode: u32) -> FsPoll<()> {

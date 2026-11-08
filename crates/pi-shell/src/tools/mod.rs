@@ -31,6 +31,7 @@
 mod extra;
 mod git;
 mod nohup;
+mod protolens;
 mod timeout;
 
 use std::{collections::VecDeque, sync::Arc, task::Waker, time::Duration};
@@ -45,6 +46,7 @@ use crate::{
 	},
 	extras::{ExtrasGate, ReportedError},
 	git::{GitLayers, flag_on},
+	protolens::ProtolensBridge,
 	vfs::VfsFs,
 };
 
@@ -53,6 +55,7 @@ const NOHUP: ToolRef = ToolRef(2);
 const GIT: ToolRef = ToolRef(3);
 /// Every extra that runs command lines; `argv[0]` names it.
 const EXTRA: ToolRef = ToolRef(4);
+const PROTOLENS: ToolRef = ToolRef(5);
 
 /// Which tools a session offers; fixed when the session starts, as pi
 /// registers its builtins once per shell.
@@ -75,6 +78,28 @@ pub struct ToolConfig {
 	pub runtime:        Option<tokio::runtime::Handle>,
 	/// The reported-error flag of the command in flight, for the extras.
 	pub reported_error: ReportedError,
+	/// `protolens` when the shell offers the device callout.
+	pub protolens:      Option<ProtolensBridge>,
+	/// Cancellation of the run in flight, observed by `protolens` dispatches.
+	pub cancel:         CancelSlot,
+}
+
+/// The cancellation token of the run in flight. Cheap to clone; clones share
+/// the slot.
+#[derive(Clone, Default)]
+pub struct CancelSlot(Arc<Mutex<Option<tokio_util::sync::CancellationToken>>>);
+
+impl CancelSlot {
+	/// Hand the run's token to the tools started from now on (`None`:
+	/// nothing to observe).
+	pub fn set(&self, cancel: Option<tokio_util::sync::CancellationToken>) {
+		*self.0.lock() = cancel;
+	}
+
+	/// The run's token, if one is installed.
+	pub fn get(&self) -> Option<tokio_util::sync::CancellationToken> {
+		self.0.lock().clone()
+	}
 }
 
 impl ToolConfig {
@@ -98,6 +123,8 @@ impl ToolConfig {
 			extras: ExtrasGate::from_env(var),
 			runtime: Some(runtime),
 			reported_error: ReportedError::default(),
+			protolens: None,
+			cancel: CancelSlot::default(),
 		}
 	}
 
@@ -107,6 +134,7 @@ impl ToolConfig {
 			b"timeout" => Some(TIMEOUT),
 			b"nohup" if self.nohup => Some(NOHUP),
 			b"git" if self.git.any() => Some(GIT),
+			b"protolens" if self.protolens.is_some() => Some(PROTOLENS),
 			_ if self.extras.runs_commands(name) => Some(EXTRA),
 			_ => None,
 		}
@@ -261,6 +289,7 @@ enum Tool {
 	Nohup(nohup::Nohup),
 	Git(git::Git),
 	Extra(extra::Extra),
+	Protolens(protolens::Protolens),
 }
 
 impl Tool {
@@ -270,6 +299,7 @@ impl Tool {
 			NOHUP => Self::Nohup(nohup::Nohup::new(call)),
 			GIT => Self::Git(git::Git::new(call)),
 			EXTRA => Self::Extra(extra::Extra::new(call)),
+			PROTOLENS => Self::Protolens(protolens::Protolens::new(call)),
 			_ => return None,
 		})
 	}
@@ -281,6 +311,7 @@ impl Tool {
 			Self::Nohup(t) => t.advance(api, turn),
 			Self::Git(t) => t.advance(api, turn),
 			Self::Extra(t) => t.advance(api, turn),
+			Self::Protolens(t) => t.advance(api, turn),
 		}
 	}
 
@@ -291,6 +322,7 @@ impl Tool {
 			Self::Timeout(t) => &mut t.child,
 			Self::Nohup(t) => &mut t.child,
 			Self::Git(t) => &mut t.child,
+			Self::Protolens(t) => &mut t.child,
 			Self::Extra(t) => return t.on_done(run, status, signal),
 		};
 		child.on_done(run, status)
@@ -302,6 +334,7 @@ impl Tool {
 			Self::Nohup(t) => &t.child,
 			Self::Git(t) => &t.child,
 			Self::Extra(t) => &t.child,
+			Self::Protolens(t) => &t.child,
 		}
 	}
 
@@ -317,7 +350,7 @@ impl Tool {
 	fn deadline(&self) -> Option<u64> {
 		match self {
 			Self::Timeout(t) => t.deadline(),
-			Self::Nohup(_) | Self::Git(_) | Self::Extra(_) => None,
+			Self::Nohup(_) | Self::Git(_) | Self::Extra(_) | Self::Protolens(_) => None,
 		}
 	}
 }

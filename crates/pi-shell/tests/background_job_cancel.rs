@@ -19,6 +19,8 @@ async fn cancelled_run_stops_waiting_on_its_background_job() {
 			.run(
 				ShellRunOptions { command: script.to_owned(), ..Default::default() },
 				Some(tx),
+				None,
+				None,
 				CancelToken::new(Some(300)),
 			)
 			.await

@@ -238,6 +238,13 @@ pub trait EventSink: Send + Sync {
 	fn mask(&self) -> EventMask;
 	/// One event.
 	fn event(&self, ev: &Event<'_>);
+	/// Whether the sink needs output bytes attributed per command, including
+	/// what externals write. Only such a sink makes the host relay external
+	/// output through the engine; a sink that only needs in-process writes
+	/// leaves externals on their direct pipe.
+	fn wants_output(&self) -> bool {
+		false
+	}
 	/// Pin the actual root submission before stepping a persistent session.
 	/// Descendant submissions are reported by explicit engine lineage instead.
 	fn run_submitted(&self, _run: RunId) {}
@@ -249,6 +256,21 @@ pub trait EventSink: Send + Sync {
 	/// `fd` names the final capture stream (merged stderr therefore uses 1).
 	/// The clock is the same monotonic clock used by engine events.
 	fn output(&self, _tag: Option<crate::bash::ids::CmdTag>, _t_ns: u64, _fd: i32, _bytes: &[u8]) {}
+
+	/// [`Self::output`] with the writer's own descriptor and whether the run
+	/// merged stdout and stderr into one text capture. The default reports a
+	/// merged capture as fd 1 (the historical contract); a sink that needs
+	/// the writer's stream (stage records) overrides this.
+	fn output_tagged(
+		&self,
+		tag: Option<crate::bash::ids::CmdTag>,
+		t_ns: u64,
+		fd: i32,
+		merged: bool,
+		bytes: &[u8],
+	) {
+		self.output(tag, t_ns, if merged { 1 } else { fd }, bytes);
+	}
 }
 
 /// The payload of `UnitCompiled`: the unit and the script line of its

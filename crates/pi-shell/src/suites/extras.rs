@@ -44,6 +44,7 @@ fn session_in(dir: &Path, extra: &[(&str, &str)]) -> Session {
 		vfs:             None,
 		runtime:         tokio::runtime::Handle::current(),
 		output_decoding: None,
+		protolens:       None,
 	})
 	.unwrap()
 }
@@ -433,6 +434,7 @@ async fn utilities_read_provider_files() {
 		vfs:             Some(vfs),
 		runtime:         tokio::runtime::Handle::current(),
 		output_decoding: None,
+		protolens:       None,
 	})
 	.unwrap();
 	assert_eq!(out(&mut s, "sort mem://notes").await, "apple\npear\n");

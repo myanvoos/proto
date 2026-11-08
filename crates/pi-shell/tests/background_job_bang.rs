@@ -15,6 +15,8 @@ async fn assert_bash_outputs(rows: &[(&str, &str)]) {
 			.run(
 				ShellRunOptions { command: script.to_owned(), ..Default::default() },
 				Some(tx),
+				None,
+				None,
 				CancelToken::new(Some(20_000)),
 			)
 			.await

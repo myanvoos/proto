@@ -626,7 +626,13 @@ async fn subshell_exit_ends_its_background_builtins() {
 	let command = format!("(yes > {} &)", quote_arg(&output.path().to_string_lossy()));
 
 	shell
-		.run(ShellRunOptions { command, ..Default::default() }, None, CancelToken::default())
+		.run(
+			ShellRunOptions { command, ..Default::default() },
+			None,
+			None,
+			None,
+			CancelToken::default(),
+		)
 		.await
 		.expect("run subshell");
 
@@ -643,7 +649,13 @@ async fn kill_jobspec_ends_in_process_background_job() {
 	let command = format!("yes > {} & kill %1", quote_arg(&output.path().to_string_lossy()));
 
 	let result = shell
-		.run(ShellRunOptions { command, ..Default::default() }, None, CancelToken::default())
+		.run(
+			ShellRunOptions { command, ..Default::default() },
+			None,
+			None,
+			None,
+			CancelToken::default(),
+		)
 		.await
 		.expect("run kill");
 
@@ -663,7 +675,13 @@ async fn subshell_exit_ends_backgrounded_compound_loops() {
 		format!("(while :; do echo x >> {}; done &)", quote_arg(&output.path().to_string_lossy()));
 
 	shell
-		.run(ShellRunOptions { command, ..Default::default() }, None, CancelToken::default())
+		.run(
+			ShellRunOptions { command, ..Default::default() },
+			None,
+			None,
+			None,
+			CancelToken::default(),
+		)
 		.await
 		.expect("run compound loop");
 
@@ -689,6 +707,8 @@ async fn kill_jobspec_ends_backgrounded_compound_loop_in_retained_session() {
 		shell.run(
 			ShellRunOptions { command: sub, ..Default::default() },
 			None,
+			None,
+			None,
 			CancelToken::default(),
 		),
 	)
@@ -701,6 +721,8 @@ async fn kill_jobspec_ends_backgrounded_compound_loop_in_retained_session() {
 		Duration::from_secs(10),
 		shell.run(
 			ShellRunOptions { command: "kill %1".into(), ..Default::default() },
+			None,
+			None,
 			None,
 			CancelToken::default(),
 		),
@@ -732,6 +754,8 @@ async fn live_background_job_count_tracks_external_background_jobs() {
 		.run(
 			ShellRunOptions { command: "true".into(), ..Default::default() },
 			None,
+			None,
+			None,
 			CancelToken::default(),
 		)
 		.await
@@ -742,6 +766,8 @@ async fn live_background_job_count_tracks_external_background_jobs() {
 	shell
 		.run(
 			ShellRunOptions { command: "sh -c 'sleep 30' &".into(), ..Default::default() },
+			None,
+			None,
 			None,
 			CancelToken::default(),
 		)
@@ -772,6 +798,8 @@ async fn persistent_shell_reaps_background_child_without_followup_run() {
 				),
 				..Default::default()
 			},
+			None,
+			None,
 			None,
 			CancelToken::default(),
 		)
@@ -816,6 +844,8 @@ async fn persistent_shell_reaps_background_child_without_followup_run() {
 		.run(
 			ShellRunOptions { command: "wait \"$pid\"".into(), ..Default::default() },
 			None,
+			None,
+			None,
 			CancelToken::default(),
 		)
 		.await
@@ -841,7 +871,13 @@ async fn persistent_shell_reaps_early_exiting_background_pipeline_stage() {
 		quote_arg(&last_pidfile.path().to_string_lossy())
 	);
 	let started = shell
-		.run(ShellRunOptions { command, ..Default::default() }, None, CancelToken::default())
+		.run(
+			ShellRunOptions { command, ..Default::default() },
+			None,
+			None,
+			None,
+			CancelToken::default(),
+		)
 		.await
 		.expect("start background pipeline");
 	assert_eq!(started.exit_code, Some(0));
@@ -894,6 +930,8 @@ async fn persistent_shell_reaps_early_exiting_background_pipeline_stage() {
 		.run(
 			ShellRunOptions { command: "wait \"$pid\"".into(), ..Default::default() },
 			None,
+			None,
+			None,
 			CancelToken::default(),
 		)
 		.await
@@ -911,6 +949,8 @@ async fn exit_and_errexit_keep_session_state() {
 		shell
 			.run(
 				ShellRunOptions { command: command.into(), ..Default::default() },
+				None,
+				None,
 				None,
 				CancelToken::default(),
 			)
@@ -983,6 +1023,8 @@ async fn pids_reports_in_flight_children_until_run_returns() {
 						..Default::default()
 					},
 					None,
+					None,
+					None,
 					CancelToken::default(),
 				)
 				.await
@@ -1054,7 +1096,7 @@ async fn segmented_minimizer_trace_spans_submissions_without_early_completion() 
 		}
 	};
 	let (result, ()) = time::timeout(Duration::from_secs(10), async {
-		tokio::join!(shell.run(options, Some(tx), CancelToken::default()), probe)
+		tokio::join!(shell.run(options, Some(tx), None, None, CancelToken::default()), probe)
 	})
 	.await
 	.expect("segmented trace completes");
@@ -1582,6 +1624,8 @@ async fn cancellation_allows_background_term_cleanup_while_builtin_is_running() 
 					..Default::default()
 				},
 				None,
+				None,
+				None,
 				cancel,
 			)
 			.await
@@ -1630,6 +1674,8 @@ async fn cancellation_keeps_output_open_for_a_term_trap_that_writes() {
 					..Default::default()
 				},
 				None,
+				None,
+				None,
 				cancel,
 			)
 			.await
@@ -1674,6 +1720,8 @@ async fn termination_returns_early_after_the_child_exits() {
 					..Default::default()
 				},
 				None,
+				None,
+				None,
 				cancel,
 			)
 			.await
@@ -1717,6 +1765,8 @@ async fn cancelling_one_run_spares_a_concurrent_runs_child() {
 					..Default::default()
 				},
 				Some(tx_b),
+				None,
+				None,
 				ct_b,
 			)
 			.await
@@ -1749,6 +1799,8 @@ async fn cancelling_one_run_spares_a_concurrent_runs_child() {
 					..Default::default()
 				},
 				Some(tx_a),
+				None,
+				None,
 				CancelToken::default(),
 			)
 			.await
@@ -1820,6 +1872,8 @@ async fn cancelling_while_sourcing_snapshot_kills_snapshot_foreground_child() {
 		shell
 			.run(
 				ShellRunOptions { command: "printf done".into(), ..Default::default() },
+				None,
+				None,
 				None,
 				cancel_token,
 			)

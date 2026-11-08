@@ -32,23 +32,28 @@ use crate::{
 	cancel::{AbortReason, AbortToken, CancelToken},
 	git::is_git_repo_location_var,
 	minimizer,
+	observe::FsObservation,
 	output_decode::CaptureDecoder,
+	protolens::{ProtolensBridge, ProtolensCwd, ProtolensDispatcher, ProtolensProvider},
 	session::{Children, RunOptions, RunOutcome, RunStdio, Session, SessionConfig, SessionError},
+	stage::{StageTrace, TeeSink},
 	taps::PipeTaps,
 	vfs::VfsFs,
 };
 
 /// A live engine session and the filesystem it runs on.
 struct ShellSessionCore {
-	session:    Session,
+	session:       Session,
 	/// The engine's filesystem slot (shared with the session's host). Each run
 	/// installs a cancellation-scoped view of the session filesystem, or of
 	/// the run's own override, and restores the session filesystem after it.
-	slot:       VfsFs,
+	slot:          VfsFs,
 	/// Session filesystem.
-	filesystem: Fs,
+	filesystem:    Fs,
 	/// The shell's working directory after the last command.
-	cwd:        BString,
+	cwd:           BString,
+	/// The directory `protolens://` dispatches report.
+	protolens_cwd: ProtolensCwd,
 }
 
 #[derive(Clone, Default)]
@@ -137,6 +142,7 @@ struct ShellConfig {
 	snapshot_path: Option<String>,
 	minimizer:     Option<minimizer::MinimizerConfig>,
 	filesystem:    Fs,
+	protolens:     ProtolensBridge,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -159,6 +165,10 @@ struct ShellRunConfig {
 	pipe_taps:  Option<Arc<PipeTaps>>,
 	/// Folds the run's engine events.
 	trace:      Option<Arc<RunTrace>>,
+	/// The stage records of this run.
+	stage:      Arc<StageTrace>,
+	/// The device bridge dispatches through.
+	protolens:  ProtolensBridge,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -187,11 +197,14 @@ pub struct MinimizerResult {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ShellRunResult {
-	pub exit_code:   Option<i32>,
-	pub cancelled:   bool,
-	pub timed_out:   bool,
-	pub minimized:   Option<MinimizerResult>,
-	pub working_dir: Option<String>,
+	pub exit_code:            Option<i32>,
+	pub cancelled:            bool,
+	pub timed_out:            bool,
+	pub minimized:            Option<MinimizerResult>,
+	pub working_dir:          Option<String>,
+	pub fs_observations:      Vec<FsObservation>,
+	pub protolens_dispatches: Vec<String>,
+	pub stage_records:        Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -224,12 +237,14 @@ pub struct Shell {
 impl Shell {
 	#[must_use]
 	pub fn new(options: Option<ShellOptions>) -> Self {
+		let protolens = ProtolensBridge::new();
 		let config = match options {
 			None => ShellConfig {
 				session_env:   None,
 				snapshot_path: None,
 				minimizer:     None,
 				filesystem:    Fs::native(),
+				protolens:     protolens.clone(),
 			},
 			Some(opt) => {
 				let minimizer = opt
@@ -241,6 +256,7 @@ impl Shell {
 					snapshot_path: opt.snapshot_path,
 					minimizer,
 					filesystem: opt.filesystem,
+					protolens: protolens.clone(),
 				}
 			},
 		};
@@ -252,12 +268,24 @@ impl Shell {
 		}
 	}
 
+	/// Run one command on the session.
+	///
+	/// `protolens_dispatcher` and `protolens_call_id` attach the agent's
+	/// device bridge to this run; a run without one still offers `protolens`,
+	/// which reports that no dispatcher is attached (exit 127).
 	pub async fn run(
 		&self,
 		options: ShellRunOptions,
 		on_chunk: Option<Sender<String>>,
+		protolens_dispatcher: Option<Arc<dyn ProtolensDispatcher>>,
+		protolens_call_id: Option<String>,
 		mut cancel_token: CancelToken,
 	) -> Result<ShellRunResult> {
+		self
+			.config
+			.protolens
+			.set(protolens_dispatcher, protolens_call_id);
+		let stage = Arc::new(StageTrace::new());
 		let run_config = ShellRunConfig {
 			command:    options.command,
 			cwd:        options.cwd,
@@ -266,6 +294,8 @@ impl Shell {
 			filesystem: options.filesystem,
 			pipe_taps:  options.pipe_taps,
 			trace:      options.trace,
+			stage:      Arc::clone(&stage),
+			protolens:  self.config.protolens.clone(),
 		};
 		run_shell_session(
 			self.session.clone(),
@@ -281,6 +311,47 @@ impl Shell {
 
 	pub async fn abort(&self) {
 		self.abort_state.abort().await;
+	}
+
+	/// Stop this shell session, allowing background jobs a short grace period
+	/// before forcefully terminating their process groups.
+	pub async fn close(&self) {
+		self.abort().await;
+		let targets = {
+			let mut guard = self.session.lock().await;
+			let Some(session) = guard.take() else {
+				return;
+			};
+			let targets = session.session.children().pids();
+			drop(session);
+			targets
+		};
+		kill_process_groups(&targets, false);
+		if !targets.is_empty() {
+			time::sleep(SHELL_CLOSE_GRACE).await;
+			kill_process_groups(&targets, true);
+		}
+		*self.children.lock() = None;
+	}
+
+	/// Forcefully stop this shell without waiting. Used from synchronous
+	/// process-exit cleanup where asynchronous graceful shutdown cannot be
+	/// awaited. Returns false when the session mutex is held before any
+	/// process target has been registered, so callers can report that
+	/// force-close was incomplete.
+	pub fn force_close(&self) -> bool {
+		let Ok(mut guard) = self.session.try_lock() else {
+			return false;
+		};
+		let Some(session) = guard.take() else {
+			*self.children.lock() = None;
+			return true;
+		};
+		let targets = session.session.children().pids();
+		drop(session);
+		*self.children.lock() = None;
+		kill_process_groups(&targets, true);
+		true
 	}
 
 	/// Pids of the processes spawned by the in-flight [`Shell::run`] that are
@@ -326,11 +397,13 @@ pub async fn execute_shell(
 		.minimizer
 		.as_ref()
 		.map(minimizer::MinimizerConfig::from_options);
+	let protolens = ProtolensBridge::new();
 	let config = ShellConfig {
 		session_env:   options.session_env,
 		snapshot_path: options.snapshot_path,
 		minimizer:     minimizer.clone(),
 		filesystem:    options.filesystem,
+		protolens:     protolens.clone(),
 	};
 	let run_config = ShellRunConfig {
 		command: options.command,
@@ -340,6 +413,8 @@ pub async fn execute_shell(
 		filesystem: None,
 		pipe_taps: None,
 		trace: None,
+		stage: Arc::new(StageTrace::new()),
+		protolens,
 	};
 	run_shell_oneshot(config, run_config, on_chunk, cancel_token).await
 }
@@ -366,23 +441,48 @@ pub async fn execute_shell_streams(
 	streams: StreamSinks,
 	cancel_token: CancelToken,
 ) -> Result<ShellExecuteResult> {
+	let protolens = ProtolensBridge::new();
 	let config = ShellConfig {
 		session_env:   options.session_env,
 		snapshot_path: options.snapshot_path,
 		minimizer:     None,
 		filesystem:    options.filesystem,
+		protolens:     protolens.clone(),
 	};
 	let run_config = ShellRunConfig {
-		command:    options.command,
-		cwd:        options.cwd,
-		env:        options.env,
-		minimizer:  None,
+		command: options.command,
+		cwd: options.cwd,
+		env: options.env,
+		minimizer: None,
 		filesystem: None,
-		pipe_taps:  None,
-		trace:      None,
+		pipe_taps: None,
+		trace: None,
+		stage: Arc::new(StageTrace::new()),
+		protolens,
 	};
 	run_shell_oneshot_streams(config, run_config, streams, cancel_token).await
 }
+
+/// Grace period between `TERM` and `KILL` when [`Shell::close`] stops a
+/// session's background jobs.
+const SHELL_CLOSE_GRACE: Duration = Duration::from_millis(150);
+
+/// Send `KILL` (or `TERM`, first) to the process groups of `pids`. The
+/// engine's spawner gives every external its own group, so a negative pid
+/// reaches the whole tree.
+#[cfg(unix)]
+fn kill_process_groups(pids: &[i32], kill: bool) {
+	let signal = if kill { libc::SIGKILL } else { libc::SIGTERM };
+	for &pid in pids {
+		// SAFETY: kill accepts integer process and signal numbers.
+		unsafe {
+			libc::kill(-pid, signal);
+		}
+	}
+}
+
+#[cfg(not(unix))]
+const fn kill_process_groups(_pids: &[i32], _kill: bool) {}
 
 /// How long a cancelled run waits for its task to wind down before aborting
 /// it (discarding any output still queued in the pipe readers, and stopping
@@ -412,31 +512,44 @@ const CANCEL_READER_GRACE: Duration = Duration::from_millis(1250);
 
 /// What a run reports when it ends normally.
 struct CommandResult {
-	status:      i32,
-	minimized:   Option<MinimizerResult>,
-	working_dir: String,
+	status:            i32,
+	minimized:         Option<MinimizerResult>,
+	working_dir:       String,
+	fs_observations:   Vec<FsObservation>,
+	protolens_records: Vec<String>,
+	stage_records:     Vec<String>,
 }
 
 impl CommandResult {
 	fn into_run_result(self) -> ShellRunResult {
 		ShellRunResult {
-			exit_code:   Some(self.status),
-			cancelled:   false,
-			timed_out:   false,
-			minimized:   self.minimized,
-			working_dir: Some(self.working_dir),
+			exit_code:            Some(self.status),
+			cancelled:            false,
+			timed_out:            false,
+			minimized:            self.minimized,
+			working_dir:          Some(self.working_dir),
+			fs_observations:      self.fs_observations,
+			protolens_dispatches: self.protolens_records,
+			stage_records:        self.stage_records,
 		}
 	}
 }
 
 /// The result of a run cancelled by `reason`.
-const fn cancelled_result(reason: AbortReason) -> ShellRunResult {
+fn cancelled_result(
+	reason: AbortReason,
+	stage_records: Vec<String>,
+	protolens_records: Vec<String>,
+) -> ShellRunResult {
 	ShellRunResult {
-		exit_code:   None,
-		cancelled:   matches!(reason, AbortReason::Signal),
-		timed_out:   matches!(reason, AbortReason::Timeout),
-		minimized:   None,
+		exit_code: None,
+		cancelled: matches!(reason, AbortReason::Signal),
+		timed_out: matches!(reason, AbortReason::Timeout),
+		minimized: None,
 		working_dir: None,
+		fs_observations: Vec::new(),
+		protolens_dispatches: protolens_records,
+		stage_records,
 	}
 }
 
@@ -450,6 +563,8 @@ async fn run_shell_session(
 	ct: &mut CancelToken,
 ) -> Result<ShellRunResult> {
 	let tokio_cancel = CancellationToken::new();
+	let stage = Arc::clone(&run_config.stage);
+	let protolens = run_config.protolens.clone();
 	let mut run_task = tokio::spawn({
 		let session = session.clone();
 		let abort_state = abort_state.clone();
@@ -486,7 +601,12 @@ async fn run_shell_session(
 			if let Ok(mut guard) = session.try_lock() {
 				*guard = None;
 			}
-			return Ok(cancelled_result(reason));
+			stage.interrupt();
+			return Ok(cancelled_result(
+				reason,
+				stage.records(),
+				protolens.take_records(),
+			));
 		}
 	};
 	let res =
@@ -509,6 +629,8 @@ async fn run_shell_oneshot(
 	ct: CancelToken,
 ) -> Result<ShellExecuteResult> {
 	let tokio_cancel = CancellationToken::new();
+	let stage = Arc::clone(&run_config.stage);
+	let protolens = run_config.protolens.clone();
 	let mut task = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
 		async move {
@@ -527,7 +649,12 @@ async fn run_shell_oneshot(
 				task.abort();
 				let _ = task.await;
 			}
-			return Ok(cancelled_result(reason));
+			stage.interrupt();
+			return Ok(cancelled_result(
+				reason,
+				stage.records(),
+				protolens.take_records(),
+			));
 		},
 	};
 
@@ -543,6 +670,8 @@ async fn run_shell_oneshot_streams(
 	ct: CancelToken,
 ) -> Result<ShellExecuteResult> {
 	let tokio_cancel = CancellationToken::new();
+	let stage = Arc::clone(&run_config.stage);
+	let protolens = run_config.protolens.clone();
 	let mut task = tokio::spawn({
 		let tokio_cancel = tokio_cancel.clone();
 		async move {
@@ -560,7 +689,12 @@ async fn run_shell_oneshot_streams(
 				task.abort();
 				let _ = task.await;
 			}
-			return Ok(cancelled_result(reason));
+			stage.interrupt();
+			return Ok(cancelled_result(
+				reason,
+				stage.records(),
+				protolens.take_records(),
+			));
 		},
 	};
 
@@ -802,14 +936,24 @@ async fn create_session_for_run(
 ) -> Result<ShellSessionCore> {
 	let cancel = cancel_token.cloned().unwrap_or_default();
 	let runtime = tokio::runtime::Handle::current();
-	let slot = VfsFs::new(config.filesystem.with_cancellation(cancel.clone()), runtime.clone());
+	let cwd = initial_cwd();
+	let protolens_cwd = ProtolensCwd::default();
+	protolens_cwd.set(cwd.to_str_lossy().into_owned());
+	// `protolens://` is generated content, resolved before any provider or
+	// host path: the composite provider serves it and delegates everything
+	// else to the session's own filesystem.
+	let filesystem = Fs::new(Arc::new(ProtolensProvider::new(
+		config.filesystem.clone(),
+		config.protolens.clone(),
+		protolens_cwd.clone(),
+	)));
+	let slot = VfsFs::new(filesystem.with_cancellation(cancel.clone()), runtime.clone());
 	let vars = session_vars(config);
 	let has_env_var = vars.contains_key("env");
 	let env = vars
 		.into_iter()
 		.map(|(key, value)| (BString::from(key), BString::from(value)))
 		.collect();
-	let cwd = initial_cwd();
 	// The pi utilities (and their `PI_DISABLE_*` gates), the process
 	// builtins, `nohup`, `timeout` and the `git` layers are the session's
 	// commands (`crate::tools`), configured from this environment; `exec`
@@ -821,9 +965,10 @@ async fn create_session_for_run(
 		vfs: Some(slot.clone()),
 		runtime,
 		output_decoding: None,
+		protolens: Some(config.protolens.clone()),
 	})
 	.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
-	let mut core = ShellSessionCore { session, slot, filesystem: config.filesystem.clone(), cwd };
+	let mut core = ShellSessionCore { session, slot, filesystem, cwd, protolens_cwd };
 
 	if !has_env_var {
 		apply_env_fallback(&mut core, &cancel)
@@ -964,16 +1109,30 @@ struct CommandScope<'a> {
 	options: &'a ShellRunConfig,
 	env:     Vec<(BString, BString)>,
 	cancel:  CancellationToken,
+	stage:   Arc<StageTrace>,
 }
 
 impl CommandScope<'_> {
-	/// The session run of `command`; `cwd` moves the shell first.
+	/// The session run of `command`; `cwd` moves the shell first. `extra`
+	/// observes the same events (a chain segment's trace).
 	fn run_options(
 		&self,
 		command: String,
 		cwd: Option<BString>,
 		reported_error: Option<Arc<AtomicBool>>,
+		extra: Option<Arc<dyn crate::bash::EventSink>>,
 	) -> RunOptions {
+		let mut sinks: Vec<Arc<dyn crate::bash::EventSink>> =
+			vec![Arc::clone(&self.stage) as Arc<dyn crate::bash::EventSink>];
+		if let Some(extra) = extra.or_else(|| {
+			self
+				.options
+				.trace
+				.as_ref()
+				.map(|trace| Arc::clone(trace) as Arc<dyn crate::bash::EventSink>)
+		}) {
+			sinks.push(extra);
+		}
 		RunOptions {
 			command,
 			env: self.env.clone(),
@@ -985,11 +1144,7 @@ impl CommandScope<'_> {
 				.map(|taps| Arc::clone(taps) as Arc<dyn crate::bash::PipeTap>),
 			reported_error,
 			text_capture: false,
-			events: self
-				.options
-				.trace
-				.as_ref()
-				.map(|trace| Arc::clone(trace) as Arc<dyn crate::bash::EventSink>),
+			events: Some(Arc::new(TeeSink::new(sinks))),
 		}
 	}
 }
@@ -1075,8 +1230,16 @@ async fn run_shell_command(
 	cancel_token: CancellationToken,
 ) -> Result<CommandResult> {
 	install_run_filesystem(session, options, &cancel_token);
-	let result = run_shell_command_in_filesystem(session, options, on_chunk, cancel_token).await;
+	let mut result = run_shell_command_in_filesystem(session, options, on_chunk, cancel_token).await;
 	restore_session_filesystem(session);
+	session
+		.protolens_cwd
+		.set(session.cwd.to_str_lossy().into_owned());
+	if let Ok(result) = &mut result {
+		result.fs_observations = session.slot.take_observations();
+		result.protolens_records = options.protolens.take_records();
+		result.stage_records = options.stage.records();
+	}
 	result
 }
 
@@ -1087,8 +1250,15 @@ async fn run_shell_command_in_filesystem(
 	cancel_token: CancellationToken,
 ) -> Result<CommandResult> {
 	let cwd = requested_cwd(session, options.cwd.as_deref()).await?;
-	let scope =
-		CommandScope { options, env: command_env(options.env.as_ref()), cancel: cancel_token };
+	session
+		.protolens_cwd
+		.set(session.cwd.to_str_lossy().into_owned());
+	let scope = CommandScope {
+		options,
+		env: command_env(options.env.as_ref()),
+		cancel: cancel_token,
+		stage: Arc::clone(&options.stage),
+	};
 
 	let minimizer_mode = if let Some(config) = options.minimizer.as_ref() {
 		minimizer::engine::mode_for(&options.command, config)
@@ -1105,7 +1275,14 @@ async fn run_shell_command_in_filesystem(
 		},
 	};
 
-	Ok(CommandResult { status, minimized, working_dir: session.cwd.to_str_lossy().into_owned() })
+	Ok(CommandResult {
+		status,
+		minimized,
+		working_dir: session.cwd.to_str_lossy().into_owned(),
+		fs_observations: Vec::new(),
+		protolens_records: Vec::new(),
+		stage_records: Vec::new(),
+	})
 }
 
 async fn run_shell_command_single(
@@ -1394,10 +1571,7 @@ async fn run_shell_command_once(
 		}
 	});
 	ensure_trailing_newline_for_heredoc(&mut command);
-	let mut run = scope.run_options(command, cwd, reported_error.clone());
-	if let Some(events) = events {
-		run.events = Some(events);
-	}
+	let mut run = scope.run_options(command, cwd, reported_error.clone(), events);
 	// Stdout and stderr are one pipe read as text: externals' output is
 	// decoded per program before it joins what the builtins wrote.
 	run.text_capture = true;
@@ -1481,9 +1655,17 @@ async fn run_shell_command_streams(
 	cancel_token: CancellationToken,
 ) -> Result<CommandResult> {
 	install_run_filesystem(session, options, &cancel_token);
-	let result =
+	let mut result =
 		run_shell_command_streams_in_filesystem(session, options, streams, cancel_token).await;
 	restore_session_filesystem(session);
+	session
+		.protolens_cwd
+		.set(session.cwd.to_str_lossy().into_owned());
+	if let Ok(result) = &mut result {
+		result.fs_observations = session.slot.take_observations();
+		result.protolens_records = options.protolens.take_records();
+		result.stage_records = options.stage.records();
+	}
 	result
 }
 
@@ -1494,10 +1676,14 @@ async fn run_shell_command_streams_in_filesystem(
 	cancel_token: CancellationToken,
 ) -> Result<CommandResult> {
 	let cwd = requested_cwd(session, options.cwd.as_deref()).await?;
+	session
+		.protolens_cwd
+		.set(session.cwd.to_str_lossy().into_owned());
 	let scope = CommandScope {
 		options,
 		env: command_env(options.env.as_ref()),
 		cancel: cancel_token.clone(),
+		stage: Arc::clone(&options.stage),
 	};
 
 	let (stdout_reader, stdout_writer) = pipe_to_files("stdout")?;
@@ -1539,7 +1725,7 @@ async fn run_shell_command_streams_in_filesystem(
 	});
 	let mut command = options.command.clone();
 	ensure_trailing_newline_for_heredoc(&mut command);
-	let run = scope.run_options(command, cwd, None);
+	let run = scope.run_options(command, cwd, None, None);
 	let mut result = session
 		.session
 		.run_with(run, stdio, cancel_token.clone())
@@ -1615,9 +1801,12 @@ async fn run_shell_command_streams_in_filesystem(
 
 	let outcome = result.map_err(|err| Error::msg(format!("Shell execution failed: {err}")))?;
 	Ok(CommandResult {
-		status:      outcome.status,
-		minimized:   None,
-		working_dir: session.cwd.to_str_lossy().into_owned(),
+		status:            outcome.status,
+		minimized:         None,
+		working_dir:       session.cwd.to_str_lossy().into_owned(),
+		fs_observations:   Vec::new(),
+		protolens_records: Vec::new(),
+		stage_records:     Vec::new(),
 	})
 }
 

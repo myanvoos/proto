@@ -70,9 +70,20 @@ impl ShellApi<'_, '_> {
 	}
 
 	/// Write to fd `fd` of the calling vproc (possibly partially).
+	///
+	/// Bytes carry the calling command's [`CmdTag`](crate::bash::CmdTag), so
+	/// a host observer attributes a callout's output to its stage.
 	pub fn write(&mut self, fd: i32, bytes: &[u8]) -> IoPoll<usize> {
 		let h = self.vproc().fds.handle(fd);
-		self.io(|cx| h.poll_write(cx, bytes))
+		let tag = self
+			.vproc()
+			.frames
+			.last()
+			.and_then(|frame| frame.scratch.as_ref()?.exec.as_ref().map(|exec| exec.tag));
+		match tag {
+			Some(tag) => self.io(|cx| h.poll_write_tagged(cx, bytes, tag)),
+			None => self.io(|cx| h.poll_write(cx, bytes)),
+		}
 	}
 
 	/// A variable as the calling vproc sees it. A store failure reads as

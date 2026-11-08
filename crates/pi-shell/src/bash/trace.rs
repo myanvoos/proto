@@ -477,6 +477,10 @@ impl EventSink for RunTrace {
 		}
 	}
 
+	fn wants_output(&self) -> bool {
+		true
+	}
+
 	fn mask(&self) -> EventMask {
 		EventMask::NONE
 			.with(EventKind::UnitCompiled)

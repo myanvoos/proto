@@ -17,6 +17,7 @@ fn session_with(vars: HashMap<String, String>, cwd: &std::path::Path) -> ShellSe
 		vfs: Some(slot.clone()),
 		runtime,
 		output_decoding: None,
+		protolens: None,
 	})
 	.expect("start session");
 	ShellSessionCore { session, slot, filesystem: Fs::native(), cwd }
@@ -44,6 +45,8 @@ async fn working_dir_stores_long_form() {
 			.run(
 				ShellRunOptions { command: ":".into(), cwd: Some(cwd), ..Default::default() },
 				None,
+				None,
+				None,
 				CancelToken::default(),
 			)
 			.await
@@ -52,6 +55,8 @@ async fn working_dir_stores_long_form() {
 	let result = shell
 		.run(
 			ShellRunOptions { command: ":".into(), ..Default::default() },
+			None,
+			None,
 			None,
 			CancelToken::default(),
 		)
@@ -105,6 +110,7 @@ async fn session_env_short_temp_matches_pwd_after_cd() {
 		snapshot_path: None,
 		minimizer:     None,
 		filesystem:    Fs::native(),
+		protolens:     ProtolensBridge::new(),
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 
@@ -273,6 +279,7 @@ async fn session_env_does_not_export_git_repo_location_overrides() {
 		snapshot_path: None,
 		minimizer:     None,
 		filesystem:    Fs::native(),
+		protolens:     ProtolensBridge::new(),
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 
@@ -302,6 +309,8 @@ async fn per_run_env_is_scoped_to_the_run() {
 			.run(
 				ShellRunOptions { command: command.into(), env, ..Default::default() },
 				Some(tx),
+				None,
+				None,
 				CancelToken::default(),
 			)
 			.await
@@ -370,6 +379,8 @@ async fn run_cwd_moves_the_shell_and_rejects_missing_directories() {
 				..Default::default()
 			},
 			None,
+			None,
+			None,
 			CancelToken::default(),
 		)
 		.await
@@ -383,6 +394,8 @@ async fn run_cwd_moves_the_shell_and_rejects_missing_directories() {
 				cwd: Some(missing.to_string_lossy().into_owned()),
 				..Default::default()
 			},
+			None,
+			None,
 			None,
 			CancelToken::default(),
 		)

@@ -33,6 +33,8 @@ async fn assert_callouts(rows: &[(&str, i32, &str)]) {
 					..Default::default()
 				},
 				Some(tx),
+				None,
+				None,
 				CancelToken::new(None),
 			)
 			.await

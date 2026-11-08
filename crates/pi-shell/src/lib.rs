@@ -37,7 +37,10 @@ pub mod bash;
 pub mod extras;
 pub mod git;
 pub mod host;
+pub mod observe;
+pub mod protolens;
 pub mod session;
+pub mod stage;
 pub mod sys;
 pub mod testkit;
 pub mod tools;
@@ -60,6 +63,7 @@ pub mod taps;
 pub mod windows;
 
 pub use child_session::{ChildSessionAction, child_session_action};
+pub use observe::{FileMutation, FsObservation, FsObservationKind};
 // Windows path spellings for host paths presented by the CLI.
 pub use paths::{expand_to_long_path, get_short_path};
 // Re-exported for `pi-natives`: the builtins live in `pi-builtins`,
@@ -67,8 +71,13 @@ pub use paths::{expand_to_long_path, get_short_path};
 pub use pi_builtins::{
 	panic_scope_active, rayon_global_pool_available, set_rayon_global_pool_available,
 };
+pub use protolens::{
+	ProtolensBridge, ProtolensCwd, ProtolensDispatchFuture, ProtolensDispatchRequest,
+	ProtolensDispatchResponse, ProtolensDispatcher, ProtolensProvider,
+};
 pub use shell::{
 	MinimizerResult, Shell, ShellExecuteOptions, ShellExecuteResult, ShellOptions, ShellRunOptions,
 	ShellRunResult, StreamSinks, execute_shell, execute_shell_streams,
 };
+pub use stage::StageTrace;
 pub use taps::{PipeStreamInfo, PipeStreamRead, PipeTaps};

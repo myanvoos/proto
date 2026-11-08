@@ -28,6 +28,7 @@ fn session() -> Session {
 		vfs: None,
 		runtime: tokio::runtime::Handle::current(),
 		output_decoding: None,
+		protolens: None,
 	})
 	.unwrap()
 }

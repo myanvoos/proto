@@ -115,6 +115,7 @@ async fn default_session() -> ShellSessionCore {
 		snapshot_path: None,
 		minimizer:     None,
 		filesystem:    Fs::native(),
+		protolens:     ProtolensBridge::new(),
 	};
 	create_session(&config).await.expect("create_session")
 }
@@ -544,7 +545,11 @@ fn run_tapped(
 		pipe_taps: Some(Arc::clone(&taps)),
 		..Default::default()
 	};
-	let run = tokio::spawn(async move { Shell::new(None).run(options, Some(tx), cancel).await });
+	let run = tokio::spawn(async move {
+		Shell::new(None)
+			.run(options, Some(tx), None, None, cancel)
+			.await
+	});
 	(taps, run, rx)
 }
 

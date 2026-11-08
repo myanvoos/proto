@@ -299,7 +299,7 @@ impl FdRef {
 			};
 			return base.with_tag(tag);
 		}
-		if !self.observes_output() {
+		if !self.tags_output() {
 			return self;
 		}
 		let origin = self.0.origin;
@@ -346,6 +346,17 @@ impl FdRef {
 			.lock()
 			.file_ref()
 			.is_some_and(File::observes_output)
+	}
+
+	/// Whether writes through this descriptor should carry the executing
+	/// command's tag (see [`File::tags_output`]).
+	pub fn tags_output(&self) -> bool {
+		self
+			.0
+			.state
+			.lock()
+			.file_ref()
+			.is_some_and(File::tags_output)
 	}
 
 	/// Opaque identity of the final visible output stream, when observed.
@@ -435,7 +446,14 @@ impl File for TaggedOutput {
 	}
 
 	fn os_handle(&self) -> Option<OsHandle> {
-		None
+		// A traced capture must reach externals through the host's relay, so
+		// their output can be tagged; a stage-only capture can be inherited
+		// directly, exactly as an untagged fd is.
+		if self.base.observes_output() {
+			None
+		} else {
+			self.base.os_handle()
+		}
 	}
 
 	fn stat(&self) -> io::Result<crate::bash::fs::Stat> {
@@ -450,6 +468,10 @@ impl File for TaggedOutput {
 	}
 
 	fn observes_output(&self) -> bool {
+		self.base.observes_output()
+	}
+
+	fn tags_output(&self) -> bool {
 		true
 	}
 
@@ -500,7 +522,7 @@ impl FdTable {
 	pub(crate) fn set_command_tag(&mut self, tag: Option<crate::bash::ids::CmdTag>) {
 		for slot in self.slots.iter_mut().flatten() {
 			if let Some(tag) = tag {
-				if slot.observes_output() {
+				if slot.tags_output() {
 					*slot = slot.clone().with_tag(tag);
 				}
 			} else if slot.is_tagged() {

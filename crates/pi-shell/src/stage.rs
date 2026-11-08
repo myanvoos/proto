@@ -1,0 +1,341 @@
+//! Per-command stage records: the opaque JSON the coding agent renders as one
+//! card per command.
+//!
+//! A stage is one simple command of a run. Its identity is the engine's
+//! [`CmdTag::seq`](crate::bash::CmdTag::seq), the same tag output bytes carry,
+//! so a stage record, its output and a `protolens` dispatch's `stageIndex`
+//! all name the same execution.
+//!
+//! The shape matches proto's former brush `CommandTrace`: `index`, `command`,
+//! `route`, `state`, `exitCode`, `elapsedMs`, `sourceSpan` and bounded
+//! `stdout`/`stderr` previews.
+
+use std::{collections::HashMap, sync::Arc};
+
+use bstr::ByteSlice;
+use parking_lot::Mutex;
+use serde::Serializer;
+
+use crate::bash::{
+	CmdTag, Event, EventData, EventKind, EventMask, EventSink, UnitId, event::ResolvedKind,
+};
+
+/// Most stages one run records.
+const STAGE_LIMIT: usize = 128;
+/// Most bytes of one command's source a stage keeps.
+const COMMAND_LIMIT: usize = 16 * 1024;
+/// Most bytes of one stage's stdout or stderr a stage keeps.
+const STREAM_LIMIT: usize = 16 * 1024;
+/// Most bytes of one compiled unit kept for slicing command text.
+const UNIT_LIMIT: usize = 1024 * 1024;
+
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Capture {
+	#[serde(rename = "text", serialize_with = "serialize_text")]
+	data:      Vec<u8>,
+	bytes:     usize,
+	truncated: bool,
+	complete:  bool,
+}
+
+fn serialize_text<S: Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+	serializer.serialize_str(&String::from_utf8_lossy(bytes))
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Stage {
+	index:             u64,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	parent:            Option<u64>,
+	command:           String,
+	command_truncated: bool,
+	route:             String,
+	omitted_after:     usize,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	source_span:       Option<[u64; 2]>,
+	state:             &'static str,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	exit_code:         Option<i32>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	signal:            Option<i32>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	elapsed_ms:        Option<u64>,
+	stdout:            Capture,
+	stderr:            Capture,
+}
+
+/// The stage records of one run. Cheap to clone; clones share the records.
+#[derive(Clone, Default)]
+pub struct StageTrace {
+	inner: Arc<Mutex<Inner>>,
+}
+
+#[derive(Default)]
+struct Inner {
+	stages: Vec<Stage>,
+	/// Compiled unit sources, for slicing a command's text from its span.
+	units:  HashMap<UnitId, Vec<u8>>,
+}
+
+impl StageTrace {
+	/// A run with no stages yet.
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	/// Mark the stage `index` as routed to `route` (the `protolens` callout
+	/// uses this to split tool cards per dispatch).
+	pub fn set_route(&self, index: u64, route: &str) {
+		if let Some(stage) = self
+			.inner
+			.lock()
+			.stages
+			.iter_mut()
+			.find(|stage| stage.index == index)
+		{
+			stage.route = route.to_owned();
+		}
+	}
+
+	/// Mark every running stage unknown (the run was cancelled).
+	pub fn interrupt(&self) {
+		for stage in self
+			.inner
+			.lock()
+			.stages
+			.iter_mut()
+			.filter(|stage| stage.state == "running")
+		{
+			stage.state = "unknown";
+		}
+	}
+
+	/// The records, one JSON object per stage.
+	pub fn records(&self) -> Vec<String> {
+		let mut inner = self.inner.lock();
+		for stage in inner.stages.iter_mut() {
+			stage.stdout.complete = true;
+			stage.stderr.complete = true;
+		}
+		inner
+			.stages
+			.iter()
+			.filter_map(|stage| serde_json::to_string(stage).ok())
+			.collect()
+	}
+}
+
+impl EventSink for StageTrace {
+	fn mask(&self) -> EventMask {
+		EventMask::of(EventKind::CmdStart)
+			.with(EventKind::CmdExpanded)
+			.with(EventKind::CmdEnd)
+			.with(EventKind::UnitCompiled)
+	}
+
+	fn event(&self, ev: &Event<'_>) {
+		match &ev.data {
+			EventData::UnitCompiled(unit) => {
+				let source = unit.source();
+				if source.len() <= UNIT_LIMIT {
+					self.inner.lock().units.insert(unit.id(), source.to_vec());
+				}
+			},
+			EventData::CmdStart { .. } => {
+				let Some(tag) = ev.command_tag() else {
+					return;
+				};
+				let mut inner = self.inner.lock();
+				if inner.stages.len() >= STAGE_LIMIT {
+					if let Some(stage) = inner.stages.last_mut() {
+						stage.omitted_after += 1;
+					}
+					return;
+				}
+				let span = ev.span();
+				let (command, source_span) = match span {
+					Some(span) => {
+						let text = inner
+							.units
+							.get(&span.unit)
+							.map(|source| {
+								let lo = (span.lo as usize).min(source.len());
+								let hi = (span.hi as usize).min(source.len()).max(lo);
+								source[lo..hi].to_vec()
+							})
+							.unwrap_or_default();
+						(
+							String::from_utf8_lossy(&text).into_owned(),
+							Some([u64::from(span.lo), u64::from(span.hi)]),
+						)
+					},
+					None => (String::new(), None),
+				};
+				let command_truncated = command.len() > COMMAND_LIMIT;
+				let command = if command_truncated {
+					String::from_utf8_lossy(
+						&command.as_bytes()[..command.floor_char_boundary(COMMAND_LIMIT)],
+					)
+					.into_owned()
+				} else {
+					command
+				};
+				inner.stages.push(Stage {
+					index: tag.seq,
+					parent: None,
+					command,
+					command_truncated,
+					route: "shell".into(),
+					omitted_after: 0,
+					source_span,
+					state: "running",
+					exit_code: None,
+					signal: None,
+					elapsed_ms: None,
+					stdout: Capture::default(),
+					stderr: Capture::default(),
+				});
+			},
+			EventData::CmdExpanded { argv, resolved, .. } => {
+				let Some(tag) = ev.command_tag() else {
+					return;
+				};
+				let mut inner = self.inner.lock();
+				let Some(stage) = inner.stages.iter_mut().find(|stage| stage.index == tag.seq) else {
+					return;
+				};
+				if stage.command.is_empty() {
+					stage.command = argv
+						.iter()
+						.map(|arg| arg.to_str_lossy())
+						.collect::<Vec<_>>()
+						.join(" ");
+					stage.command_truncated = stage.command.len() > COMMAND_LIMIT;
+					if stage.command_truncated {
+						stage
+							.command
+							.truncate(stage.command.floor_char_boundary(COMMAND_LIMIT));
+					}
+				}
+				if argv
+					.first()
+					.is_some_and(|arg| arg.as_slice() == b"protolens")
+				{
+					stage.route = "protolens".into();
+				} else if *resolved == ResolvedKind::Tool {
+					stage.route = "tool".into();
+				}
+			},
+			EventData::CmdEnd { status, dur_ns, .. } => {
+				let Some(tag) = ev.command_tag() else {
+					return;
+				};
+				let mut inner = self.inner.lock();
+				let Some(stage) = inner.stages.iter_mut().find(|stage| stage.index == tag.seq) else {
+					return;
+				};
+				stage.exit_code = Some(*status);
+				stage.state = "exited";
+				stage.elapsed_ms = Some(*dur_ns / 1_000_000);
+			},
+			_ => {},
+		}
+	}
+
+	fn output_end(&self, _t_ns: u64, _fd: i32) {
+		for stage in self.inner.lock().stages.iter_mut() {
+			stage.stdout.complete = true;
+			stage.stderr.complete = true;
+		}
+	}
+
+	fn wants_output(&self) -> bool {
+		// In-process writes (builtins, callouts such as `protolens`) carry
+		// their tag through the host's stream files; externals stay on their
+		// direct pipe, so a stage recorder never changes how they are spawned.
+		false
+	}
+
+	fn output_tagged(&self, tag: Option<CmdTag>, t_ns: u64, fd: i32, _merged: bool, bytes: &[u8]) {
+		self.output(tag, t_ns, fd, bytes);
+	}
+
+	fn output(&self, tag: Option<CmdTag>, _t_ns: u64, fd: i32, bytes: &[u8]) {
+		let Some(tag) = tag else {
+			return;
+		};
+		let mut inner = self.inner.lock();
+		let Some(stage) = inner.stages.iter_mut().find(|stage| stage.index == tag.seq) else {
+			return;
+		};
+		let capture = if fd == 2 {
+			&mut stage.stderr
+		} else {
+			&mut stage.stdout
+		};
+		capture.bytes = capture.bytes.saturating_add(bytes.len());
+		let remaining = STREAM_LIMIT.saturating_sub(capture.data.len());
+		capture
+			.data
+			.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+		capture.truncated = capture.bytes > STREAM_LIMIT;
+	}
+}
+
+/// Forward every event and output to each sink (a run trace and the stage
+/// recorder).
+pub(crate) struct TeeSink {
+	sinks: Vec<std::sync::Arc<dyn EventSink>>,
+	mask:  EventMask,
+}
+
+impl TeeSink {
+	pub(crate) fn new(sinks: Vec<std::sync::Arc<dyn EventSink>>) -> Self {
+		let mask = sinks.iter().fold(EventMask::NONE, |mask, sink| {
+			EventMask::from_bits(mask.bits() | sink.mask().bits())
+		});
+		Self { sinks, mask }
+	}
+}
+
+impl EventSink for TeeSink {
+	fn mask(&self) -> EventMask {
+		self.mask
+	}
+
+	fn event(&self, ev: &Event<'_>) {
+		for sink in &self.sinks {
+			sink.event(ev);
+		}
+	}
+
+	fn wants_output(&self) -> bool {
+		self.sinks.iter().any(|sink| sink.wants_output())
+	}
+
+	fn run_submitted(&self, run: crate::bash::RunId) {
+		for sink in &self.sinks {
+			sink.run_submitted(run);
+		}
+	}
+
+	fn output_end(&self, t_ns: u64, fd: i32) {
+		for sink in &self.sinks {
+			sink.output_end(t_ns, fd);
+		}
+	}
+
+	fn output(&self, tag: Option<CmdTag>, t_ns: u64, fd: i32, bytes: &[u8]) {
+		for sink in &self.sinks {
+			sink.output(tag, t_ns, fd, bytes);
+		}
+	}
+
+	fn output_tagged(&self, tag: Option<CmdTag>, t_ns: u64, fd: i32, merged: bool, bytes: &[u8]) {
+		for sink in &self.sinks {
+			sink.output_tagged(tag, t_ns, fd, merged, bytes);
+		}
+	}
+}

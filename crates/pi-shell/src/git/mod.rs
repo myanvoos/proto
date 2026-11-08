@@ -823,6 +823,7 @@ mod tests {
 			vfs: None,
 			runtime: tokio::runtime::Handle::current(),
 			output_decoding: None,
+			protolens: None,
 		})
 		.expect("session");
 		// stdout and stderr share one file (and its offset), so the

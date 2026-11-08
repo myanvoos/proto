@@ -112,6 +112,8 @@ pub struct SessionConfig {
 	/// ([`RunOptions::text_capture`]); `None` is the platform default
 	/// ([`crate::output_decode::external_output_decoding`]).
 	pub output_decoding: Option<Arc<dyn OutputDecoding>>,
+	/// The `protolens` device bridge the session offers, when any.
+	pub protolens:       Option<crate::protolens::ProtolensBridge>,
 }
 
 /// One command of a [`Session`].
@@ -310,12 +312,13 @@ impl Session {
 	///
 	/// [`SessionError::Create`] when the engine refuses the initial state.
 	pub fn new(config: SessionConfig) -> Result<Self, SessionError> {
-		let SessionConfig { env, cwd, fs, vfs, runtime, output_decoding } = config;
+		let SessionConfig { env, cwd, fs, vfs, runtime, output_decoding, protolens } = config;
 		let (jobs, rx) = flume::unbounded();
 		let children = Children::default();
 		let bell = Arc::new(Bell::default());
 		let waker = Waker::from(Arc::clone(&bell));
-		let tools = ToolConfig::from_env(&env, vfs.clone(), runtime.clone());
+		let mut tools = ToolConfig::from_env(&env, vfs.clone(), runtime.clone());
+		tools.protolens = protolens;
 		let mut host = PiHost::new(fs, runtime.clone());
 		if output_decoding.is_some() {
 			host.set_output_decoding(output_decoding);
@@ -407,7 +410,8 @@ impl Session {
 		let jobs = self.jobs.as_ref().ok_or(SessionError::Closed)?;
 		let level = Arc::new(CancelLevel::default());
 		let (reply_tx, reply_rx) = flume::bounded(1);
-		let job = Job { options, stdio, cancel: Arc::clone(&level), reply: reply_tx };
+		let job =
+			Job { options, stdio, cancel: Arc::clone(&level), token: cancel.clone(), reply: reply_tx };
 		jobs
 			.send(Request::Run(job))
 			.map_err(|_| SessionError::Closed)?;
@@ -519,6 +523,8 @@ struct Job {
 	options: RunOptions,
 	stdio:   RunStdio,
 	cancel:  Arc<CancelLevel>,
+	/// The caller's cancellation token, observed by `protolens` dispatches.
+	token:   CancellationToken,
 	reply:   flume::Sender<RunOutcome>,
 }
 
@@ -566,10 +572,11 @@ impl Driver {
 
 	/// Run one job to completion and send its outcome.
 	async fn run(&mut self, job: Job) {
-		let Job { options, stdio, cancel, reply } = job;
+		let Job { options, stdio, cancel, token, reply } = job;
 		let RunOptions { command, env, cwd, pipe_tap, reported_error, text_capture, events } =
 			options;
 		self.host.set_pipe_tap(pipe_tap);
+		self.host.set_cancel(Some(token));
 		// A command owns its observer generation, even when successive
 		// observers request identical event masks.
 		self
@@ -592,6 +599,9 @@ impl Driver {
 		if let Some(sink) = &events {
 			sink.run_submitted(run);
 		}
+		self
+			.host
+			.set_observe_output(events.as_ref().is_some_and(|sink| sink.wants_output()));
 		self.host.set_event_sink(events);
 		self
 			.host
@@ -640,8 +650,10 @@ impl Driver {
 		self.host.streams().clear();
 		self.host.set_pipe_tap(None);
 		self.host.set_event_sink(None);
+		self.host.set_observe_output(false);
 		self.shell.set_event_mask(EventMask::NONE);
 		self.host.set_reported_error(None);
+		self.host.set_cancel(None);
 		self.restore_overlay(saved);
 		let cwd = match self.store.record(Key::Misc(MiscKey::Cwd)) {
 			Some(Record::Misc(cwd)) => cwd.clone(),
@@ -762,6 +774,7 @@ mod tests {
 			vfs: None,
 			runtime: tokio::runtime::Handle::current(),
 			output_decoding: None,
+			protolens: None,
 		})
 		.unwrap()
 	}

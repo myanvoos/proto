@@ -506,6 +506,7 @@ mod tests {
 			vfs: None,
 			runtime: tokio::runtime::Handle::current(),
 			output_decoding,
+			protolens: None,
 		})
 		.unwrap()
 	}

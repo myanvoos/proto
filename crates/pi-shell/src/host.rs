@@ -148,6 +148,7 @@ impl StdStreams {
 		fd: StdFd,
 		events: Option<Arc<dyn crate::bash::EventSink>>,
 		start: Instant,
+		observe_output: bool,
 	) -> Box<dyn File> {
 		let index = match fd {
 			StdFd::Stdin => 0,
@@ -155,6 +156,7 @@ impl StdStreams {
 			StdFd::Stderr => 2,
 		};
 		let write_order = if index != 0
+			&& observe_output
 			&& let Some(events) = &events
 		{
 			self
@@ -176,6 +178,7 @@ impl StdStreams {
 			events,
 			start,
 			merged: self.text.load(Ordering::Acquire),
+			observe_output,
 			write_order,
 		})
 	}
@@ -183,12 +186,13 @@ impl StdStreams {
 
 /// An engine [`File`] forwarding to one of the [`StdStreams`].
 struct StreamFile {
-	slots:       Arc<[Slot; 3]>,
-	index:       usize,
-	merged:      bool,
-	write_order: Option<Arc<Mutex<()>>>,
-	events:      Option<Arc<dyn crate::bash::EventSink>>,
-	start:       Instant,
+	slots:          Arc<[Slot; 3]>,
+	index:          usize,
+	merged:         bool,
+	observe_output: bool,
+	write_order:    Option<Arc<Mutex<()>>>,
+	events:         Option<Arc<dyn crate::bash::EventSink>>,
+	start:          Instant,
 }
 
 impl StreamFile {
@@ -202,6 +206,10 @@ impl StreamFile {
 
 impl File for StreamFile {
 	fn observes_output(&self) -> bool {
+		self.index != 0 && self.events.is_some() && self.observe_output
+	}
+
+	fn tags_output(&self) -> bool {
 		self.index != 0 && self.events.is_some()
 	}
 
@@ -229,8 +237,7 @@ impl File for StreamFile {
 			&& let Some(events) = &self.events
 		{
 			let t_ns = u64::try_from(self.start.elapsed().as_nanos()).unwrap_or(u64::MAX);
-			let fd = if self.merged { 1 } else { self.index as i32 };
-			events.output(tag, t_ns, fd, &bytes[..*n]);
+			events.output_tagged(tag, t_ns, self.index as i32, self.merged, &bytes[..*n]);
 		}
 		result
 	}
@@ -263,12 +270,13 @@ impl File for StreamFile {
 		// Share the generation, not a duplicate OS handle: clear closes the
 		// run's pipe even while a background job retains this file.
 		Ok(Box::new(Self {
-			slots:       Arc::clone(&self.slots),
-			index:       self.index,
-			merged:      self.merged,
-			events:      self.events.clone(),
-			write_order: self.write_order.clone(),
-			start:       self.start,
+			slots:          Arc::clone(&self.slots),
+			index:          self.index,
+			merged:         self.merged,
+			observe_output: self.observe_output,
+			events:         self.events.clone(),
+			write_order:    self.write_order.clone(),
+			start:          self.start,
 		}))
 	}
 }
@@ -277,25 +285,27 @@ impl File for StreamFile {
 /// per-command standard streams, and no OS signal, fd or terminal state of
 /// the host process.
 pub struct PiHost {
-	fs:       Box<dyn Fs + Send>,
+	fs:             Box<dyn Fs + Send>,
 	/// Launches externals; a spawn that waits on the filesystem provider
 	/// carries a clone.
-	launcher: Launcher,
+	launcher:       Launcher,
 	/// pi's commands that are host callouts ([`crate::tools`]).
-	tools:    ToolConfig,
-	runtime:  tokio::runtime::Handle,
-	start:    Instant,
-	random:   RandomState,
-	draws:    u64,
+	tools:          ToolConfig,
+	runtime:        tokio::runtime::Handle,
+	start:          Instant,
+	random:         RandomState,
+	draws:          u64,
 	/// [`crate::bash::Host::user`], read once.
-	user:     OnceCell<UserInfo>,
+	user:           OnceCell<UserInfo>,
 	/// The pi-vfs filesystem behind `fs`, when there is one: what an
 	/// external's URL arguments and working directory alias.
-	vfs:      Option<crate::vfs::VfsFs>,
+	vfs:            Option<crate::vfs::VfsFs>,
 	/// Mirrors the pipeline pipes of the command being run.
-	pipe_tap: Option<Arc<dyn crate::bash::PipeTap>>,
+	pipe_tap:       Option<Arc<dyn crate::bash::PipeTap>>,
 	/// Observes the events of the command being run.
-	events:   Option<Arc<dyn crate::bash::EventSink>>,
+	events:         Option<Arc<dyn crate::bash::EventSink>>,
+	/// Whether the event sink also wants externals' output attributed.
+	observe_output: bool,
 }
 
 /// What launching an external needs of a [`PiHost`], owned and cheap to
@@ -454,6 +464,7 @@ impl PiHost {
 			vfs: None,
 			pipe_tap: None,
 			events: None,
+			observe_output: false,
 		}
 	}
 
@@ -487,6 +498,13 @@ impl PiHost {
 		self.events = sink;
 	}
 
+	/// Whether the event sink also wants externals' output attributed
+	/// ([`crate::bash::EventSink::wants_output`]). Set by the session from the
+	/// sink; only such a sink makes the host relay external output.
+	pub fn set_observe_output(&mut self, observe: bool) {
+		self.observe_output = observe;
+	}
+
 	/// Where builtins report an error their exit status hides (jq after a
 	/// failing input), for the command being run; `None` when nobody asks.
 	pub fn reported_error(&self) -> Option<Arc<AtomicBool>> {
@@ -497,6 +515,11 @@ impl PiHost {
 	/// now on.
 	pub fn set_reported_error(&self, flag: Option<Arc<AtomicBool>>) {
 		self.tools.reported_error.set(flag);
+	}
+
+	/// Hand the run's cancellation token to the tools started from now on.
+	pub fn set_cancel(&self, cancel: Option<tokio_util::sync::CancellationToken>) {
+		self.tools.cancel.set(cancel);
 	}
 
 	/// The standard streams the shell's fds 0, 1 and 2 forward to.
@@ -654,7 +677,7 @@ impl crate::bash::Host for PiHost {
 			self
 				.launcher
 				.streams
-				.file(fd, self.events.clone(), self.start),
+				.file(fd, self.events.clone(), self.start, self.observe_output),
 		)
 	}
 
