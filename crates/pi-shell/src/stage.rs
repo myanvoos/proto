@@ -304,11 +304,47 @@ impl EventSink for StageTrace {
 		};
 		capture.bytes = capture.bytes.saturating_add(bytes.len());
 		let remaining = STREAM_LIMIT.saturating_sub(capture.data.len());
-		capture
-			.data
-			.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+		let take = bytes.len().min(remaining);
+		capture.data.extend_from_slice(&bytes[..take]);
+		if take < bytes.len() {
+			// The preview ends on a character boundary; the byte count still
+			// reports everything the command wrote.
+			let end = complete_utf8_prefix(&capture.data);
+			capture.data.truncate(end);
+		}
 		capture.truncated = capture.bytes > STREAM_LIMIT;
 	}
+}
+
+/// Length of the longest prefix of `bytes` that does not end inside a UTF-8
+/// character: the length itself when the last character is complete.
+fn complete_utf8_prefix(bytes: &[u8]) -> usize {
+	let mut lead = bytes.len();
+	// A UTF-8 character has at most four bytes, so its lead is at most three
+	// bytes back from the end.
+	for _ in 0..4 {
+		let Some(&byte) = lead.checked_sub(1).and_then(|at| bytes.get(at)) else {
+			return 0;
+		};
+		if byte & 0xc0 != 0x80 {
+			let width = match byte {
+				0x00..=0x7f => 1,
+				0xc0..=0xdf => 2,
+				0xe0..=0xef => 3,
+				0xf0..=0xf7 => 4,
+				// An invalid byte: leave it to the lossy rendering.
+				_ => 1,
+			};
+			return if lead - 1 + width <= bytes.len() {
+				bytes.len()
+			} else {
+				lead - 1
+			};
+		}
+		lead -= 1;
+	}
+	// Four continuation bytes without a lead: not a cut character.
+	bytes.len()
 }
 
 /// The runtime a JavaScript kernel builtin is routed as, from its command
@@ -390,5 +426,25 @@ impl EventSink for TeeSink {
 		for sink in &self.sinks {
 			sink.output_tagged(tag, t_ns, fd, merged, bytes);
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::complete_utf8_prefix;
+
+	/// A preview cut inside a character must end before it, so a consumer
+	/// never renders a replacement glyph for bytes the capture did not keep.
+	#[test]
+	fn a_truncated_preview_ends_on_a_character_boundary() {
+		assert_eq!(complete_utf8_prefix("a😀".as_bytes()), 5);
+		// Cut after the emoji's lead and first continuation byte.
+		assert_eq!(complete_utf8_prefix(b"a\xF0\x9F"), 1);
+		// Cut after a complete three-byte character.
+		assert_eq!(complete_utf8_prefix("a€".as_bytes()), 4);
+		assert_eq!(complete_utf8_prefix(b"a\xE2\x82"), 1);
+		// Invalid bytes are not a cut character: the lossy rendering keeps
+		// them.
+		assert_eq!(complete_utf8_prefix(b"a\xFF"), 2);
 	}
 }
