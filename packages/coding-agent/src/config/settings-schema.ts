@@ -3380,7 +3380,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "tasks",
 			group: "Isolation",
 			label: "protofs Binary",
-			description: "protofs executable for `protofs.enabled`; unset looks for `protofs` on PATH",
+			description:
+				"protofs executable for `protofs.enabled`; unset uses the sibling of the proto binary, the development build, then `protofs` on PATH",
 		},
 	},
 
