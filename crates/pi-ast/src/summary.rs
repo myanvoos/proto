@@ -281,7 +281,10 @@ fn collect_elidable_tree(
 	}
 
 	let mut current_parent = elidable_parent;
-	if is_elidable_kind(language, node.kind()) && total_lines >= min_body_lines {
+	if is_elidable_kind(language, node.kind())
+		&& !is_declaration_container_kind(language, node)
+		&& total_lines >= min_body_lines
+	{
 		let start_line = node_start_line(node) + 1;
 		let end_line = node_end_line(node).saturating_sub(1);
 		if start_line <= end_line {
@@ -428,6 +431,36 @@ fn is_comment_kind(language: SupportLang, kind: &str) -> bool {
 		SupportLang::Scala => kind == "block_comment",
 		SupportLang::Lua => kind == "comment",
 		SupportLang::EmacsLisp => kind == "comment",
+		_ => false,
+	}
+}
+
+/// Declaration containers keep their member declarations visible. Their
+/// children still participate in collection so method/function bodies can be
+/// folded independently.
+fn is_declaration_container_kind(language: SupportLang, node: Node<'_>) -> bool {
+	let kind = node.kind();
+	match language {
+		SupportLang::TypeScript | SupportLang::Tsx | SupportLang::JavaScript => kind == "class_body",
+		SupportLang::Python => {
+			kind == "block"
+				&& node
+					.parent()
+					.is_some_and(|parent| parent.kind() == "class_definition")
+		},
+		SupportLang::Rust => {
+			kind == "declaration_list"
+				&& node.parent().is_some_and(|parent| {
+					matches!(parent.kind(), "impl_item" | "trait_item" | "mod_item")
+				})
+		},
+		SupportLang::Java => matches!(kind, "class_body" | "interface_body" | "enum_body"),
+		SupportLang::CSharp => kind == "declaration_list",
+		SupportLang::Kotlin => matches!(kind, "class_body" | "enum_class_body"),
+		SupportLang::Swift => matches!(kind, "class_body" | "protocol_body" | "enum_class_body"),
+		SupportLang::Dart => matches!(kind, "class_body" | "extension_body" | "mixin_body"),
+		SupportLang::Scala => kind == "template_body",
+		SupportLang::Php => kind == "declaration_list",
 		_ => false,
 	}
 }
@@ -930,6 +963,16 @@ mod tests {
 			.collect()
 	}
 
+	/// The kept segments' text, joined: what the outline shows.
+	fn kept_text(result: &SummaryResult) -> String {
+		result
+			.segments
+			.iter()
+			.filter_map(|segment| segment.text.as_deref())
+			.collect::<Vec<_>>()
+			.join("\n")
+	}
+
 	#[test]
 	fn summarizes_typescript_function_body() {
 		let result = summarize(
@@ -956,49 +999,36 @@ mod tests {
 		let result = summarize(
 			"struct Greeter;\n\nimpl Greeter {\n\tfn greet(&self) -> String {\n\t\tlet name = \
 			 \"world\";\n\t\tlet label = name.to_uppercase();\n\t\tformat!(\"hello \
-			 {label}\")\n\t}\n}\n",
+			 {label}\")n\t}\n}\n",
 			"fixture.rs",
 		);
 
 		assert!(result.parsed);
 		assert!(result.elided);
-		let rendered = result
-			.segments
-			.iter()
-			.map(|segment| segment.text.clone().unwrap_or_else(|| "...".to_string()))
-			.collect::<Vec<_>>()
-			.join("\n");
-		assert!(rendered.contains("impl Greeter {\n...\n}"));
+		let kept = kept_text(&result);
+		// The impl's members stay visible; only the method body folds.
+		assert!(kept.contains("impl Greeter {"), "{kept}");
+		assert!(kept.contains("fn greet(&self) -> String {"), "{kept}");
+		assert!(!kept.contains("let name"), "{kept}");
 	}
-
 	#[test]
 	fn summarizes_python_function_body() {
-		let result =
-			summarize(
-				"class Greeter:\n    def greet(self, name: str) -> str:\n        clean = \
-				 name.strip()\n        label = clean or 'world'\n        return f'hello {label}'\n",
-				"fixture.py",
-			);
+		let result = summarize(
+			"class Greeter:\n    def greet(self, name: str) -> str:\n        clean = \
+			 name.strip()\n        label = clean or 'world'\n        upper = label.upper()\n        \
+			 return f'hello {upper}'\n",
+			"fixture.py",
+		);
 
 		assert!(result.parsed);
 		assert!(result.elided);
-		assert_eq!(segment_kinds(&result), vec!["kept", "elided", "kept"]);
-		assert!(
-			result.segments[0]
-				.text
-				.as_deref()
-				.unwrap_or_default()
-				.contains("def greet")
-		);
-		assert!(
-			result.segments[2]
-				.text
-				.as_deref()
-				.unwrap_or_default()
-				.contains("return")
-		);
+		let kept = kept_text(&result);
+		// Class members stay visible; the method body folds in its middle.
+		assert!(kept.contains("class Greeter:"), "{kept}");
+		assert!(kept.contains("def greet(self, name: str) -> str:"), "{kept}");
+		assert!(kept.contains("return f'hello {upper}'"), "{kept}");
+		assert!(!kept.contains("label = clean"), "{kept}");
 	}
-
 	#[test]
 	fn summarizes_fortran_program() {
 		let result = summarize("program hello\n  print *, 'hi'\nend program hello\n", "fixture.f90");
@@ -1097,25 +1127,20 @@ mod tests {
 	#[test]
 	fn summarizes_typescript_class_body() {
 		let result = summarize(
-			"export class Greeter {\n\tname: string = \"world\";\n\tlength(): number { return \
-			 this.name.length; }\n\tgreet(): string { return this.name; }\n\tshout(): string { \
-			 return this.name.toUpperCase(); }\n}\n",
+			"export class Greeter {\n\tname: string = \"world\";\n\tgreet(): string {\n\t\tconst \
+			 clean = this.name.trim();\n\t\tconst label = clean || 'world';\n\t\tconst upper = \
+			 label.toUpperCase();\n\t\treturn upper;\n\t}\n}\n",
 			"fixture.ts",
 		);
 
 		assert!(result.parsed);
 		assert!(result.elided);
-		assert_eq!(segment_kinds(&result), vec!["kept", "elided", "kept"]);
-		assert!(
-			result.segments[0]
-				.text
-				.as_deref()
-				.unwrap_or_default()
-				.contains("class Greeter")
-		);
-		assert_eq!(result.segments[2].text.as_deref(), Some("}"));
+		let kept = kept_text(&result);
+		// The class body keeps its members visible; the method body folds.
+		assert!(kept.contains("export class Greeter {"), "{kept}");
+		assert!(kept.contains("greet(): string {"), "{kept}");
+		assert!(!kept.contains("const label"), "{kept}");
 	}
-
 	#[test]
 	fn summarizes_rust_trait_declaration_list() {
 		let result = summarize(
@@ -1125,34 +1150,29 @@ mod tests {
 		);
 
 		assert!(result.parsed);
-		assert!(result.elided);
-		assert_eq!(segment_kinds(&result), vec!["kept", "elided", "kept"]);
-		assert_eq!(result.segments[0].text.as_deref(), Some("pub trait Greeter {"));
-		assert_eq!(result.segments[2].text.as_deref(), Some("}"));
+		// A trait's declaration list is not a body: every member stays visible.
+		assert!(!result.elided);
+		let kept = kept_text(&result);
+		assert!(kept.contains("pub trait Greeter {"), "{kept}");
+		assert!(kept.contains("fn whisper(&self) -> String;"), "{kept}");
 	}
-
 	#[test]
 	fn summarizes_java_class_body() {
 		let result = summarize(
-			"public class Greeter {\n\tprivate String name;\n\tpublic Greeter(String n) { this.name \
-			 = n; }\n\tpublic String greet() { return name; }\n\tpublic int length() { return \
-			 name.length(); }\n}\n",
+			"public class Greeter {\n\tprivate String name;\n\tpublic String greet() {\n\t\tString \
+			 clean = name.trim();\n\t\tString label = clean.isEmpty() ? \"world\" : clean;\n\t\tString \
+			 upper = label.toUpperCase();\n\t\treturn upper;\n\t}\n}\n",
 			"fixture.java",
 		);
 
 		assert!(result.parsed);
 		assert!(result.elided);
-		assert_eq!(segment_kinds(&result), vec!["kept", "elided", "kept"]);
-		assert!(
-			result.segments[0]
-				.text
-				.as_deref()
-				.unwrap_or_default()
-				.contains("class Greeter")
-		);
-		assert_eq!(result.segments[2].text.as_deref(), Some("}"));
+		let kept = kept_text(&result);
+		// The class body keeps its members visible; the method body folds.
+		assert!(kept.contains("public class Greeter {"), "{kept}");
+		assert!(kept.contains("public String greet() {"), "{kept}");
+		assert!(!kept.contains("String label"), "{kept}");
 	}
-
 	#[test]
 	fn summarizes_typescript_import_run() {
 		let code = "import a from \"a\";\nimport b from \"b\";\nimport c from \"c\";\nimport d from \
