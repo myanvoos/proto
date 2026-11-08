@@ -126,33 +126,33 @@ pub struct ShellInit {
 	/// Starting mode. A zsh-dialect shell starts with that emulation's
 	/// options, and takes [`Self::options`] as zsh option names (`no`
 	/// prefix allowed).
-	pub mode:        ModeId,
+	pub mode:         ModeId,
 	/// `$0`; also the prefix of diagnostics.
-	pub argv0:       BString,
+	pub argv0:        BString,
 	/// Positional parameters.
-	pub args:        Vec<BString>,
+	pub args:         Vec<BString>,
 	/// Imported environment (names that are not identifiers are skipped;
 	/// `BASH_FUNC_name%%` entries define exported functions).
-	pub env:         Vec<(BString, BString)>,
+	pub env:          Vec<(BString, BString)>,
 	/// Working directory (absolute).
-	pub cwd:         BString,
+	pub cwd:          BString,
 	/// Interactive shell semantics.
-	pub interactive: bool,
+	pub interactive:  bool,
 	/// `set -o` / `shopt` names to set.
-	pub options:     Vec<(BString, bool)>,
+	pub options:      Vec<(BString, bool)>,
 	/// `$$` (persisted across restores); zero selects [`Host::shell_pid`].
-	pub shell_pid:   u32,
+	pub shell_pid:    u32,
 	/// Startup files (`path`, contents) the shell sources, in order, before
 	/// its first script: what
 	/// [`crate::bash::invocation::ShellArgs::startup_files`] names and the
 	/// host found (`BASH_ENV`, a login shell's profiles).
-	pub startup:     Vec<(BString, BString)>,
+	pub startup:      Vec<(BString, BString)>,
 	/// Unexported parameters a zsh shell sets from its command line before
 	/// its startup files: `ZSH_EXECUTION_STRING` (the `-c` string) and
 	/// `ZSH_SCRIPT` (the script file).
-	pub zsh_params:  Vec<(BString, BString)>,
+	pub zsh_params:   Vec<(BString, BString)>,
 	/// Whose shell it is: a user's, or a program's ([`Profile::Tool`]).
-	pub profile:     Profile,
+	pub profile:      Profile,
 	/// Report a missing command as pi's shell did (`command not found:
 	/// name`) instead of bash's order (`name: command not found`); line
 	/// numbers, statuses and every other message are unchanged.
@@ -196,17 +196,17 @@ pub fn is_tool(store: &mut dyn StateStore, vp: &Vproc) -> Result<bool, StoreErro
 impl Default for ShellInit {
 	fn default() -> Self {
 		Self {
-			mode:        ModeId::Bash,
-			argv0:       BString::from("bash"),
-			args:        Vec::new(),
-			env:         Vec::new(),
-			cwd:         BString::from("/"),
-			interactive: false,
-			options:     Vec::new(),
-			shell_pid:   0,
-			startup:     Vec::new(),
-			zsh_params:  Vec::new(),
-			profile:     Profile::User,
+			mode:         ModeId::Bash,
+			argv0:        BString::from("bash"),
+			args:         Vec::new(),
+			env:          Vec::new(),
+			cwd:          BString::from("/"),
+			interactive:  false,
+			options:      Vec::new(),
+			shell_pid:    0,
+			startup:      Vec::new(),
+			zsh_params:   Vec::new(),
+			profile:      Profile::User,
 			proto_errors: false,
 		}
 	}

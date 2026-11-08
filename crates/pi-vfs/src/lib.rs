@@ -36,9 +36,9 @@ mod canonicalize;
 mod dir;
 mod error;
 mod file;
+mod fs;
 /// Files the process holds open that an in-process read would unlock.
 pub mod held;
-mod fs;
 mod metadata;
 mod native;
 mod options;

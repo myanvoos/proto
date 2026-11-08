@@ -73,7 +73,7 @@ impl Protolens {
 	pub(super) fn advance(
 		&mut self,
 		api: &mut ShellApi<'_, '_>,
-		turn: &mut Turn<'_>,
+		turn: &Turn<'_>,
 	) -> Option<CallOutcome> {
 		loop {
 			match std::mem::replace(&mut self.stage, Stage::Done(1)) {
@@ -142,7 +142,7 @@ impl Protolens {
 	}
 
 	/// Parse the arguments and hand the request to the dispatcher.
-	fn start_dispatch(&mut self, api: &mut ShellApi<'_, '_>, turn: &mut Turn<'_>) {
+	fn start_dispatch(&mut self, api: &ShellApi<'_, '_>, turn: &Turn<'_>) {
 		if self.stdin_truncated {
 			self.stdin.truncate(STDIN_LIMIT);
 		}
@@ -201,7 +201,7 @@ impl Protolens {
 	}
 
 	/// Turn a dispatcher result into output and a status.
-	fn finish_dispatch(&mut self, dispatched: Dispatched, turn: &mut Turn<'_>) {
+	fn finish_dispatch(&mut self, dispatched: Dispatched, turn: &Turn<'_>) {
 		match dispatched {
 			Dispatched::Response(response) => {
 				if let (Some(record), Some(bridge)) = (&response.record, &turn.config.protolens) {

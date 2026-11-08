@@ -6,7 +6,7 @@
 //! so a stage record, its output and a `protolens` dispatch's `stageIndex`
 //! all name the same execution.
 //!
-//! The shape matches proto's former brush `CommandTrace`: `index`, `command`,
+//! The shape matches the former shell's `CommandTrace`: `index`, `command`,
 //! `route`, `state`, `exitCode`, `elapsedMs`, `sourceSpan` and bounded
 //! `stdout`/`stderr` previews.
 
@@ -95,15 +95,14 @@ impl StageTrace {
 			.iter_mut()
 			.find(|stage| stage.index == index)
 		{
-			stage.route = route.to_owned();
+			route.clone_into(&mut stage.route);
 		}
 	}
 
 	/// Mark every running stage unknown (the run was cancelled).
 	pub fn interrupt(&self) {
-		for stage in self
-			.inner
-			.lock()
+		let mut inner = self.inner.lock();
+		for stage in inner
 			.stages
 			.iter_mut()
 			.filter(|stage| stage.state == "running")
@@ -115,7 +114,7 @@ impl StageTrace {
 	/// The records, one JSON object per stage.
 	pub fn records(&self) -> Vec<String> {
 		let mut inner = self.inner.lock();
-		for stage in inner.stages.iter_mut() {
+		for stage in &mut inner.stages {
 			stage.stdout.complete = true;
 			stage.stderr.complete = true;
 		}
@@ -157,15 +156,11 @@ impl EventSink for StageTrace {
 				let span = ev.span();
 				let (command, source_span) = match span {
 					Some(span) => {
-						let text = inner
-							.units
-							.get(&span.unit)
-							.map(|source| {
-								let lo = (span.lo as usize).min(source.len());
-								let hi = (span.hi as usize).min(source.len()).max(lo);
-								source[lo..hi].to_vec()
-							})
-							.unwrap_or_default();
+						let text = inner.units.get(&span.unit).map_or_default(|source| {
+							let lo = (span.lo as usize).min(source.len());
+							let hi = (span.hi as usize).min(source.len()).max(lo);
+							source[lo..hi].to_vec()
+						});
 						(
 							String::from_utf8_lossy(&text).into_owned(),
 							Some([u64::from(span.lo), u64::from(span.hi)]),
@@ -254,7 +249,8 @@ impl EventSink for StageTrace {
 	}
 
 	fn output_end(&self, _t_ns: u64, _fd: i32) {
-		for stage in self.inner.lock().stages.iter_mut() {
+		let mut inner = self.inner.lock();
+		for stage in &mut inner.stages {
 			stage.stdout.complete = true;
 			stage.stderr.complete = true;
 		}

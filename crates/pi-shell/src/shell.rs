@@ -241,11 +241,11 @@ impl Shell {
 		let protolens = ProtolensBridge::new();
 		let config = match options {
 			None => ShellConfig {
-				session_env:   None,
+				session_env: None,
 				snapshot_path: None,
-				minimizer:     None,
-				filesystem:    Fs::native(),
-				protolens:     protolens.clone(),
+				minimizer: None,
+				filesystem: Fs::native(),
+				protolens,
 			},
 			Some(opt) => {
 				let minimizer = opt
@@ -257,7 +257,7 @@ impl Shell {
 					snapshot_path: opt.snapshot_path,
 					minimizer,
 					filesystem: opt.filesystem,
-					protolens: protolens.clone(),
+					protolens,
 				}
 			},
 		};
@@ -537,7 +537,7 @@ impl CommandResult {
 }
 
 /// The result of a run cancelled by `reason`.
-fn cancelled_result(
+const fn cancelled_result(
 	reason: AbortReason,
 	stage_records: Vec<String>,
 	protolens_records: Vec<String>,
@@ -1035,7 +1035,6 @@ fn should_skip_env_var(key: &str) -> bool {
 	if is_macos_malloc_stack_logging_var(key) {
 		return true;
 	}
-
 
 	matches!(
 		key,

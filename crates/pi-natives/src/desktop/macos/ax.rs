@@ -570,10 +570,7 @@ fn web_family(pid: libc::pid_t) -> WebFamily {
 		}) {
 		return WebFamily::Electron;
 	}
-	let id = app
-		.bundleIdentifier()
-		.map(|id| id.to_string())
-		.unwrap_or_default();
+	let id = app.bundleIdentifier().map_or_default(|id| id.to_string());
 	let chromium = [
 		"com.google.Chrome",
 		"com.google.chrome.for.testing",

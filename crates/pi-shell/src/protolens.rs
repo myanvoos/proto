@@ -158,7 +158,7 @@ impl fmt::Debug for ProtolensProvider {
 impl ProtolensProvider {
 	/// Serve `protolens://` through `bridge`, delegating everything else to
 	/// `inner`.
-	pub fn new(inner: pi_vfs::Fs, bridge: ProtolensBridge, cwd: ProtolensCwd) -> Self {
+	pub const fn new(inner: pi_vfs::Fs, bridge: ProtolensBridge, cwd: ProtolensCwd) -> Self {
 		Self { inner, bridge, cwd }
 	}
 
@@ -222,6 +222,11 @@ pub fn is_protolens_path(path: &Path) -> bool {
 }
 
 /// The device a `protolens://` path names (`None` for the listing root).
+#[allow(
+	clippy::option_option,
+	reason = "the outer `None` means the path is not a protolens path; `Some(None)` is the listing \
+	          root"
+)]
 fn device_name(path: &Path) -> Option<Option<String>> {
 	let text = path.to_str()?;
 	let rest = text.strip_prefix("protolens://")?;
@@ -448,7 +453,7 @@ impl FileSystem for ProtolensProvider {
 	}
 }
 
-fn mode_options(mode: Option<u32>) -> pi_vfs::DirOptions {
+const fn mode_options(mode: Option<u32>) -> pi_vfs::DirOptions {
 	let mut options = pi_vfs::DirOptions::new();
 	if let Some(mode) = mode {
 		options = options.mode(mode);
@@ -464,7 +469,7 @@ struct MemoryFile {
 }
 
 impl MemoryFile {
-	fn new(data: Vec<u8>) -> Self {
+	const fn new(data: Vec<u8>) -> Self {
 		Self { data, pos: Mutex::new(0) }
 	}
 }

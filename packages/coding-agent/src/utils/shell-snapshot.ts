@@ -19,11 +19,11 @@ const inflightSnapshots = new Map<string, Promise<string | null>>();
 const failedSnapshots = new LRUCache<string, number>({ max: SNAPSHOT_CACHE_MAX_ENTRIES });
 const SNAPSHOT_FAILURE_RETRY_MS = 60_000;
 
-const BRUSH_INCOMPATIBLE_ALIAS_BODY = /[()|&;<>`]/;
+const SHELL_INCOMPATIBLE_ALIAS_BODY = /[()|&;<>`]/;
 
 const SNAPSHOT_ALIAS_LINE = /^alias -- ([^\s=]+)='(.*)'\s*$/;
 
-export function sanitizeSnapshotForBrush(content: string): { content: string; dropped: string[] } {
+export function sanitizeSnapshotForEngine(content: string): { content: string; dropped: string[] } {
 	const dropped: string[] = [];
 	const lines = content.split("\n");
 	const out: string[] = [];
@@ -31,7 +31,7 @@ export function sanitizeSnapshotForBrush(content: string): { content: string; dr
 		const m = line.match(SNAPSHOT_ALIAS_LINE);
 		if (m) {
 			const value = m[2].replace(/'\\''/g, "'");
-			if (BRUSH_INCOMPATIBLE_ALIAS_BODY.test(value)) {
+			if (SHELL_INCOMPATIBLE_ALIAS_BODY.test(value)) {
 				dropped.push(m[1]);
 				continue;
 			}
@@ -44,10 +44,10 @@ export function sanitizeSnapshotForBrush(content: string): { content: string; dr
 function scrubSnapshotInPlace(snapshotPath: string): void {
 	try {
 		const raw = fs.readFileSync(snapshotPath, "utf8");
-		const { content, dropped } = sanitizeSnapshotForBrush(raw);
+		const { content, dropped } = sanitizeSnapshotForEngine(raw);
 		if (dropped.length === 0) return;
 		fs.writeFileSync(snapshotPath, content);
-		logger.debug("shell-snapshot: dropped brush-incompatible aliases", { dropped });
+		logger.debug("shell-snapshot: dropped shell-incompatible aliases", { dropped });
 	} catch (err) {
 		logger.debug("shell-snapshot: scrub failed", { err: String(err) });
 	}

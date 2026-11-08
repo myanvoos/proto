@@ -417,11 +417,11 @@ impl BridgeItem for String {
 /// `busy` is held from the moment a chunk is taken until its batch has been
 /// forwarded, so an empty queue with `busy` clear really means no output is
 /// in transit (the PTY's stuck-open-slave check).
-pub(crate) async fn pump_chunks<T: BridgeItem>(
+pub(crate) async fn pump_chunks<T: BridgeItem + Send>(
 	rx: flume::Receiver<T>,
 	stall_timeout: Duration,
 	busy: Option<&AtomicBool>,
-	mut forward: impl AsyncFnMut(String) -> bool,
+	mut forward: impl AsyncFnMut(String) -> bool + Send,
 ) {
 	// Hard cap on one coalesced batch so the JS main thread never sees a
 	// multi-MB napi callback (a giant single string would stall sanitize +

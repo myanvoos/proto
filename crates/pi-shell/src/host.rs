@@ -48,7 +48,7 @@ pub const TERM_GRACE: Duration = Duration::from_secs(1);
 /// exported environment) so `node -e …` can become a cell, but a program the
 /// shell spawns must not inherit the bridge: it could then impersonate the
 /// cell, and the capability would outlive the run that granted it.
-pub(crate) fn is_session_bridge_env_var(key: &[u8]) -> bool {
+pub(crate) const fn is_session_bridge_env_var(key: &[u8]) -> bool {
 	matches!(key, b"PI_KERNEL_BRIDGE_ADDR" | b"PI_KERNEL_BRIDGE_TOKEN" | b"PI_KERNEL_FLEET_ROOT")
 }
 
@@ -384,7 +384,10 @@ impl TextSink {
 			(Self::Run, Self::Run) => true,
 			(Self::Capture(a), Self::Capture(b)) => {
 				a.same(b)
-					|| (!split && a.output_key().is_some_and(|key| b.output_key() == Some(key)))
+					|| (!split
+						&& a
+							.output_key()
+							.is_some_and(|key| b.output_key() == Some(key)))
 			},
 			_ => false,
 		}
@@ -486,17 +489,19 @@ impl Launcher {
 			redirs,
 			ctty,
 		} = spec;
-		let filtered = env.iter().any(|(name, _)| is_shell_local_var(name)).then(|| {
-			EnvView::new(
-				env
-					.iter()
-					.filter(|(name, _)| !is_shell_local_var(name))
-					.map(|(name, value)| {
-						(BString::from(name.as_bytes()), BString::from(value.as_bytes()))
-					})
-					.collect(),
-			)
-		});
+		let filtered = env
+			.iter()
+			.any(|(name, _)| is_shell_local_var(name))
+			.then(|| {
+				EnvView::new(
+					env.iter()
+						.filter(|(name, _)| !is_shell_local_var(name))
+						.map(|(name, value)| {
+							(BString::from(name.as_bytes()), BString::from(value.as_bytes()))
+						})
+						.collect(),
+				)
+			});
 		let env = filtered.as_ref().unwrap_or(env);
 		let mut spec = SpawnSpec {
 			path,
@@ -611,14 +616,14 @@ impl PiHost {
 	/// Whether the event sink also wants externals' output attributed
 	/// ([`crate::bash::EventSink::wants_output`]). Set by the session from the
 	/// sink; only such a sink makes the host relay external output.
-	pub fn set_observe_output(&mut self, observe: bool) {
+	pub const fn set_observe_output(&mut self, observe: bool) {
 		self.observe_output = observe;
 	}
 
 	/// Whether the event sink attributes an external's stdout and stderr
 	/// separately ([`crate::bash::EventSink::split_output`]). Set by the
 	/// session from the sink.
-	pub fn set_split_output(&mut self, split: bool) {
+	pub const fn set_split_output(&mut self, split: bool) {
 		self.split_output = split;
 		self.launcher.split = split;
 	}

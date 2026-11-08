@@ -346,8 +346,7 @@ fn python_function_entry(
 	);
 	let name = node
 		.child_by_field_name("name")
-		.map(|name| text_of(name, code))
-		.unwrap_or_default();
+		.map_or_default(|name| text_of(name, code));
 	entry.name = Some(format!("{name}({})", summarize_params(parameters_of(node), code)));
 	entry.detail = node
 		.child_by_field_name("return_type")
@@ -596,12 +595,8 @@ fn method_definition_entry(
 		])
 	});
 	let parameters = parameters_of(node);
-	let prefix = name_node
-		.map(|name| modifier_prefix(node, &name))
-		.unwrap_or_default();
-	let name = name_node
-		.map(|name| text_of(name, code))
-		.unwrap_or_default();
+	let prefix = name_node.map_or_default(|name| modifier_prefix(node, &name));
+	let name = name_node.map_or_default(|name| text_of(name, code));
 	let generator = if generator_token(node) { "*" } else { "" };
 	let mut entry = new_entry("method", line);
 	let joined = if prefix.is_empty() {
@@ -623,12 +618,8 @@ fn signature_method_entry(node: Node, code: &str) -> OutlineEntry {
 		.child_by_field_name("name")
 		.or_else(|| child_of_kind(node, &["property_identifier", "private_property_identifier"]));
 	let parameters = parameters_of(node);
-	let prefix = name_node
-		.map(|name| modifier_prefix(node, &name))
-		.unwrap_or_default();
-	let name = name_node
-		.map(|name| text_of(name, code))
-		.unwrap_or_default();
+	let prefix = name_node.map_or_default(|name| modifier_prefix(node, &name));
+	let name = name_node.map_or_default(|name| text_of(name, code));
 	let mut entry = new_entry("method", line);
 	entry.name = Some(if prefix.is_empty() {
 		format!("{name}({})", summarize_params(parameters, code))
@@ -682,8 +673,7 @@ fn function_entry(
 	);
 	let name = node
 		.child_by_field_name("name")
-		.map(|name| text_of(name, code))
-		.unwrap_or_default();
+		.map_or_default(|name| text_of(name, code));
 	let generator = if generator_token(node) { "*" } else { "" };
 	let parameters = parameters_of(node);
 	entry.name = Some(format!("{generator}{name}({})", summarize_params(parameters, code)));
@@ -814,8 +804,7 @@ fn for_entry(node: Node, code: &str, lang: SupportLang, kind: &str) -> OutlineEn
 	} else {
 		let target = node
 			.child_by_field_name("left")
-			.map(|n| text_of(n, code))
-			.unwrap_or_default();
+			.map_or_default(|n| text_of(n, code));
 		entry.name = Some(cap(target.trim(), 40));
 		entry.detail = node
 			.child_by_field_name("right")
@@ -1085,14 +1074,12 @@ fn walk_statement(
 				"with"
 			};
 			let mut entry = new_entry(kind, node.start_position().row as u32 + 1);
-			let items: Vec<String> = child_of_kind(node, &["with_clause"])
-				.map(|clause| {
-					named_iter(clause)
-						.filter(|item| item.kind() == "with_item")
-						.map(|item| cap(&text_of(item, code), 48))
-						.collect()
-				})
-				.unwrap_or_default();
+			let items: Vec<String> = child_of_kind(node, &["with_clause"]).map_or_default(|clause| {
+				named_iter(clause)
+					.filter(|item| item.kind() == "with_item")
+					.map(|item| cap(&text_of(item, code), 48))
+					.collect()
+			});
 			if !items.is_empty() {
 				entry.detail = Some(items.join(", "));
 			}
@@ -1549,7 +1536,7 @@ fn resolve_outline_language(lang: Option<&str>, path: Option<&str>) -> Option<Su
 	let alias: &str = if let Some(lang) = lang.map(str::trim).filter(|lang| !lang.is_empty()) {
 		lang
 	} else {
-		extension = path.map(extension_of).unwrap_or_default();
+		extension = path.map_or_default(extension_of);
 		extension.as_str()
 	};
 	if alias.is_empty() {

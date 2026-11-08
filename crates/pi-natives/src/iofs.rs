@@ -2,7 +2,6 @@
 
 use napi::{JsString, bindgen_prelude::*};
 use napi_derive::napi;
-
 use pi_vfs::held;
 
 /// Whether `path` is a SQLite database or `-shm` index this process holds open.

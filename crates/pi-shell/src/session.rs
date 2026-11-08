@@ -332,13 +332,8 @@ impl Session {
 		let engine = Engine::new(EngineConfig { end_orphan_jobs: true, ..EngineConfig::default() });
 		let mut store = MemStore::new();
 		// A program's shell: no history, line editor or completion system.
-		let init = ShellInit {
-			env,
-			cwd,
-			profile: Profile::Tool,
-			proto_errors: true,
-			..ShellInit::default()
-		};
+		let init =
+			ShellInit { env, cwd, profile: Profile::Tool, proto_errors: true, ..ShellInit::default() };
 		let mut shell = Shell::create(&engine, &mut Cx { host: &mut host, store: &mut store }, init)
 			.map_err(SessionError::Create)?;
 		// Nothing observes events: skip building them.
@@ -890,10 +885,9 @@ struct PythonPathOverlay {
 /// command's own `PYTHONPATH` or the shell's current one. Returns the injected
 /// root and value so the run can reconcile a command's own `PYTHONPATH`
 /// changes afterwards.
-fn with_python_path(
-	env: Vec<(BString, BString)>,
-	shell_path: Option<BString>,
-) -> (Vec<(BString, BString)>, Option<(BString, BString)>) {
+type PythonPathEnv = (Vec<(BString, BString)>, Option<(BString, BString)>);
+
+fn with_python_path(env: Vec<(BString, BString)>, shell_path: Option<BString>) -> PythonPathEnv {
 	let Some(root) = env
 		.iter()
 		.find(|(name, _)| crate::host::is_python_harness_env_var(name.as_bytes()))

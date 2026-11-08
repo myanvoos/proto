@@ -194,8 +194,8 @@ impl File for PipeReader {
 
 impl PipeWriter {
 	fn write_into(
-		&mut self,
-		cx: &mut Context<'_>,
+		&self,
+		cx: &Context<'_>,
 		buf: &[u8],
 		tag: Option<crate::bash::ids::CmdTag>,
 	) -> Poll<io::Result<usize>> {

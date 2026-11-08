@@ -64,10 +64,10 @@ enum PairRoute<'a> {
 /// [`Fs::mount_file`] overlays share one provider and one close tracker.
 #[derive(Clone)]
 pub struct Fs {
-	provider: Option<Arc<dyn FileSystem>>,
-	mounts:   Option<Arc<Vec<Arc<Mount>>>>,
-	scope:    Scope,
-	observer: Option<Arc<dyn FsObserver>>,
+	provider:          Option<Arc<dyn FileSystem>>,
+	mounts:            Option<Arc<Vec<Arc<Mount>>>>,
+	scope:             Scope,
+	observer:          Option<Arc<dyn FsObserver>>,
 	/// Whether opening a file for reading reports it automatically. A search
 	/// tool turns this off and reports the files it matched itself
 	/// ([`Fs::note_read`]), as pi's `grep`/`rg` do.
@@ -100,12 +100,7 @@ impl WriteTicket {
 /// operation they describe.
 pub trait FsObserver: Send + Sync + fmt::Debug {
 	/// Before an open; an error refuses it (before any truncation).
-	fn prepare_open(
-		&self,
-		path: &Path,
-		read: bool,
-		write: bool,
-	) -> io::Result<Option<WriteTicket>> {
+	fn prepare_open(&self, path: &Path, read: bool, write: bool) -> io::Result<Option<WriteTicket>> {
 		let _ = (path, read, write);
 		Ok(None)
 	}
@@ -782,14 +777,14 @@ impl Fs {
 	/// A filesystem backed by `provider`.
 	pub fn new(provider: Arc<dyn FileSystem>) -> Self {
 		Self {
-			provider: Some(provider),
-			mounts:   None,
-			scope:    Scope {
+			provider:          Some(provider),
+			mounts:            None,
+			scope:             Scope {
 				cancel:        None,
 				closes:        Some(Arc::new(CloseTracker::default())),
 				creation_mask: None,
 			},
-			observer: None,
+			observer:          None,
 			read_observations: true,
 		}
 	}
@@ -834,12 +829,7 @@ impl Fs {
 	}
 
 	/// [`FsObserver::prepare_open`], when an observer is installed.
-	fn prepare_open(
-		&self,
-		path: &Path,
-		read: bool,
-		write: bool,
-	) -> io::Result<Option<WriteTicket>> {
+	fn prepare_open(&self, path: &Path, read: bool, write: bool) -> io::Result<Option<WriteTicket>> {
 		match &self.observer {
 			Some(observer) => observer.prepare_open(path, read, write),
 			None => Ok(None),
@@ -1401,14 +1391,13 @@ impl Fs {
 			PairRoute::Native => {
 				std::fs::hard_link(original, link)?;
 				self.record_write(link, false);
-				Ok(())
 			},
 			PairRoute::Provider(provider) => {
 				self.guard(provider.hard_link(original, link)).await?;
 				self.record_write(link, true);
-				Ok(())
 			},
 		}
+		Ok(())
 	}
 
 	/// Creates `link` pointing at `target` (stored verbatim). Windows picks a
@@ -2115,14 +2104,13 @@ impl BlockingFs {
 			PairRoute::Native => {
 				std::fs::hard_link(original, link)?;
 				self.fs.record_write(link, false);
-				Ok(())
 			},
 			PairRoute::Provider(provider) => {
 				self.run(provider.hard_link(original, link))?;
 				self.fs.record_write(link, true);
-				Ok(())
 			},
 		}
+		Ok(())
 	}
 
 	/// See [`Fs::symlink`].
