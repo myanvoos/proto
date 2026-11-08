@@ -1,9 +1,9 @@
 //! Shared POSIX basic-regular-expression translation.
 //!
-//! `grep` and `sed` both accept BREs but compile them with different engines
-//! (`grep-regex` and `fancy-regex` respectively), neither of which implements
-//! BRE syntax. This module converts a BRE into the ERE-compatible form those
-//! engines accept, so the dialect is defined in exactly one place.
+//! `grep`, `sed`, and `nl` accept BREs but compile them with different engines
+//! (`grep-regex` for `grep`, `fancy-regex` for the others), neither of which
+//! implements BRE syntax. This module converts a BRE into the ERE-compatible
+//! form those engines accept, so the dialect is defined in exactly one place.
 
 /// Whether the target engine supports back-references.
 ///
@@ -369,11 +369,7 @@ pub(crate) fn ere_literalize_braces(pattern: &str) -> std::borrow::Cow<'_, str> 
 		}
 	}
 
-	if rewrote {
-		std::borrow::Cow::Owned(result)
-	} else {
-		std::borrow::Cow::Borrowed(pattern)
-	}
+	if rewrote { std::borrow::Cow::Owned(result) } else { std::borrow::Cow::Borrowed(pattern) }
 }
 
 /// True when an ERE contains a repetition operator with nothing to repeat.
@@ -461,4 +457,227 @@ fn opens_interval(rest: &str) -> bool {
 		}
 	}
 	chars.next() == Some('}')
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn ere(pattern: &str) -> String {
+		bre_to_ere(pattern, Backrefs::Supported).expect("translatable")
+	}
+
+	fn ere_err(pattern: &str) -> Option<BreError> {
+		bre_to_ere(pattern, Backrefs::Supported).err()
+	}
+
+	// Relocated from `sed`, which owned this translation before `grep` shared it.
+
+	#[test]
+	fn test_bre_group_translation() {
+		assert_eq!(ere(r"\(a\?b\+c\|\)"), "(a?b+c|)");
+		assert_eq!(ere(r"a\(b\)c"), "a(b)c");
+	}
+
+	#[test]
+	fn test_bre_brace_quantifier_translation() {
+		assert_eq!(ere(r"a\{1,4\}"), "a{1,4}");
+		assert_eq!(ere(r"\(a\)\{1,4\}"), "(a){1,4}");
+	}
+
+	#[test]
+	fn test_ere_metacharacters_escaped() {
+		assert_eq!(ere(r"a+b?c{1}|(d)"), r"a\+b\?c\{1\}\|\(d\)");
+	}
+
+	#[test]
+	fn test_literal_backslashes_preserved() {
+		assert_eq!(ere(r"foo\\bar"), r"foo\\bar");
+		assert_eq!(ere(r"\."), r"\.");
+	}
+
+	#[test]
+	fn test_character_classes_unchanged() {
+		assert_eq!(ere(r"[a-z]"), "[a-z]");
+		assert_eq!(ere(r"[^0-9]"), "[^0-9]");
+	}
+
+	#[test]
+	fn test_anchors_and_dot_and_star() {
+		assert_eq!(ere(r"^a.*b$"), "^a.*b$");
+	}
+
+	#[test]
+	fn test_trailing_backslash_is_preserved() {
+		assert_eq!(ere(r"abc\"), r"abc\");
+	}
+
+	#[test]
+	fn test_caret_escaped_in_middle() {
+		assert_eq!(ere(r"^a^[^x]c"), r"^a\^[^x]c");
+	}
+
+	#[test]
+	fn test_dollar_escaped_in_middle() {
+		assert_eq!(ere(r"a$c$"), r"a\$c$");
+	}
+
+	#[test]
+	fn test_bre_back_reference() {
+		assert_eq!(ere(r"\(.\)\1\(.\)\2"), r"(.)(?:\1)(.)(?:\2)");
+	}
+
+	#[test]
+	fn back_references_pass_through_when_the_engine_does_not() {
+		// THE FALLBACK CONTRACT, stated because `grep` depends on it.
+		//
+		// `grep-regex` cannot compile a back-reference at all. Rather than
+		// inventing a translation, the sequence is emitted unchanged, so the
+		// pattern fails to compile and `grep`'s `build_default_matcher`
+		// escapes it and matches it LITERALLY - which is exactly what
+		// happened before this module existed. The behaviour is unchanged by
+		// the refactor; it is not an endorsement of matching `\1` literally.
+		assert_eq!(
+			bre_to_ere(r"\(a\)\1", Backrefs::Unsupported).expect("translatable"),
+			r"(a)\1"
+		);
+		// The grouping exists only for engines that support them, where a
+		// bare `\11` would otherwise read as group 11 instead of group 1
+		// followed by a literal '1'.
+		assert_eq!(ere(r"\(a\)\11"), r"(a)(?:\1)1");
+	}
+
+	// ── Repetition operators with no preceding atom ──────────────────────────
+	// POSIX BRE: a repetition character with nothing to repeat is a LITERAL.
+	// Emitting it as an operator lets the Rust engine compile `^+` as `(?:^)+`,
+	// which matches the empty string at every line start - so the pattern
+	// silently matches EVERY line instead of the intended few.
+
+	#[test]
+	fn escaped_plus_at_pattern_start_is_a_literal() {
+		assert_eq!(ere(r"\+"), r"\+");
+	}
+
+	#[test]
+	fn escaped_plus_after_anchor_is_a_literal() {
+		assert_eq!(ere(r"^\+"), r"^\+");
+	}
+
+	#[test]
+	fn escaped_question_after_anchor_is_a_literal() {
+		assert_eq!(ere(r"^\?"), r"^\?");
+	}
+
+	#[test]
+	fn escaped_brace_quantifier_with_no_operand_is_rejected() {
+		// Neither a literal nor an operator: an ERROR, which is what both
+		// tools do. Emitting the operator and leaving it to the engine was
+		// measurably wrong - `^{2}` and `^{1,4}` COMPILE as `(?:^){2}`, which
+		// matches at every line start, so the pattern silently selected the
+		// whole file with exit 0.
+		assert_eq!(ere_err(r"^\{2\}"), Some(BreError::RepetitionOperandMissing));
+		assert_eq!(ere_err(r"\{1,4\}"), Some(BreError::RepetitionOperandMissing));
+		assert_eq!(ere_err(r"\(\{2\}\)"), Some(BreError::RepetitionOperandMissing));
+		assert_eq!(ere_err(r"a\|\{2\}"), Some(BreError::RepetitionOperandMissing));
+		// With an operand it is an ordinary quantifier.
+		assert_eq!(ere_err(r"a\{2\}"), None);
+	}
+
+	#[test]
+	fn caret_is_an_anchor_after_group_open_and_alternation() {
+		// Measured: `grep '\(^alpha\)'` matches on GNU and BSD grep. Keying
+		// this off "start of pattern" escaped the anchor and matched nothing.
+		assert_eq!(ere(r"\(^a\)"), r"(^a)");
+		assert_eq!(ere(r"a\|^b"), r"a|^b");
+		assert_eq!(ere(r"\(^a\|^b\)"), r"(^a|^b)");
+		// Still a literal where an atom precedes it.
+		assert_eq!(ere(r"a^b"), r"a\^b");
+		assert_eq!(ere(r"^a^"), r"^a\^");
+	}
+
+	#[test]
+	fn bare_star_at_pattern_start_is_a_literal() {
+		assert_eq!(ere(r"*x"), r"\*x");
+	}
+
+	#[test]
+	fn bare_star_after_anchor_is_a_literal() {
+		assert_eq!(ere(r"^*"), r"^\*");
+	}
+
+	#[test]
+	fn repetition_after_group_open_is_a_literal() {
+		assert_eq!(ere(r"\(\+a\)"), r"(\+a)");
+		assert_eq!(ere(r"\(*a\)"), r"(\*a)");
+	}
+
+	#[test]
+	fn repetition_after_alternation_is_a_literal() {
+		assert_eq!(ere(r"a\|\+b"), r"a|\+b");
+	}
+
+	// The operator cases these must not break.
+
+	#[test]
+	fn repetition_with_an_operand_stays_an_operator() {
+		assert_eq!(ere(r"a\+"), r"a+");
+		assert_eq!(ere(r"a\?"), r"a?");
+		assert_eq!(ere(r"a\{2\}"), r"a{2}");
+		assert_eq!(ere(r"a*"), r"a*");
+		assert_eq!(ere(r"^a\+"), r"^a+");
+		assert_eq!(ere(r"\(a\)\+"), r"(a)+");
+		assert_eq!(ere(r"[a-z]\+"), r"[a-z]+");
+		assert_eq!(ere(r".\+"), r".+");
+	}
+
+	// ── ERE operand validation ───────────────────────────────────────────────
+
+	#[cfg(feature = "util.grep")]
+	#[test]
+	fn ere_rejects_repetition_with_no_operand() {
+		for pattern in ["^+", "^*", "^?", "^{2}", "*x", "+", "(+)", "a|+b", "(|+)"] {
+			assert!(ere_repetition_operand_missing(pattern), "should reject {pattern}");
+		}
+	}
+
+	#[cfg(feature = "util.grep")]
+	#[test]
+	fn ere_accepts_repetition_with_an_operand() {
+		for pattern in [
+			"a+",
+			"^a+",
+			"a{2}",
+			"[a-z]+",
+			".*",
+			r"\++",     // an escaped plus is a literal, so it IS an operand
+			"[^x]*",    // negated class, not an anchor
+			"[]]*",     // `]` first in a class is a literal
+			"[^]]*",    // and after a negation too
+			"(a)+",
+			"a|b+",
+			"$",
+			r"\\",
+			r"a\",      // trailing backslash: not our error to report
+			// A `{` that opens no interval is a LITERAL, not an operator.
+			// Measured: `grep -E '^{'` and `grep -E '{a}'` match nothing and
+			// report no error, while `grep -E '{1}'` IS invalid. Rejecting
+			// every `{` refused patterns the real tool accepts.
+			"^{",
+			"{",
+			"{a}",
+			"{,5}",
+			"^{}",
+			"{1a}",
+		] {
+			assert!(!ere_repetition_operand_missing(pattern), "should accept {pattern}");
+		}
+	}
+
+	#[cfg(feature = "util.grep")]
+	#[test]
+	fn ere_rejects_only_intervals_that_really_open() {
+		for pattern in ["{1}", "^{2}", "{3,}", "{4,5}", "(|{6})"] {
+			assert!(ere_repetition_operand_missing(pattern), "should reject {pattern}");
+		}
+	}
 }

@@ -1,15 +1,20 @@
+//! `cmp` builtin: compare two files byte by byte.
+//!
+//! Ported from the `pi-shell` in-process implementation.
+
 use std::{
 	ffi::{OsStr, OsString},
-	fs::{self, File},
 	io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
 	path::Path,
-	sync::atomic::{AtomicBool, Ordering},
+	sync::{
+		atomic::{AtomicBool, Ordering},
+	},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use pi_vfs::{BlockingFs, File};
 
-use crate::host::{Host, Stdin, Utility, format_usage, matches_parser, util};
+use crate::host::{Host, Stdin, Utility, format_usage, matches_parser};
 
 const OPT_PRINT_BYTES: &str = "print-bytes";
 const OPT_IGNORE_INITIAL: &str = "ignore-initial";
@@ -56,9 +61,18 @@ impl Read for InputReader<'_> {
 
 impl InputReader<'_> {
 	fn skip(&mut self, count: u64) -> io::Result<()> {
+		if count == 0 {
+			return Ok(());
+		}
 		match self {
 			Self::File(file) => {
-				file.seek(SeekFrom::Start(count))?;
+				match file.seek(SeekFrom::Start(count)) {
+					Ok(_) => {},
+					Err(error) if matches!(error.kind(), io::ErrorKind::Unsupported | io::ErrorKind::NotSeekable) => {
+						io::copy(&mut file.take(count), &mut io::sink())?;
+					},
+					Err(error) => return Err(error),
+				}
 			},
 			Self::Bytes(bytes) => {
 				let length = u64::try_from(bytes.get_ref().len()).unwrap_or(u64::MAX);
@@ -77,6 +91,7 @@ struct Input<'a> {
 	regular_len: Option<u64>,
 }
 
+/// Parsed `cmp` invocation.
 pub(crate) struct Cmp {
 	matches: ArgMatches,
 }
@@ -212,23 +227,26 @@ fn compare(matches: &ArgMatches, host: &mut Host) -> Result<i32, String> {
 	};
 	let path1 = (name1 != OsStr::new("-")).then(|| host.resolve(name1));
 	let path2 = (name2 != OsStr::new("-")).then(|| host.resolve(name2));
-	for path in [&path1, &path2].into_iter().flatten() {
-		host.note_read(path);
-	}
 	let cancel = host.cancel_flag();
+	// Cloned so file inputs do not hold a `host` borrow alongside the
+	// `&mut host.stdin` input.
+	let fs = host.fs().clone();
+	// `-l`/`-x` print one line per differing byte: buffer them through the
+	// stdout writer rather than one raw write per formatted piece. Created
+	// first, as it method-borrows `host`.
 	let mut stdout = host.stdout_writer();
 
 	let compared = if name1 == OsStr::new("-") {
 		let input1 = stdin_input(&mut host.stdin);
-		let input2 = open_input(name2, path2.as_deref().unwrap(), options.no_follow)?;
+		let input2 = open_input(&fs, name2, path2.as_deref().unwrap(), options.no_follow)?;
 		compare_inputs(input1, input2, name1, name2, options, &mut stdout, &mut host.stderr, &cancel)
 	} else if name2 == OsStr::new("-") {
-		let input1 = open_input(name1, path1.as_deref().unwrap(), options.no_follow)?;
+		let input1 = open_input(&fs, name1, path1.as_deref().unwrap(), options.no_follow)?;
 		let input2 = stdin_input(&mut host.stdin);
 		compare_inputs(input1, input2, name1, name2, options, &mut stdout, &mut host.stderr, &cancel)
 	} else {
-		let input1 = open_input(name1, path1.as_deref().unwrap(), options.no_follow)?;
-		let input2 = open_input(name2, path2.as_deref().unwrap(), options.no_follow)?;
+		let input1 = open_input(&fs, name1, path1.as_deref().unwrap(), options.no_follow)?;
+		let input2 = open_input(&fs, name2, path2.as_deref().unwrap(), options.no_follow)?;
 		compare_inputs(input1, input2, name1, name2, options, &mut stdout, &mut host.stderr, &cancel)
 	};
 	// Output before a failure still lands, ahead of the error message.
@@ -313,15 +331,15 @@ fn stdin_input(stdin: &mut Stdin) -> Input<'_> {
 	}
 }
 
-fn open_input<'a>(name: &OsStr, path: &Path, no_follow: bool) -> Result<Input<'a>, String> {
+fn open_input<'a>(fs: &BlockingFs, name: &OsStr, path: &Path, no_follow: bool) -> Result<Input<'a>, String> {
 	let metadata = if no_follow {
-		fs::symlink_metadata(path)
+		fs.symlink_metadata(path)
 	} else {
-		fs::metadata(path)
+		fs.metadata(path)
 	}
 	.map_err(|err| input_error(name, &err))?;
 	if no_follow && metadata.file_type().is_symlink() {
-		let target = fs::read_link(path).map_err(|err| input_error(name, &err))?;
+		let target = fs.read_link(path).map_err(|err| input_error(name, &err))?;
 		return Ok(Input {
 			reader:      BufReader::with_capacity(
 				BUFFER_SIZE,
@@ -334,7 +352,7 @@ fn open_input<'a>(name: &OsStr, path: &Path, no_follow: bool) -> Result<Input<'a
 		return Err(format!("{}: Is a directory", display_name(name)));
 	}
 	let regular_len = metadata.is_file().then_some(metadata.len());
-	let file = brush_core::heldfiles::open_read(path).map_err(|err| input_error(name, &err))?;
+	let file = fs.open(path).map_err(|err| input_error(name, &err))?;
 	Ok(Input { reader: BufReader::with_capacity(BUFFER_SIZE, InputReader::File(file)), regular_len })
 }
 
@@ -353,8 +371,13 @@ fn compare_inputs(
 		&& len1 != len2
 	{
 		if !options.quiet {
-			writeln!(stdout, "{} {} differ: size", display_name(name1), display_name(name2))
-				.map_err(io_message)?;
+			writeln!(
+				stdout,
+				"{} {} differ: size",
+				display_name(name1),
+				display_name(name2)
+			)
+			.map_err(io_message)?;
 		}
 		return Ok(1);
 	}
@@ -412,8 +435,13 @@ fn compare_readers(
 			different = true;
 			if !options.quiet {
 				let eof_name = if left.is_empty() { name1 } else { name2 };
-				writeln!(stderr, "cmp: EOF on {} after byte {}", display_name(eof_name), compared)
-					.map_err(io_message)?;
+				writeln!(
+					stderr,
+					"cmp: EOF on {} after byte {}",
+					display_name(eof_name),
+					compared
+				)
+				.map_err(io_message)?;
 			}
 			break;
 		}
@@ -540,6 +568,87 @@ fn io_message(err: io::Error) -> String {
 	err.to_string()
 }
 
-pub(crate) fn cmp_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Cmp, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::PathBuf};
+
+	use super::Cmp;
+	use crate::host::run_util;
+
+	fn run_in(cwd: PathBuf, stdin: &str, args: &[&str]) -> (i32, String, String) {
+		let (code, capture) = run_util::<Cmp>(args, stdin, cwd);
+		(code, capture.out(), capture.err())
+	}
+
+	fn tempdir() -> (tempfile::TempDir, PathBuf) {
+		let dir = tempfile::tempdir().unwrap();
+		let path = fs::canonicalize(dir.path()).unwrap();
+		(dir, path)
+	}
+
+	#[test]
+	fn silent_mode_reports_only_status() {
+		let (_dir, root) = tempdir();
+		fs::write(root.join("a"), b"same").unwrap();
+		fs::write(root.join("b"), b"same").unwrap();
+		fs::write(root.join("c"), b"different").unwrap();
+
+		assert_eq!(run_in(root.clone(), "", &["-s", "a", "b"]), (0, String::new(), String::new()));
+		assert_eq!(run_in(root, "", &["-s", "a", "c"]), (1, String::new(), String::new()));
+	}
+
+	#[test]
+	fn default_output_reports_first_byte_and_line() {
+		let (_dir, root) = tempdir();
+		fs::write(root.join("a"), b"one\ntwo\n").unwrap();
+		fs::write(root.join("b"), b"one\ntXo\n").unwrap();
+
+		let (code, stdout, stderr) = run_in(root, "", &["a", "b"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "a b differ: char 6, line 2\n");
+		assert_eq!(stderr, "");
+	}
+
+	#[test]
+	fn stdin_skips_and_limit_follow_cmp_contract() {
+		let (_dir, root) = tempdir();
+		fs::write(root.join("file"), b"abc").unwrap();
+
+		assert_eq!(
+			run_in(root.clone(), "xxabc", &["-i", "0:2", "file"]),
+			(0, String::new(), String::new())
+		);
+		assert_eq!(run_in(root, "abZ", &["-n", "0x2", "file"]), (0, String::new(), String::new()));
+	}
+
+	#[test]
+	fn verbose_and_bsd_hex_modes_report_every_difference() {
+		let (_dir, root) = tempdir();
+		fs::write(root.join("a"), b"abc").unwrap();
+		fs::write(root.join("b"), b"axd").unwrap();
+
+		let (code, stdout, stderr) = run_in(root.clone(), "", &["-l", "a", "b"]);
+		assert_eq!((code, stdout.as_str(), stderr.as_str()), (1, "2 142 170\n3 143 144\n", ""));
+
+		let (code, stdout, stderr) = run_in(root, "", &["-x", "a", "b"]);
+		assert_eq!(
+			(code, stdout.as_str(), stderr.as_str()),
+			(1, "00000001 62 78\n00000002 63 64\n", "")
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn no_follow_compares_symlink_targets() {
+		let (_dir, root) = tempdir();
+		fs::write(root.join("a"), b"same").unwrap();
+		fs::write(root.join("b"), b"same").unwrap();
+		std::os::unix::fs::symlink("a", root.join("left")).unwrap();
+		std::os::unix::fs::symlink("b", root.join("right")).unwrap();
+
+		let (code, stdout, stderr) = run_in(root, "", &["-h", "left", "right"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "left right differ: char 1, line 1\n");
+		assert_eq!(stderr, "");
+	}
 }

@@ -1,12 +1,16 @@
-use brush_core::{ShellExtensions, builtins::Registration};
+//! `sha224sum` builtin: compute and check SHA-224 digests.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use clap::ArgMatches;
 use uucore::checksum::AlgoKind;
 
 use crate::{
 	cksum,
-	host::{Host, Utility, matches_parser, util},
+	host::{Host, Utility, matches_parser},
 };
 
+/// Parsed `sha224sum` invocation.
 pub(crate) struct Sha224sum {
 	matches: ArgMatches,
 }
@@ -24,8 +28,4 @@ impl Utility for Sha224sum {
 
 fn app() -> clap::Command {
 	cksum::command(Sha224sum::NAME, false)
-}
-
-pub(crate) fn sha224sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Sha224sum, SE>()
 }

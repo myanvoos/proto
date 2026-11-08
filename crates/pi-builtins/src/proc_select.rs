@@ -3,7 +3,7 @@
 //!
 //! Errors are `(exit status, message)` pairs, matching both callers' parsers.
 
-use std::path::Path;
+use crate::host::ShellPaths;
 
 pub(crate) fn parse_i32_list(value: &str, target: &mut Vec<i32>) -> Result<(), (u8, String)> {
 	for item in value.split(',') {
@@ -42,7 +42,7 @@ pub(crate) fn parse_group_list(value: &str, target: &mut Vec<u32>) -> Result<(),
 pub(crate) fn parse_terminal_list(
 	value: &str,
 	target: &mut Vec<Option<u64>>,
-	paths: &Path,
+	paths: &ShellPaths,
 ) -> Result<(), (u8, String)> {
 	for item in value.split(',') {
 		if matches!(item, "?" | "-") {
@@ -61,24 +61,24 @@ pub(crate) fn parse_terminal_list(
 /// Device number of terminal `value`: an absolute or virtual path, a name
 /// under `/dev`, or a `/dev/tty` suffix (`pts/0`, `S0`).
 #[cfg(unix)]
-fn resolve_terminal(value: &str, paths: &Path) -> Option<u64> {
-	use std::{
-		os::unix::fs::MetadataExt,
-		path::{Path, PathBuf},
-	};
-	let primary = if value.starts_with('/') {
+fn resolve_terminal(value: &str, paths: &ShellPaths) -> Option<u64> {
+	use std::path::{Path, PathBuf};
+	let virtual_path = pi_vfs::is_virtual_path(Path::new(value));
+	let primary = if value.starts_with('/') || virtual_path {
 		PathBuf::from(value)
 	} else {
 		Path::new("/dev").join(value)
 	};
-	let _ = paths;
-	std::fs::metadata(primary)
-		.or_else(|_| std::fs::metadata(Path::new("/dev").join(format!("tty{value}"))))
-		.ok()
-		.map(|metadata| metadata.rdev())
+	let metadata = paths.fs().metadata(&primary);
+	let metadata = if virtual_path {
+		metadata
+	} else {
+		metadata.or_else(|_| paths.fs().metadata(Path::new("/dev").join(format!("tty{value}"))))
+	};
+	metadata.ok().and_then(|metadata| metadata.rdev())
 }
 
 #[cfg(not(unix))]
-fn resolve_terminal(_value: &str, _paths: &Path) -> Option<u64> {
+fn resolve_terminal(_value: &str, _paths: &ShellPaths) -> Option<u64> {
 	None
 }

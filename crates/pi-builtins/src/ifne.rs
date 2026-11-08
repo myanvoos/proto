@@ -1,18 +1,29 @@
+//! moreutils-inspired `ifne` builtin: run a command iff stdin is non-empty
+//! (`-n` inverts the condition).
+//!
+//! This is one of the selected moreutils tools kept in-process so its standard
+//! streams, working directory, environment, and cancellation come from the
+//! invoking shell. The command runs through the shell's own dispatch
+//! ([`Host::run_command`](crate::host::Host::run_command)): builtins first, and
+//! its words are never re-parsed.
+
 use std::{
 	ffi::OsString,
 	io::{self, ErrorKind, Read, Write},
-	process::{Command, Stdio},
 	sync::atomic::{AtomicBool, Ordering},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command as ClapCommand, builder::ValueParser};
 
-use crate::host::{Host, Utility, matches_parser, util};
+use crate::{
+	host::{Host, ShellCommand, Utility, matches_parser},
+	openfile::Fd,
+};
 
 const USAGE: &str = "usage: ifne [-n] command [args...]";
 const CHUNK: usize = 64 * 1024;
 
+/// Parsed `ifne` invocation.
 pub(crate) struct Ifne {
 	matches: ArgMatches,
 }
@@ -21,6 +32,7 @@ matches_parser!(Ifne, app);
 
 impl Utility for Ifne {
 	const NAME: &'static str = "ifne";
+	const RUNS_COMMANDS: bool = true;
 
 	fn run(self, host: &mut Host) -> i32 {
 		let invert = self.matches.get_flag("invert");
@@ -35,6 +47,8 @@ impl Utility for Ifne {
 			return 1;
 		}
 
+		// Probe stdin: one byte decides which mode acts. Check cancellation both
+		// before the potentially blocking read and after cancellation-induced EOF.
 		let mut first = [0u8; 1];
 		let got = loop {
 			if host.is_cancelled() {
@@ -60,11 +74,17 @@ impl Utility for Ifne {
 
 		if empty != invert {
 			if empty {
+				// Default mode, empty stdin: do nothing.
 				return 0;
 			}
-
+			// -n mode, non-empty stdin: pass stdin through, don't run the command.
 			let cancel = host.cancel_flag();
-			return match copy_cancellable(&mut host.stdin, &mut host.stdout, Some(first[0]), &cancel) {
+			return match copy_cancellable(
+				&mut host.stdin,
+				&mut host.stdout,
+				Some(first[0]),
+				&cancel,
+			) {
 				Ok(()) => 0,
 				Err(CopyError::Cancelled) => 130,
 				Err(CopyError::Io(err)) => {
@@ -74,10 +94,11 @@ impl Utility for Ifne {
 			};
 		}
 
-		spawn_and_pump(host, &command, if empty { None } else { Some(first[0]) })
+		run_with_input(host, command, if empty { None } else { Some(first[0]) })
 	}
 }
 
+/// The `ifne` argument model.
 fn app() -> ClapCommand {
 	ClapCommand::new(Ifne::NAME)
 		.disable_version_flag(true)
@@ -98,72 +119,50 @@ fn app() -> ClapCommand {
 		)
 }
 
-fn spawn_and_pump(host: &mut Host, command: &[OsString], first: Option<u8>) -> i32 {
-	let mut child = match Command::new(&command[0])
-		.args(&command[1..])
-		.current_dir(host.cwd())
-		.env_clear()
-		.envs(host.env())
-		.stdin(Stdio::piped())
-		.stdout(Stdio::piped())
-		.stderr(Stdio::piped())
-		.spawn()
-	{
-		Ok(child) => child,
+/// Runs `command` through the shell with the rest of stdin (after the probed
+/// `first` byte) piped in, returning its status.
+fn run_with_input(host: &mut Host, command: Vec<OsString>, first: Option<u8>) -> i32 {
+	let name = command[0].to_string_lossy().into_owned();
+	let pumped = io::pipe().and_then(|(reader, writer)| Ok((reader, writer, host.stdin.try_clone()?)));
+	let (reader, mut writer, mut input) = match pumped {
+		Ok(pumped) => pumped,
 		Err(err) => {
-			host.error(format!("{}: {err}", command[0].to_string_lossy()), 127);
-			return 127;
-		},
-	};
-
-	let mut child_stdin = child.stdin.take().expect("piped stdin");
-	let mut child_stdout = child.stdout.take().expect("piped stdout");
-	let mut child_stderr = child.stderr.take().expect("piped stderr");
-	let cancel = host.cancel_flag();
-
-	let (out_buf, err_buf, pump) = std::thread::scope(|scope| {
-		let out = scope.spawn(move || {
-			let mut buf = Vec::new();
-			let _ = child_stdout.read_to_end(&mut buf);
-			buf
-		});
-		let err = scope.spawn(move || {
-			let mut buf = Vec::new();
-			let _ = child_stderr.read_to_end(&mut buf);
-			buf
-		});
-
-		let pump = match copy_cancellable(&mut host.stdin, &mut child_stdin, first, &cancel) {
-			Err(CopyError::Io(err)) if err.kind() != ErrorKind::BrokenPipe => Err(CopyError::Io(err)),
-			Err(CopyError::Cancelled) => Err(CopyError::Cancelled),
-			_ => Ok(()),
-		};
-		drop(child_stdin);
-		if matches!(pump, Err(CopyError::Cancelled)) {
-			let _ = child.kill();
-		}
-		(out.join().unwrap_or_default(), err.join().unwrap_or_default(), pump)
-	});
-
-	let status = child.wait();
-	let _ = host.stdout.write_all(&out_buf);
-	let _ = host.stderr.write_all(&err_buf);
-
-	match pump {
-		Err(CopyError::Cancelled) => return 130,
-		Err(CopyError::Io(err)) => {
 			host.error(err, 1);
 			return 1;
 		},
-		Ok(()) => {},
-	}
+	};
+	let cancel = host.cancel_flag();
+	let pump = std::thread::spawn(move || {
+		// A command that exits without reading all its input (`ifne head -1`)
+		// closes the pipe; that is not an error.
+		match copy_cancellable(&mut input, &mut writer, first, &cancel) {
+			Err(CopyError::Io(err)) if err.kind() == ErrorKind::BrokenPipe => Ok(()),
+			result => result,
+		}
+	});
+	let status = host.run_command(ShellCommand::new(command).stdin(Fd::from(reader)));
+	let pumped = pump.join().unwrap_or(Ok(()));
 
-	match status {
-		Ok(status) => exit_code(status),
+	let status = match status {
+		Ok(status) => status,
 		Err(err) => {
+			let code = match err.kind() {
+				ErrorKind::NotFound => 127,
+				ErrorKind::PermissionDenied => 126,
+				ErrorKind::Interrupted => return 130,
+				_ => 1,
+			};
+			host.error(format!("{name}: {err}"), code);
+			return code;
+		},
+	};
+	match pumped {
+		Err(CopyError::Cancelled) => 130,
+		Err(CopyError::Io(err)) => {
 			host.error(err, 1);
 			1
 		},
+		Ok(()) => status.code(),
 	}
 }
 
@@ -172,6 +171,7 @@ enum CopyError {
 	Io(io::Error),
 }
 
+/// Copies `first` (when present) then all of `src` into `dst` in chunks.
 fn copy_cancellable(
 	src: &mut impl Read,
 	dst: &mut impl Write,
@@ -195,20 +195,79 @@ fn copy_cancellable(
 	}
 }
 
-fn exit_code(status: std::process::ExitStatus) -> i32 {
-	if let Some(code) = status.code() {
-		return code;
+#[cfg(test)]
+mod tests {
+	/// Runs `ifne ARGS` with `stdin` on fd 0, its commands served by the test
+	/// runner.
+	async fn run_in(stdin: &str, args: &[&str]) -> (i32, String, String) {
+		let argv: Vec<&str> = std::iter::once("ifne").chain(args.iter().copied()).collect();
+		crate::host::run_extra(&argv, stdin, &std::env::temp_dir(), &[]).await
 	}
-	#[cfg(unix)]
-	{
-		use std::os::unix::process::ExitStatusExt;
-		if let Some(signal) = status.signal() {
-			return 128 + signal;
-		}
-	}
-	1
-}
 
-pub(crate) fn ifne_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Ifne, SE>()
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn nonempty_stdin_runs_command_with_stdin() {
+		let result = run_in("hello world\n", &["/bin/cat"]).await;
+		assert_eq!(result, (0, "hello world\n".to_string(), String::new()));
+	}
+
+	/// Contract: the command dispatches like one typed at the prompt, so an
+	/// in-process builtin receives the probed input intact.
+	#[tokio::test]
+	async fn builtin_command_receives_all_input() {
+		let result = run_in("hello world\n", &["wc", "-c"]).await;
+		assert_eq!(result, (0, "12\n".to_string(), String::new()));
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn empty_stdin_skips_command() {
+		let result = run_in("", &["sh", "-c", "echo ran"]).await;
+		assert_eq!(result, (0, String::new(), String::new()));
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn invert_runs_command_on_empty_stdin() {
+		let result = run_in("", &["-n", "sh", "-c", "echo ran"]).await;
+		assert_eq!(result, (0, "ran\n".to_string(), String::new()));
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn invert_passes_nonempty_stdin_through() {
+		let result = run_in("data\n", &["-n", "sh", "-c", "echo ran"]).await;
+		assert_eq!(result, (0, "data\n".to_string(), String::new()));
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn child_exit_code_propagates() {
+		let result = run_in("x", &["sh", "-c", "exit 3"]).await;
+		assert_eq!(result, (3, String::new(), String::new()));
+	}
+
+	#[tokio::test]
+	async fn unknown_command_exits_127() {
+		let (code, stdout, stderr) = run_in("x", &["definitely-not-a-command-xyz"]).await;
+		assert_eq!(code, 127);
+		assert_eq!(stdout, "");
+		assert!(stderr.starts_with("ifne: definitely-not-a-command-xyz: "), "stderr: {stderr}");
+	}
+
+	#[cfg(unix)]
+	#[tokio::test]
+	async fn early_exiting_child_is_not_an_error() {
+		let big = "a".repeat(1 << 20);
+		let result = run_in(&big, &["/usr/bin/head", "-c", "1"]).await;
+		assert_eq!(result, (0, "a".to_string(), String::new()));
+	}
+
+	#[tokio::test]
+	async fn missing_command_is_usage_error() {
+		let (code, stdout, stderr) = run_in("", &[]).await;
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert!(stderr.contains("usage: ifne"));
+	}
 }

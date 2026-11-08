@@ -1,7 +1,6 @@
 //! `nl` builtin: write files to standard output with line numbers added.
 //!
-//! Ported from uutils coreutils 0.8.0, then aligned with GNU `nl` where the
-//! port diverged: `pBRE` takes a basic regular expression (back-references
+//! Behavior notes: `pBRE` takes a basic regular expression (back-references
 //! included), an unreadable operand is reported and skipped instead of ending
 //! the run, `-l` counts only blank lines numbered under the `a` style,
 //! unnumbered lines are indented by the separator's width, and malformed
@@ -9,18 +8,18 @@
 
 use std::{
 	ffi::OsString,
+	fmt::NumBuffer,
 	io::{self, BufRead, BufReader, Write},
 	sync::atomic::{AtomicBool, Ordering},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use fancy_regex::Regex;
 use uucore::{display::Quotable, i18n::charmap::mb_char_len};
 
 use crate::{
 	bre,
-	host::{Host, Utility, format_usage, matches_parser, os_bytes, strip_errno, util},
+	host::{Host, Utility, format_usage, matches_parser, os_bytes, strip_errno},
 };
 
 mod options {
@@ -146,7 +145,12 @@ fn app() -> Command {
 			"NUMBER",
 			"group of NUMBER empty lines counted as one",
 		))
-		.arg(valued(options::NUMBER_FORMAT, 'n', "FORMAT", "insert line numbers according to FORMAT"))
+		.arg(valued(
+			options::NUMBER_FORMAT,
+			'n',
+			"FORMAT",
+			"insert line numbers according to FORMAT",
+		))
 		.arg(
 			Arg::new(options::NO_RENUMBER)
 				.short('p')
@@ -247,7 +251,7 @@ impl Style {
 			// `fancy-regex` matches `str`: invalid UTF-8 matches as U+FFFD,
 			// and valid lines (the norm) are borrowed, not copied.
 			Self::Matching(regex) => regex
-				.is_match(String::from_utf8_lossy(text).as_ref())
+				.is_match(&*String::from_utf8_lossy(text))
 				.map_err(|_| Stop::Fatal("error in regular expression search".to_owned()))?,
 		})
 	}
@@ -267,8 +271,8 @@ enum NumberFormat {
 impl NumberFormat {
 	/// Writes `number` in at least `width` columns.
 	fn write(self, out: &mut impl Write, number: i64, width: usize) -> io::Result<()> {
-		let mut buffer = [0; 20];
-		let digits = magnitude_digits(number.unsigned_abs(), &mut buffer);
+		let mut buffer = NumBuffer::new();
+		let digits = number.unsigned_abs().format_into(&mut buffer).as_bytes();
 		let sign: &[u8] = if number < 0 { b"-" } else { b"" };
 		let padding = width.saturating_sub(sign.len() + digits.len());
 		match self {
@@ -287,19 +291,6 @@ impl NumberFormat {
 				fill(out, &ZEROS, padding)?;
 				out.write_all(digits)
 			},
-		}
-	}
-}
-
-/// The decimal digits of `value`, rendered into the tail of `buffer`.
-fn magnitude_digits(mut value: u64, buffer: &mut [u8; 20]) -> &[u8] {
-	let mut start = buffer.len();
-	loop {
-		start -= 1;
-		buffer[start] = b'0' + (value % 10) as u8;
-		value /= 10;
-		if value == 0 {
-			return &buffer[start..];
 		}
 	}
 }
@@ -328,7 +319,7 @@ impl Section {
 	/// repeated three (header), two (body), or one (footer) times, and nothing
 	/// else. An empty unit disables section matching.
 	fn of(text: &[u8], unit: &[u8]) -> Option<Self> {
-		if unit.is_empty() || text.is_empty() || text.len() % unit.len() != 0 {
+		if unit.is_empty() || text.is_empty() || !text.len().is_multiple_of(unit.len()) {
 			return None;
 		}
 		let section = match text.len() / unit.len() {
@@ -337,8 +328,7 @@ impl Section {
 			3 => Self::Header,
 			_ => return None,
 		};
-		text
-			.chunks_exact(unit.len())
+		text.chunks_exact(unit.len())
 			.all(|chunk| chunk == unit)
 			.then_some(section)
 	}
@@ -393,11 +383,7 @@ fn parse_number(arg: &str, what: &str, bounds: Bounds) -> Result<i64, Invalid> {
 	// The digits are valid, so a parse failure is an `i64` overflow.
 	let Ok(value) = number.parse::<i64>() else {
 		return if number.starts_with('-') {
-			Err(reject(Some(if bounds.min == i64::MIN {
-				EOVERFLOW
-			} else {
-				ERANGE
-			})))
+			Err(reject(Some(if bounds.min == i64::MIN { EOVERFLOW } else { ERANGE })))
 		} else if bounds.clamp_max {
 			Ok(bounds.max)
 		} else {
@@ -504,8 +490,7 @@ impl Settings {
 				.expect("given options have a value");
 			os_bytes(value).ok_or_else(|| {
 				Invalid::Fatal(format!(
-					"invalid UTF-8 input {} encountered when converting to bytes on a platform that \
-					 doesn't expose byte arguments",
+					"invalid UTF-8 input {} encountered when converting to bytes on a platform that doesn't expose byte arguments",
 					value.quote()
 				))
 			})
@@ -574,11 +559,7 @@ impl Stop {
 	/// Classifies an input failure; a cancelled provider read is the shell's
 	/// abort, not an error in the operand.
 	fn read(error: io::Error) -> Self {
-		if error.kind() == io::ErrorKind::Interrupted {
-			Self::Cancelled
-		} else {
-			Self::Read(error)
-		}
+		if pi_vfs::is_cancelled(&error) { Self::Cancelled } else { Self::Read(error) }
 	}
 
 	fn write(error: io::Error) -> Self {
@@ -622,11 +603,7 @@ impl<'s> Numberer<'s> {
 				return Err(Stop::Cancelled);
 			}
 			self.line.clear();
-			if input
-				.read_until(b'\n', &mut self.line)
-				.map_err(Stop::read)?
-				== 0
-			{
+			if input.read_until(b'\n', &mut self.line).map_err(Stop::read)? == 0 {
 				return Ok(());
 			}
 			// Like GNU, complete a final line that lacks its newline.
@@ -644,10 +621,7 @@ impl<'s> Numberer<'s> {
 				continue;
 			}
 
-			if self
-				.style
-				.numbers(text, settings.join_blank, &mut self.blank_run)?
-			{
+			if self.style.numbers(text, settings.join_blank, &mut self.blank_run)? {
 				let Some(number) = self.next else {
 					return Err(Stop::Fatal("line number overflow".to_owned()));
 				};
@@ -675,7 +649,7 @@ fn number_files(host: &mut Host, settings: &Settings, files: &[&OsString]) -> i3
 		let result = if file == "-" {
 			numberer.number(&mut BufReader::new(&mut host.stdin), &mut out, &cancel)
 		} else {
-			match host.open_read(file) {
+			match host.fs().open(host.resolve(file)) {
 				Ok(input) => numberer.number(&mut BufReader::new(input), &mut out, &cancel),
 				Err(error) => Err(Stop::read(error)),
 			}
@@ -699,7 +673,163 @@ fn number_files(host: &mut Host, settings: &Settings, files: &[&OsString]) -> i3
 	host.exit_code()
 }
 
-/// Creates the `nl` builtin registration.
-pub(crate) fn nl_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Nl, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::Path};
+
+	use super::Nl;
+	use crate::host::run_util;
+
+	fn nl(argv: &[&str], stdin: &str) -> (i32, String, String) {
+		nl_in(argv, stdin, Path::new("/"))
+	}
+
+	fn nl_in(argv: &[&str], stdin: &str, cwd: &Path) -> (i32, String, String) {
+		let (code, capture) = run_util::<Nl>(argv, stdin, cwd);
+		(code, capture.out(), capture.err())
+	}
+
+	#[test]
+	fn numbers_operands_as_one_stream_and_completes_the_last_line() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "x\n\ny").unwrap();
+		assert_eq!(
+			nl_in(&["a", "-"], "z\n", dir.path()),
+			(0, "     1\tx\n       \n     2\ty\n     3\tz\n".to_owned(), String::new())
+		);
+	}
+
+	#[test]
+	fn section_delimiters_switch_style_and_restart_numbering_unless_p() {
+		let input = "\\:\\:\\:\nh\n\\:\\:\nb1\nb2\n\\:\nf\n";
+		assert_eq!(
+			nl(&["-ha", "-fn"], input),
+			(0, "\n     1\th\n\n     1\tb1\n     2\tb2\n\n       f\n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-ha", "-fa", "-p"], input),
+			(0, "\n     1\th\n\n     2\tb1\n     3\tb2\n\n     4\tf\n".to_owned(), String::new())
+		);
+	}
+
+	#[test]
+	fn custom_section_delimiter_pairs_a_lone_character_with_colon() {
+		assert_eq!(
+			nl(&["-d", "X", "-ba", "-fn"], "X:\na\nX:X:\nb\n"),
+			(0, "\n       a\n\n     1\tb\n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-d", "", "-ba"], "\\:\\:\n\n"),
+			(0, "     1\t\\:\\:\n     2\t\n".to_owned(), String::new())
+		);
+	}
+
+	#[test]
+	fn join_blank_lines_counts_only_a_style_blanks_across_delimiters() {
+		assert_eq!(
+			nl(&["-ba", "-l", "2"], "a\n\n\\:\\:\n\nb\n\n"),
+			(0, "     1\ta\n       \n\n     1\t\n     2\tb\n       \n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-bt", "-l", "2"], "a\n\n\nb\n"),
+			(0, "     1\ta\n       \n       \n     2\tb\n".to_owned(), String::new())
+		);
+	}
+
+	#[test]
+	fn regex_style_uses_basic_regular_expressions() {
+		assert_eq!(
+			nl(&["-b", "pa\\+"], "aa\nb\na+\n"),
+			(0, "     1\taa\n       b\n     2\ta+\n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-b", "pa+"], "aa\na+\n"),
+			(0, "       aa\n     1\ta+\n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-b", "p\\(a\\)\\1"], "aa\nab\n"),
+			(0, "     1\taa\n       ab\n".to_owned(), String::new())
+		);
+	}
+
+	#[test]
+	fn formats_pad_to_width_and_unnumbered_lines_skip_the_separator_width() {
+		assert_eq!(
+			nl(&["-v", "-2", "-n", "rz", "-w", "4"], "a\nb\nc\n"),
+			(0, "-002\ta\n-001\tb\n0000\tc\n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-n", "ln", "-w", "3", "-v", "9", "-i", "-10"], "a\nb\n"),
+			(0, "9  \ta\n-1 \tb\n".to_owned(), String::new())
+		);
+		assert_eq!(
+			nl(&["-s", ": "], "a\n\n"),
+			(0, "     1: a\n        \n".to_owned(), String::new())
+		);
+	}
+
+	#[test]
+	fn unreadable_operand_is_reported_and_skipped() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "x\n").unwrap();
+		let (code, out, err) = nl_in(&["missing", "a"], "", dir.path());
+		assert_eq!(code, 1);
+		assert_eq!(out, "     1\tx\n");
+		assert_eq!(err, "nl: missing: No such file or directory\n");
+	}
+
+	#[test]
+	fn line_number_overflow_stops_after_the_last_representable_number() {
+		assert_eq!(
+			nl(&["-v", "9223372036854775807"], "a\nb\n"),
+			(1, "9223372036854775807\ta\n".to_owned(), "nl: line number overflow\n".to_owned())
+		);
+	}
+
+	#[test]
+	fn invalid_styles_accumulate_until_a_fatal_number_error() {
+		assert_eq!(
+			nl(&["-b", "x", "-n", "xx"], "a\n"),
+			(
+				1,
+				String::new(),
+				"nl: invalid body numbering style: 'x'\nnl: invalid line numbering format: \
+				 'xx'\nTry 'nl --help' for more information.\n"
+					.to_owned()
+			)
+		);
+		assert_eq!(
+			nl(&["-b", "x", "-w", "0", "-h", "y"], "a\n"),
+			(
+				1,
+				String::new(),
+				"nl: invalid body numbering style: 'x'\nnl: invalid line number field width: '0': \
+				 Numerical result out of range\n"
+					.to_owned()
+			)
+		);
+	}
+
+	#[test]
+	fn number_arguments_follow_gnu_range_rules() {
+		let err = |argv: &[&str]| nl(argv, "a\n").2;
+		assert_eq!(err(&["-w", "5x"]), "nl: invalid line number field width: '5x'\n");
+		assert_eq!(
+			err(&["-w", "2147483648"]),
+			"nl: invalid line number field width: '2147483648': Value too large for defined data type\n"
+		);
+		assert_eq!(
+			err(&["-v", "-99999999999999999999"]),
+			"nl: invalid starting line number: '-99999999999999999999': Value too large for defined \
+			 data type\n"
+		);
+		assert_eq!(
+			err(&["-l", "-1"]),
+			"nl: invalid line number of blank lines: '-1': Numerical result out of range\n"
+		);
+		assert_eq!(
+			nl(&["-l", "99999999999999999999", "-w", " +2"], "a\n"),
+			(0, " 1\ta\n".to_owned(), String::new())
+		);
+	}
 }

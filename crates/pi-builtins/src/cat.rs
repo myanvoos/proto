@@ -1,19 +1,21 @@
-#[cfg(unix)]
-use std::os::unix::fs::FileTypeExt;
+//! `cat` builtin: concatenate files to standard output.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	ffi::OsString,
-	fs::metadata,
 	io::{self, ErrorKind, Read, Write},
 	path::Path,
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use memchr::memchr2;
 use thiserror::Error;
 use uucore::{display::Quotable, fast_inc::fast_inc_one};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use pi_vfs::BlockingFs;
+
+use crate::host::{Host, Utility, format_usage, matches_parser, strip_errno};
 
 const LINE_NUMBER_BUF_SIZE: usize = 32;
 
@@ -24,6 +26,12 @@ struct LineNumber {
 	num_end:     usize,
 }
 
+// Logic to store a string for the line number. Manually incrementing the value
+// represented in a buffer like this is significantly faster than storing a
+// `usize` and using the standard Rust formatting macros to format a `usize` to
+// a string each time it's needed.
+// Buffer is initialized to "     1\t" and incremented each time `increment` is
+// called, using uucore's fast_inc function that operates on strings.
 impl LineNumber {
 	fn new() -> Self {
 		let mut buf = [b'0'; LINE_NUMBER_BUF_SIZE];
@@ -55,12 +63,10 @@ impl LineNumber {
 
 #[derive(Error, Debug)]
 enum CatError {
+	/// Wrapper around `io::Error`.
 	#[error("{}", strip_errno(.0))]
-	Io(io::Error),
-
-	#[error("broken pipe")]
-	BrokenPipe,
-
+	Io(#[from] io::Error),
+	/// Unknown file type; it is not a regular file, socket, or known device.
 	#[error("unknown filetype: {ft_debug}")]
 	UnknownFiletype { ft_debug: String },
 	#[error("Is a directory")]
@@ -70,24 +76,6 @@ enum CatError {
 	NoSuchDeviceOrAddress,
 	#[error("Too many levels of symbolic links")]
 	TooManySymlinks,
-}
-
-impl From<io::Error> for CatError {
-	fn from(error: io::Error) -> Self {
-		if error.kind() == ErrorKind::BrokenPipe {
-			Self::BrokenPipe
-		} else {
-			Self::Io(error)
-		}
-	}
-}
-
-fn strip_errno(error: &io::Error) -> String {
-	let mut message = error.to_string();
-	if let Some(position) = message.find(" (os error ") {
-		message.truncate(position);
-	}
-	message
 }
 
 type CatResult<T> = Result<T, CatError>;
@@ -100,14 +88,15 @@ enum NumberingMode {
 }
 
 struct OutputOptions {
+	/// Line numbering mode.
 	number: NumberingMode,
-
+	/// Suppress repeated empty output lines.
 	squeeze_blank: bool,
-
+	/// Display TAB characters as `tab`.
 	show_tabs: bool,
-
+	/// Show end of lines.
 	show_ends: bool,
-
+	/// Use ^ and M- notation, except for LF and TAB.
 	show_nonprint: bool,
 }
 
@@ -120,6 +109,7 @@ impl OutputOptions {
 		if self.show_ends { "$\n" } else { "\n" }
 	}
 
+	/// We can write fast when no output augmentation is requested.
 	fn can_write_fast(&self) -> bool {
 		!(self.show_tabs
 			|| self.show_nonprint
@@ -129,18 +119,22 @@ impl OutputOptions {
 	}
 }
 
+/// State that persists between files on the augmented-output path.
 struct OutputState {
-	line_number:             LineNumber,
-	at_line_start:           bool,
+	line_number: LineNumber,
+	at_line_start: bool,
 	skipped_carriage_return: bool,
-	one_blank_kept:          bool,
+	one_blank_kept: bool,
 }
 
+
+/// An input stream and whether it is connected to an interactive terminal.
 struct InputHandle<R: Read> {
 	reader:         R,
 	is_interactive: bool,
 }
 
+/// Concrete enum of recognized file types.
 enum InputType {
 	Directory,
 	File,
@@ -170,6 +164,7 @@ mod options {
 	pub static IGNORED_U: &str = "ignored-u";
 }
 
+/// Parsed `cat` invocation.
 pub(crate) struct Cat {
 	matches: ArgMatches,
 }
@@ -216,6 +211,7 @@ impl Utility for Cat {
 	}
 }
 
+/// The `cat` argument model.
 fn app() -> Command {
 	Command::new(Cat::NAME)
 		.version("0.8.0")
@@ -246,6 +242,8 @@ fn app() -> Command {
 				.short('b')
 				.long(options::NUMBER_NONBLANK)
 				.help("number nonempty output lines, overrides -n")
+				// This must not override NUMBER: clap overriding is symmetric,
+				// while `-b -n` must still use `-b` semantics.
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
@@ -323,8 +321,9 @@ fn cat_path(
 	host: &mut Host,
 	stdout: &mut impl Write,
 ) -> CatResult<()> {
+	// Resolve every operand at the boundary, but retain `path` for diagnostics.
 	let resolved = host.resolve(path);
-	match get_input_type(path, &resolved)? {
+	match get_input_type(host.fs(), path, &resolved)? {
 		InputType::StdIn => {
 			let mut handle = InputHandle { reader: &mut host.stdin, is_interactive: false };
 			cat_handle(&mut handle, options, state, stdout)
@@ -333,7 +332,7 @@ fn cat_path(
 		#[cfg(unix)]
 		InputType::Socket => Err(CatError::NoSuchDeviceOrAddress),
 		_ => {
-			let file = host.open_read(resolved)?;
+			let file = host.fs().open(resolved)?;
 			let mut handle = InputHandle { reader: file, is_interactive: false };
 			cat_handle(&mut handle, options, state, stdout)
 		},
@@ -357,9 +356,14 @@ where
 	};
 
 	for path in files {
+		if host.is_cancelled() {
+			break;
+		}
 		match cat_path(path, options, &mut state, host, stdout) {
 			Ok(()) => {},
-			Err(CatError::BrokenPipe) => return host.exit_code(),
+			Err(CatError::Io(error)) if error.kind() == ErrorKind::BrokenPipe => {
+				return crate::host::SIGPIPE_EXIT_CODE;
+			},
 			Err(error) => host.error(format!("{}: {error}", path.maybe_quote()), 1),
 		}
 	}
@@ -370,15 +374,17 @@ where
 	host.exit_code()
 }
 
-fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
+/// Classifies the input at `resolved`; `path` is retained to recognize `-`.
+fn get_input_type(fs: &BlockingFs, path: &OsString, resolved: &Path) -> CatResult<InputType> {
 	if path == "-" {
 		return Ok(InputType::StdIn);
 	}
 
-	let file_type = match metadata(resolved) {
+	let file_type = match fs.metadata(resolved) {
 		Ok(metadata) => metadata.file_type(),
 		Err(error) => {
 			if let Some(raw_error) = error.raw_os_error() {
+				// ELOOP differs on Darwin and FreeBSD.
 				#[cfg(not(any(target_os = "macos", target_os = "freebsd")))]
 				let too_many_symlink_code = 40;
 				#[cfg(any(target_os = "macos", target_os = "freebsd"))]
@@ -406,7 +412,11 @@ fn get_input_type(path: &OsString, resolved: &Path) -> CatResult<InputType> {
 	}
 }
 
-fn write_fast<R: Read>(handle: &mut InputHandle<R>, stdout: &mut impl Write) -> CatResult<()> {
+/// Writes a handle to stdout with no output transformation.
+fn write_fast<R: Read>(
+	handle: &mut InputHandle<R>,
+	stdout: &mut impl Write,
+) -> CatResult<()> {
 	let mut buf = [0; 1024 * 64];
 	loop {
 		match handle.reader.read(&mut buf) {
@@ -420,6 +430,7 @@ fn write_fast<R: Read>(handle: &mut InputHandle<R>, stdout: &mut impl Write) -> 
 	Ok(())
 }
 
+/// Outputs a handle line by line with the requested transformations.
 fn write_lines<R: Read>(
 	handle: &mut InputHandle<R>,
 	options: &OutputOptions,
@@ -469,12 +480,13 @@ fn write_lines<R: Read>(
 			}
 			pos += offset + 1;
 		}
-
+		// Flush before a pipe read can block so available output stays visible.
 		stdout.flush()?;
 	}
 	Ok(())
 }
 
+/// Writes a newline, accounting for delayed carriage returns and numbering.
 fn write_new_line<W: Write>(
 	writer: &mut W,
 	options: &OutputOptions,
@@ -516,6 +528,8 @@ fn write_end<W: Write>(
 	}
 }
 
+// Write all symbols until newline, carriage return, or the buffer end. The
+// nonprinting path need not stop at carriage return because it always emits ^M.
 fn write_to_end<W: Write>(in_buf: &[u8], writer: &mut W) -> io::Result<usize> {
 	if let Some(position) = memchr2(b'\n', b'\r', in_buf) {
 		writer.write_all(&in_buf[..position])?;
@@ -548,7 +562,11 @@ fn write_tab_to_end<W: Write>(mut in_buf: &[u8], writer: &mut W) -> io::Result<u
 	}
 }
 
-fn write_nonprint_to_end<W: Write>(in_buf: &[u8], writer: &mut W, tab: &[u8]) -> io::Result<usize> {
+fn write_nonprint_to_end<W: Write>(
+	in_buf: &[u8],
+	writer: &mut W,
+	tab: &[u8],
+) -> io::Result<usize> {
 	let mut count = 0;
 	for byte in in_buf.iter().copied() {
 		if byte == b'\n' {
@@ -580,6 +598,84 @@ fn write_end_of_line<W: Write>(
 	Ok(())
 }
 
-pub(crate) fn cat_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Cat, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{fs, io::{BufWriter, sink}};
+
+	use tempfile::tempdir;
+
+	use super::{Cat, LineNumber, write_nonprint_to_end, write_tab_to_end};
+	use crate::host::run_util;
+
+	#[test]
+	fn test_write_tab_to_end_with_newline() {
+		let mut writer = BufWriter::with_capacity(1024 * 64, sink());
+		assert_eq!(write_tab_to_end(b"a\tb\tc\n", &mut writer).unwrap(), 5);
+	}
+
+	#[test]
+	fn test_write_tab_to_end_no_newline() {
+		let mut writer = BufWriter::with_capacity(1024 * 64, sink());
+		assert_eq!(write_tab_to_end(b"a\tb\tc", &mut writer).unwrap(), 5);
+	}
+
+	#[test]
+	fn test_write_nonprint_to_end_new_line() {
+		let mut writer = BufWriter::with_capacity(1024 * 64, sink());
+		write_nonprint_to_end(b"\n", &mut writer, b"").unwrap();
+		assert_eq!(writer.buffer().len(), 0);
+	}
+
+	#[test]
+	fn test_write_nonprint_to_end_9() {
+		let mut writer = BufWriter::with_capacity(1024 * 64, sink());
+		write_nonprint_to_end(&[9], &mut writer, b"tab").unwrap();
+		assert_eq!(writer.buffer(), b"tab");
+	}
+
+	#[test]
+	fn test_write_nonprint_to_end_0_to_8() {
+		for byte in 0_u8..=8 {
+			let mut writer = BufWriter::with_capacity(1024 * 64, sink());
+			write_nonprint_to_end(&[byte], &mut writer, b"").unwrap();
+			assert_eq!(writer.buffer(), [b'^', byte + 64]);
+		}
+	}
+
+	#[test]
+	fn test_write_nonprint_to_end_10_to_31() {
+		for byte in 11_u8..=31 {
+			let mut writer = BufWriter::with_capacity(1024 * 64, sink());
+			write_nonprint_to_end(&[byte], &mut writer, b"").unwrap();
+			assert_eq!(writer.buffer(), [b'^', byte + 64]);
+		}
+	}
+
+	#[test]
+	fn test_incrementing_string() {
+		let mut number = LineNumber::new();
+		assert_eq!(b"     1\t", number.to_str());
+		number.increment();
+		assert_eq!(b"     2\t", number.to_str());
+		for _ in 3..=100 {
+			number.increment();
+		}
+		assert_eq!(b"   100\t", number.to_str());
+		for _ in 101..=1_000_000 {
+			number.increment();
+		}
+		assert_eq!(b"1000000\t", number.to_str());
+		number.increment();
+		assert_eq!(b"1000001\t", number.to_str());
+	}
+
+	#[test]
+	fn missing_operand_reports_and_later_operand_is_processed() {
+		let directory = tempdir().unwrap();
+		fs::write(directory.path().join("present"), b"remaining\n").unwrap();
+		let (code, capture) = run_util::<Cat>(&["missing", "present"], "", directory.path());
+		assert_eq!(code, 1);
+		assert_eq!(capture.out(), "remaining\n");
+		assert_eq!(capture.err(), "cat: missing: No such file or directory\n");
+	}
 }

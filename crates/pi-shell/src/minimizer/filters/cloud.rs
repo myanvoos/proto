@@ -1,3 +1,5 @@
+//! Cloud and data command output filters.
+
 use std::{collections::HashSet, fmt::Write as _};
 
 use serde_json::{Map, Value};
@@ -38,13 +40,13 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 		"aws" => filter_aws(ctx, &cleaned, exit_code),
 		"curl" | "wget" => filter_http_transfer(ctx, &cleaned, exit_code),
 		"psql" => {
-			if is_psql_machine_readable(ctx.tokens) {
+			if is_psql_machine_readable(ctx.command) {
 				cleaned
 			} else {
 				filter_psql(&cleaned, exit_code)
 			}
 		},
-		_ => head_tail_dedup(&cleaned, 80, 40),
+		_ => primitives::head_tail_lines(&primitives::dedup_consecutive_lines(&cleaned), 80, 40),
 	};
 
 	if text == input {
@@ -54,14 +56,19 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	}
 }
 
-fn is_s3_ls(tokens: &[String]) -> bool {
+/// Returns `true` when the full command is `aws s3 ls [...]` (not `cp`, `sync`,
+/// `rm`, etc.). Skips flags between `s3` and the action token so
+/// `aws --no-cli-pager s3 ls` is still recognised while `aws s3 cp` is
+/// excluded.
+fn is_s3_ls(command: &str) -> bool {
 	let mut past_s3 = false;
-	for token in tokens {
+	for token in command.split_whitespace() {
 		if !past_s3 {
 			if token == "s3" {
 				past_s3 = true;
 			}
 		} else if token.starts_with('-') {
+			// skip flags between "s3" and the action word
 		} else {
 			return token == "ls";
 		}
@@ -69,20 +76,29 @@ fn is_s3_ls(tokens: &[String]) -> bool {
 	false
 }
 
-fn is_aws_stdout_pipe(tokens: &[String]) -> bool {
-	tokens.iter().any(|token| token == "-")
+/// Returns `true` when an AWS CLI invocation streams object content via a
+/// `-` positional (stdout download `aws s3 cp s3://bucket/key -`, or stdin
+/// upload `aws s3 cp - s3://bucket/key`). In that mode the captured text is
+/// the object body, not CLI progress, so `strip_transfer_progress` must not
+/// run. Any bare `-` token triggers passthrough — even when trailing options
+/// follow the positional (`aws s3 cp s3://bucket/key - --request-payer
+/// requester`); a false positive only skips minimization, which is safe.
+fn is_aws_stdout_pipe(command: &str) -> bool {
+	command.split_whitespace().any(|token| token == "-")
 }
 
 fn filter_aws(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
-	if is_aws_stdout_pipe(ctx.tokens) {
+	if is_aws_stdout_pipe(ctx.command) {
 		return input.to_string();
 	}
 
 	let without_progress = strip_transfer_progress(input);
-
+	// Only the `ls` listing form should be reshaped into a bucket/date table;
+	// `aws s3 cp`/`sync`/`rm` emit progress/result lines (`upload: ... to
+	// s3://...`) that must not be misparsed as listing rows.
 	if exit_code == 0
 		&& ctx.subcommand == Some("s3")
-		&& is_s3_ls(ctx.tokens)
+		&& is_s3_ls(ctx.command)
 		&& let Some(compacted) = compact_aws_s3_ls_text(&without_progress)
 	{
 		return compacted;
@@ -97,6 +113,8 @@ fn filter_aws(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> String {
 	}
 }
 
+/// Try to parse AWS CLI JSON output and produce a compact representation.
+/// Returns None if input is not recognized JSON or if schema is unexpected.
 fn try_compact_aws_json(ctx: &MinimizerCtx<'_>, input: &str) -> Option<String> {
 	let trimmed = input.trim();
 	if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
@@ -108,14 +126,17 @@ fn try_compact_aws_json(ctx: &MinimizerCtx<'_>, input: &str) -> Option<String> {
 		return Some(compacted);
 	}
 
+	// EC2 describe-instances: {"Reservations":[{"Instances":[...]}]}
 	if let Some(instances) = extract_aws_ec2_instances(&root) {
 		return Some(compact_aws_ec2_instances(&instances));
 	}
 
+	// CloudWatch logs / filtered log events: {"events":[...]}
 	if let Some(events) = extract_aws_cloudwatch_events(&root) {
 		return Some(compact_aws_cloudwatch_events(&events));
 	}
 
+	// DynamoDB get-item/query/scan: {"Item":{...}} or {"Items":[{...}]}
 	if let Some(items) = extract_aws_dynamodb_items(&root) {
 		return Some(compact_aws_dynamodb_items(&items));
 	}
@@ -251,6 +272,7 @@ fn extract_aws_s3_buckets(root: &Value) -> Option<Vec<&Map<String, Value>>> {
 	extract_array(root, &["Buckets", "buckets"])
 }
 
+/// True for an `aws s3 ls` date column (`YYYY-MM-DD`).
 fn is_s3_date(token: &str) -> bool {
 	let mut parts = token.split('-');
 	matches!(
@@ -263,6 +285,7 @@ fn is_s3_date(token: &str) -> bool {
 	)
 }
 
+/// True for an `aws s3 ls` time column (`HH:MM:SS`).
 fn is_s3_time(token: &str) -> bool {
 	let mut parts = token.split(':');
 	matches!(
@@ -281,6 +304,8 @@ fn compact_aws_s3_ls_text(input: &str) -> Option<String> {
 			continue;
 		};
 		if first == "PRE" {
+			// A common-prefix name may contain spaces (`PRE my folder/`), so
+			// join the remaining tokens instead of keeping only the first one.
 			let prefix: Vec<&str> = parts.collect();
 			if prefix.is_empty() {
 				passthrough_lines.push(line);
@@ -296,7 +321,9 @@ fn compact_aws_s3_ls_text(input: &str) -> Option<String> {
 			passthrough_lines.push(line);
 			continue;
 		};
-
+		// Require a real date/time prefix so `--summarize` footers
+		// (`Total Objects: 1`, `Total Size: ...`) and any diagnostic/error
+		// text are not reinterpreted as object rows.
 		if !is_s3_date(first) || !is_s3_time(time) {
 			passthrough_lines.push(line);
 			continue;
@@ -308,7 +335,9 @@ fn compact_aws_s3_ls_text(input: &str) -> Option<String> {
 		if third == "0" && parts.clone().next().is_none() {
 			continue;
 		}
-
+		// Collect all remaining tokens as the key so that S3 keys
+		// containing spaces (e.g. "reports/June 2026.csv") are
+		// preserved in full rather than truncated to the last token.
 		let rest: Vec<&str> = parts.collect();
 		let name = if rest.is_empty() {
 			third.to_string()
@@ -496,11 +525,14 @@ fn generic_columns(rows: &[Map<String, Value>]) -> Vec<String> {
 			if (matches!(
 				lower.as_str(),
 				"id"
-					| "name" | "arn"
-					| "status" | "state"
+					| "name"
+					| "arn"
+					| "status"
+					| "state"
 					| "created"
 					| "modified"
-					| "type" | "engine"
+					| "type"
+					| "engine"
 					| "version"
 			) || lower.ends_with("id")
 				|| lower.ends_with("name")
@@ -576,6 +608,8 @@ fn infer_level(message: &str) -> &str {
 	"-"
 }
 
+// ── AWS EC2 ──────────────────────────────────────────────────────────────────
+
 fn extract_aws_ec2_instances(root: &Value) -> Option<Vec<&Value>> {
 	let reservations = root.get("Reservations")?.as_array()?;
 	let mut instances = Vec::new();
@@ -635,6 +669,8 @@ fn compact_aws_ec2_instances(instances: &[&Value]) -> String {
 	out
 }
 
+// ── AWS CloudWatch ───────────────────────────────────────────────────────────
+
 fn extract_aws_cloudwatch_events(root: &Value) -> Option<Vec<&Value>> {
 	let events = root.get("events")?.as_array()?;
 	if events.is_empty() {
@@ -680,7 +716,7 @@ fn compact_aws_cloudwatch_events(events: &[&Value]) -> String {
 			.and_then(serde_json::Value::as_i64)
 			.map_or_else(|| "?".to_string(), epoch_ms_to_iso);
 		let msg = event.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-
+		// Truncate long messages
 		let msg = primitives::truncate_line(msg, MAX_LINE_CHARS);
 		out.push_str(&ts);
 		out.push('\t');
@@ -694,6 +730,9 @@ fn compact_aws_cloudwatch_events(events: &[&Value]) -> String {
 	let _ = writeln!(out, "{count} event(s)");
 	out
 }
+
+// ── AWS DynamoDB
+// ──────────────────────────────────────────────────────────────
 
 fn extract_aws_dynamodb_items(root: &Value) -> Option<Vec<&serde_json::Map<String, Value>>> {
 	if let Some(item) = root.get("Item").and_then(Value::as_object) {
@@ -821,24 +860,28 @@ fn filter_http_transfer(ctx: &MinimizerCtx<'_>, input: &str, _exit_code: i32) ->
 }
 
 fn http_transfer_suppresses_progress(ctx: &MinimizerCtx<'_>) -> bool {
-	ctx.tokens.iter().any(|token| match ctx.program {
-		"curl" => {
-			token == "--silent"
-				|| token == "--no-progress-meter"
-				|| token.starts_with('-') && !token.starts_with("--") && token.contains('s')
-		},
-		"wget" => {
-			token == "--quiet"
-				|| token.starts_with('-') && !token.starts_with("--") && token.contains('q')
-		},
-		_ => false,
-	})
+	ctx.command
+		.split_whitespace()
+		.any(|token| match ctx.program {
+			"curl" => {
+				token == "--silent"
+					|| token == "--no-progress-meter"
+					|| token.starts_with('-') && !token.starts_with("--") && token.contains('s')
+			},
+			"wget" => {
+				token == "--quiet"
+					|| token.starts_with('-') && !token.starts_with("--") && token.contains('q')
+			},
+			_ => false,
+		})
 }
 
-fn is_psql_machine_readable(tokens: &[String]) -> bool {
-	tokens
-		.iter()
-		.any(|token| matches!(token.as_str(), "-A" | "--no-align" | "-t" | "--tuples-only" | "--csv"))
+/// Returns `true` when the psql invocation requests machine-readable
+/// (unaligned, tuples-only, or CSV) output that must not be truncated.
+fn is_psql_machine_readable(command: &str) -> bool {
+	command
+		.split_whitespace()
+		.any(|t| matches!(t, "-A" | "--no-align" | "-t" | "--tuples-only" | "--csv"))
 }
 
 fn filter_psql(input: &str, exit_code: i32) -> String {
@@ -862,7 +905,11 @@ fn filter_psql(input: &str, exit_code: i32) -> String {
 	if exit_code == 0 {
 		preserve_important_lines(input, &compacted, structured)
 	} else {
-		preserve_important_lines(input, &head_tail_dedup(&compacted, 80, 40), structured)
+		preserve_important_lines(
+			input,
+			&primitives::head_tail_lines(&primitives::dedup_consecutive_lines(&compacted), 80, 40),
+			structured,
+		)
 	}
 }
 
@@ -966,14 +1013,24 @@ fn compact_long_lines(input: &str) -> String {
 }
 
 fn compact_line(line: &str, max_chars: usize) -> String {
-	let chars: Vec<char> = line.chars().collect();
-	if chars.len() <= max_chars {
+	// Byte length bounds char count, so short lines skip the char walk.
+	if line.len() <= max_chars {
+		return line.to_string();
+	}
+	let char_count = line.chars().count();
+	if char_count <= max_chars {
 		return line.to_string();
 	}
 	let edge = max_chars / 2;
-	let start: String = chars.iter().take(edge).collect();
-	let end: String = chars.iter().skip(chars.len() - edge).collect();
-	format!("{start}[…{}ch elided…]{end}", chars.len() - edge * 2)
+	let start_end = line
+		.char_indices()
+		.nth(edge)
+		.map_or(line.len(), |(idx, _)| idx);
+	let end_start = line
+		.char_indices()
+		.nth(char_count - edge)
+		.map_or(line.len(), |(idx, _)| idx);
+	format!("{}[…{}ch elided…]{}", &line[..start_end], char_count - edge * 2, &line[end_start..])
 }
 
 fn looks_like_table(input: &str) -> bool {
@@ -1038,7 +1095,7 @@ fn compact_delimited_table(input: &str, max_rows: usize) -> String {
 	if data_rows > max_rows {
 		out.push(format!("[…{} rows elided…]", data_rows - max_rows));
 	}
-	join_lines(out)
+	primitives::join_lines(&out)
 }
 
 fn compact_psql_table(input: &str) -> String {
@@ -1084,7 +1141,7 @@ fn compact_psql_table(input: &str) -> String {
 		out.push(format!("[…{} rows elided…]", data_rows - MAX_PSQL_ROWS));
 	}
 	out.extend(row_count_lines);
-	join_lines(out)
+	primitives::join_lines(&out)
 }
 
 fn compact_psql_expanded(input: &str) -> String {
@@ -1129,7 +1186,7 @@ fn compact_psql_expanded(input: &str) -> String {
 		out.push(format!("[…{} records elided…]", records - MAX_PSQL_ROWS));
 	}
 	out.extend(row_count_lines);
-	join_lines(out)
+	primitives::join_lines(&out)
 }
 
 fn flush_record(out: &mut Vec<String>, current: &mut Vec<String>, records: usize) {
@@ -1168,8 +1225,9 @@ fn is_psql_row_count(line: &str) -> bool {
 		&& trimmed.chars().any(|ch| ch.is_ascii_digit())
 }
 
-/// Puts important lines the compaction dropped back in front of it. With
-/// `skip_cells`, lines holding a `|` cell separator are data, not messages.
+/// Puts important lines the compaction dropped back in front of it. In
+/// `structured` (table or expanded) output, a line holding a `|` is a cell or
+/// field rather than a message unless psql printed it as one.
 fn preserve_important_lines(original: &str, compacted: &str, structured: bool) -> String {
 	let mut kept: Option<HashSet<&str>> = None;
 	let mut seen = HashSet::new();
@@ -1204,6 +1262,11 @@ fn preserve_important_lines(original: &str, compacted: &str, structured: bool) -
 	text
 }
 
+/// A message psql printed itself (`ERROR:  …`, `HINT:  …`, `LINE 1: …`), as
+/// opposed to a table cell or an expanded-record field that merely starts
+/// with such a word. psql writes messages from column 0 as the level and a
+/// colon; table rows start with cell padding or a border, and record fields
+/// with a column name followed by ` | `.
 fn is_psql_message(line: &str) -> bool {
 	const LEVELS: [&str; 5] = ["ERROR:", "FATAL:", "PANIC:", "DETAIL:", "HINT:"];
 	LEVELS.iter().any(|level| line.starts_with(level))
@@ -1224,20 +1287,511 @@ fn is_important_line(line: &str) -> bool {
 			.is_some_and(|head| head.eq_ignore_ascii_case(prefix.as_bytes()))
 	}) || line
 		.as_bytes()
-		.windows(b"EXCEPTION".len())
+		.array_windows::<{ b"EXCEPTION".len() }>()
 		.any(|window| window.eq_ignore_ascii_case(b"EXCEPTION"))
 }
 
-fn head_tail_dedup(input: &str, head: usize, tail: usize) -> String {
-	primitives::head_tail_lines(&primitives::dedup_consecutive_lines(input), head, tail)
-}
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::minimizer::MinimizerConfig;
 
-fn join_lines(lines: Vec<String>) -> String {
-	if lines.is_empty() {
-		String::new()
-	} else {
-		let mut out = lines.join("\n");
-		out.push('\n');
-		out
+	fn ctx<'a>(program: &'a str, cfg: &'a MinimizerConfig) -> MinimizerCtx<'a> {
+		MinimizerCtx { program, subcommand: None, command: program, config: cfg }
+	}
+
+	fn ctx_command<'a>(
+		program: &'a str,
+		command: &'a str,
+		cfg: &'a MinimizerConfig,
+	) -> MinimizerCtx<'a> {
+		MinimizerCtx { program, subcommand: None, command, config: cfg }
+	}
+
+	fn aws_ctx<'a>(
+		subcommand: &'a str,
+		command: &'a str,
+		cfg: &'a MinimizerConfig,
+	) -> MinimizerCtx<'a> {
+		MinimizerCtx { program: "aws", subcommand: Some(subcommand), command, config: cfg }
+	}
+
+	#[test]
+	fn strips_curl_progress_and_preserves_long_multiline_body() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("curl", &cfg);
+		let long_line = format!("{{\"payload\":\"{}\"}}", "x".repeat(620));
+		let mut body = String::new();
+		for idx in 0..130 {
+			body.push_str("{\"idx\":");
+			body.push_str(&idx.to_string());
+			body.push_str(",\"ok\":true}\n");
+		}
+		body.push_str(&long_line);
+		body.push('\n');
+		let input = format!(
+			"  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n100  \
+			 1234  100  1234    0     0  9999      0 --:--:-- --:--:-- --:--:-- 9999\n{body}"
+		);
+		let out = filter(&ctx, &input, 0);
+		assert!(!out.text.contains("% Total"));
+		assert!(!out.text.contains("--:--:--"));
+		assert_eq!(out.text, body);
+	}
+
+	#[test]
+	fn strips_wget_progress_and_preserves_body_percent_line() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("wget", &cfg);
+		let input = "--2026-04-24--  https://example.test/data.json\nResolving example.test... \
+		             127.0.0.1\n     0K .......... .......... 50% 1.2M 0s\n    20K .......... \
+		             .......... 100% 2.0M=0.1s\n100% real body\n[{\"id\":1}]\n";
+		let expected = "100% real body\n[{\"id\":1}]\n";
+		let out = filter(&ctx, input, 0);
+		assert_eq!(out.text, expected);
+	}
+
+	#[test]
+	fn curl_silent_preserves_body_lines_that_look_like_progress() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx_command("curl", "curl -s https://example.test/body", &cfg);
+		let input = "% Total legitimate response header\n100%[body]\n";
+		let out = filter(&ctx, input, 0);
+		assert!(!out.changed);
+		assert_eq!(out.text, input);
+	}
+
+	#[test]
+	fn wget_quiet_preserves_body_lines_that_look_like_progress() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx_command("wget", "wget -qO- https://example.test/body", &cfg);
+		let input = "--body marker with https://example.test\n100%[body]\n";
+		let out = filter(&ctx, input, 0);
+		assert!(!out.changed);
+		assert_eq!(out.text, input);
+	}
+
+	#[test]
+	fn preserves_psql_table_row_count_and_errors() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("psql", &cfg);
+		let input = " id | name\n----+------\n 1  | alice\n 2  | bob\nERROR: duplicate key value \
+		             violates unique constraint\n(2 rows)\n";
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("id\tname"));
+		assert!(out.text.contains("1\talice"));
+		assert!(
+			out.text
+				.contains("ERROR: duplicate key value violates unique constraint")
+		);
+		assert!(out.text.contains("(2 rows)"));
+	}
+
+	/// Data rows whose first cell reads like a message (`ERROR`, `exception`)
+	/// are table rows: they stay normalized and under the row cap rather than
+	/// all being re-emitted in front of the table.
+	#[test]
+	fn psql_message_like_data_rows_stay_under_the_row_cap() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("psql", &cfg);
+		let mut input = String::from(" level | message\n-------+---------\n");
+		for idx in 0..5000 {
+			let _ = writeln!(input, " ERROR | disk full on volume {idx}");
+		}
+		input.push_str("(5000 rows)\n");
+		let out = filter(&ctx, &input, 0);
+		assert!(out.text.starts_with("level\tmessage\n"), "{}", out.text);
+		assert_eq!(out.text.matches("disk full").count(), MAX_PSQL_ROWS);
+		assert!(
+			out.text
+				.contains(&format!("[…{} rows elided…]", 5000 - MAX_PSQL_ROWS))
+		);
+		assert!(out.text.ends_with("(5000 rows)\n"));
+	}
+
+	/// psql messages after a table that quote SQL with `||` are messages, not
+	/// rows: they stay verbatim even once the table has used up the row cap.
+	#[test]
+	fn psql_messages_quoting_pipes_after_a_table_stay_verbatim() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("psql", &cfg);
+		let mut input = String::from(" id | name\n----+------\n");
+		for idx in 0..50 {
+			let _ = writeln!(input, " {idx:>2} | n{idx}");
+		}
+		input.push_str(
+			"(50 rows)\n\nERROR:  operator does not exist: integer || integer\nLINE 1: select 1 || \
+			 2\n                 ^\nHINT:  No operator matches the given name and argument types.\n",
+		);
+		let out = filter(&ctx, &input, 1);
+		assert!(
+			out.text
+				.contains("ERROR:  operator does not exist: integer || integer\n"),
+			"{}",
+			out.text
+		);
+		assert!(out.text.contains("LINE 1: select 1 || 2\n"), "{}", out.text);
+		assert!(
+			out.text
+				.contains(&format!("[…{} rows elided…]", 50 - MAX_PSQL_ROWS)),
+			"{}",
+			out.text
+		);
+	}
+
+	/// The same in expanded output: the message after the records stays
+	/// verbatim instead of turning into a field of the last record.
+	#[test]
+	fn psql_messages_quoting_pipes_after_expanded_records_stay_verbatim() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("psql", &cfg);
+		let input = "-[ RECORD 1 ]-----\nid | 1\nname | alice\nERROR:  operator does not exist: \
+		             integer || integer\nLINE 1: select 1 || 2\n";
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("-[ RECORD 1 ]----- id=1 name=alice\n"), "{}", out.text);
+		assert!(
+			out.text
+				.contains("ERROR:  operator does not exist: integer || integer\n"),
+			"{}",
+			out.text
+		);
+		assert!(out.text.contains("LINE 1: select 1 || 2\n"), "{}", out.text);
+	}
+
+	#[test]
+	fn compacts_psql_expanded_dashed_records_and_preserves_footer() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("psql", &cfg);
+		let input = "-[ RECORD 1 ]-----\nid | 1\nname | alice\n-[ RECORD 2 ]-----\nid | 2\nname | \
+		             bob\n(2 rows)\n";
+		let out = filter(&ctx, input, 0);
+		assert!(out.text.contains("-[ RECORD 1 ]----- id=1 name=alice"));
+		assert!(out.text.contains("-[ RECORD 2 ]----- id=2 name=bob"));
+		assert!(out.text.contains("(2 rows)"));
+	}
+
+	#[test]
+	fn preserves_long_aws_json_output() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		let mut input = String::new();
+		for idx in 0..160 {
+			input.push_str("{\"InstanceId\":\"i-");
+			let id = idx.to_string();
+			for _ in id.len()..4 {
+				input.push('0');
+			}
+			input.push_str(&id);
+			input.push_str("\"}\n");
+		}
+		let out = filter(&ctx, &input, 0);
+		assert_eq!(out.text, input);
+	}
+
+	#[test]
+	fn aws_s3_cp_to_stdout_preserves_body() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = aws_ctx("s3", "aws s3 cp s3://bucket/file.json -", &cfg);
+		let input = "{\"key\": \"value\", \"% Total\": 100}\n";
+		let out = filter(&ctx, input, 0);
+		assert!(!out.changed, "stdout pipe body must not be rewritten: {:?}", out.text);
+	}
+
+	#[test]
+	fn aws_s3_cp_to_stdout_with_trailing_options_preserves_body() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = aws_ctx("s3", "aws s3 cp s3://bucket/file.json - --request-payer requester", &cfg);
+		let input = "{\"key\": \"value\", \"% Total\": 100}\n";
+		let out = filter(&ctx, input, 0);
+		assert!(!out.changed, "stdout pipe body must not be rewritten: {:?}", out.text);
+	}
+
+	#[test]
+	fn compacts_ec2_describe_instances_json() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		let input = r#"{
+    "Reservations": [
+        {
+            "Groups": [],
+            "Instances": [
+                {
+                    "InstanceId": "i-1234567890abcdef0",
+                    "InstanceType": "t2.micro",
+                    "State": { "Code": 16, "Name": "running" },
+                    "PrivateIpAddress": "10.0.0.1",
+                    "Tags": [
+                        { "Key": "Name", "Value": "web-server" },
+                        { "Key": "env", "Value": "prod" }
+                    ]
+                },
+                {
+                    "InstanceId": "i-abcdef1234567890",
+                    "InstanceType": "t3.large",
+                    "State": { "Code": 80, "Name": "stopped" },
+                    "PrivateIpAddress": "10.0.0.2",
+                    "Tags": []
+                }
+            ],
+            "OwnerId": "123456789012",
+            "ReservationId": "r-1234567890abcdef0"
+        }
+    ]
+}"#;
+		let out = filter(&ctx, input, 0);
+		assert!(
+			out.text
+				.contains("i-1234567890abcdef0\tt2.micro\trunning\t10.0.0.1\tweb-server")
+		);
+		assert!(
+			out.text
+				.contains("i-abcdef1234567890\tt3.large\tstopped\t10.0.0.2\t-")
+		);
+		assert!(out.text.contains("2 instance(s)"));
+	}
+
+	#[test]
+	fn compacts_cloudwatch_log_events_json() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		let input = r#"{
+    "events": [
+        {
+            "timestamp": 1705310100000,
+            "message": "START RequestId: abc123 Version: $LATEST",
+            "ingestionTime": 1705310101000
+        },
+        {
+            "timestamp": 1705310101000,
+            "message": "END RequestId: abc123",
+            "ingestionTime": 1705310102000
+        }
+    ],
+    "nextForwardToken": "f/123",
+    "nextBackwardToken": "b/123"
+}"#;
+		let out = filter(&ctx, input, 0);
+		assert!(
+			out.text
+				.contains("START RequestId: abc123 Version: $LATEST")
+		);
+		assert!(out.text.contains("END RequestId: abc123"));
+		assert!(out.text.contains("2 event(s)"));
+	}
+
+	#[test]
+	fn compacts_dynamodb_typed_json() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		let input = r#"{
+    "Items": [
+        {
+            "pk": { "S": "user#1" },
+            "age": { "N": "42" },
+            "active": { "BOOL": true },
+            "tags": { "SS": ["a", "b"] },
+            "meta": { "M": { "city": { "S": "Paris" } } }
+        }
+    ],
+    "Count": 1
+}"#;
+		let out = filter(&ctx, input, 0);
+		assert!(out.text.contains("pk=user#1"));
+		assert!(out.text.contains("age=42"));
+		assert!(out.text.contains("active=true"));
+		assert!(out.text.contains("tags=[a,b]"));
+		const META_ATTR: &str = "meta={city:Paris}";
+		assert!(out.text.contains(META_ATTR));
+		assert!(out.text.contains("1 item(s)"));
+	}
+
+	#[test]
+	fn aws_json_parse_failure_falls_back_to_progress_strip() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		// Invalid JSON should fall back to existing behavior
+		let input = "{invalid json here}\nsome output\n";
+		let out = filter(&ctx, input, 0);
+		assert_eq!(out.text, input);
+	}
+
+	#[test]
+	fn aws_unknown_json_uses_generic_safe_table() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		let input =
+			r#"{"Things": [{"Name": "alpha", "Status": "ready", "Password": "LEAK_SENTINEL"}]}"#;
+		let out = filter(&ctx, input, 0);
+		assert!(out.text.contains("Name\tStatus"));
+		assert!(out.text.contains("alpha\tready"));
+		assert!(!out.text.contains("LEAK_SENTINEL"));
+	}
+
+	#[test]
+	fn compacts_new_aws_service_shapes() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let cases = [
+			(
+				"sts",
+				"aws sts get-caller-identity",
+				r#"{"UserId":"AIDA","Account":"123456789012","Arn":"arn:aws:iam::123456789012:user/alice","ResponseMetadata":{"RequestId":"LEAK_SENTINEL"}}"#,
+				"account=123456789012 arn=arn:aws:iam::123456789012:user/alice user-id=AIDA",
+			),
+			(
+				"s3api",
+				"aws s3api list-buckets",
+				r#"{"Buckets":[{"Name":"builds","CreationDate":"2026-05-27T00:00:00Z"}]}"#,
+				"builds\t2026-05-27T00:00:00Z",
+			),
+			(
+				"lambda",
+				"aws lambda list-functions",
+				r#"{"Functions":[{"FunctionName":"api","Runtime":"nodejs20.x","MemorySize":256,"LastModified":"today","Environment":{"Variables":{"SECRET":"LEAK_SENTINEL"}}}]}"#,
+				"api\tnodejs20.x\t256\ttoday",
+			),
+			(
+				"iam",
+				"aws iam list-roles",
+				r#"{"Roles":[{"RoleName":"deploy","Arn":"arn:role/deploy","CreateDate":"today","AssumeRolePolicyDocument":"LEAK_SENTINEL"}]}"#,
+				"deploy\tarn:role/deploy\ttoday",
+			),
+			(
+				"logs",
+				"aws logs get-log-events",
+				r#"{"events":[{"timestamp":1,"message":"ERROR failed"}]}"#,
+				"1\tERROR\tERROR failed",
+			),
+			(
+				"ecs",
+				"aws ecs list-clusters",
+				r#"{"clusterArns":["arn:aws:ecs:cluster/default"]}"#,
+				"arn:aws:ecs:cluster/default",
+			),
+			(
+				"rds",
+				"aws rds describe-db-instances",
+				r#"{"DBInstances":[{"DBInstanceIdentifier":"db1","Engine":"postgres","DBInstanceStatus":"available","Endpoint":{"Address":"db.local"}}]}"#,
+				"db1\tpostgres\tavailable\tdb.local",
+			),
+			(
+				"cloudformation",
+				"aws cloudformation describe-stacks",
+				r#"{"Stacks":[{"StackName":"app","StackStatus":"CREATE_COMPLETE","LastUpdatedTime":"today"}]}"#,
+				"app\tCREATE_COMPLETE\ttoday",
+			),
+			(
+				"eks",
+				"aws eks describe-cluster",
+				r#"{"cluster":{"name":"prod","status":"ACTIVE","version":"1.30","endpoint":"https://eks"}}"#,
+				"prod\tACTIVE\t1.30\thttps://eks",
+			),
+			(
+				"sqs",
+				"aws sqs list-queues",
+				r#"{"QueueUrls":["https://sqs.local/q"]}"#,
+				"https://sqs.local/q",
+			),
+			(
+				"secretsmanager",
+				"aws secretsmanager list-secrets",
+				r#"{"SecretList":[{"Name":"db","ARN":"arn:secret:db","LastChangedDate":"today","SecretString":"LEAK_SENTINEL"}]}"#,
+				"db\tarn:secret:db\ttoday",
+			),
+		];
+		for (service, command, input, expected) in cases {
+			let ctx = aws_ctx(service, command, &cfg);
+			let out = filter(&ctx, input, 0);
+			assert!(out.text.contains(expected), "{service}: {}", out.text);
+			assert!(!out.text.contains("LEAK_SENTINEL"), "{service}");
+			assert_output_pure(&out.text);
+		}
+	}
+
+	#[test]
+	fn compacts_s3_text_ls() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = aws_ctx("s3", "aws s3 ls", &cfg);
+		let out = filter(&ctx, "2026-05-27 01:02:03 builds\n2026-05-27 01:03:04 logs\n", 0);
+		assert!(out.text.contains("builds\t2026-05-27 01:02:03"));
+		assert_output_pure(&out.text);
+	}
+
+	#[test]
+	fn s3_ls_summarize_footer_is_not_parsed_as_row() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = aws_ctx("s3", "aws s3 ls --summarize s3://b/", &cfg);
+		// `--summarize` appends `Total Objects:`/`Total Size:` footers that lack
+		// a real date/time prefix; they must not be reshaped into bogus object
+		// rows or silently dropped.
+		let input = "2026-05-27 01:02:03 100 builds\n\nTotal Objects: 1\nTotal Size: 100\n";
+		let out = filter(&ctx, input, 0);
+		assert!(out.text.contains("builds\t2026-05-27 01:02:03"), "{:?}", out.text);
+		assert!(out.text.contains("Total Objects: 1"), "{:?}", out.text);
+		assert!(out.text.contains("Total Size: 100"), "{:?}", out.text);
+	}
+
+	#[test]
+	fn s3_ls_common_prefix_with_spaces_is_preserved() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = aws_ctx("s3", "aws s3 ls s3://b/", &cfg);
+		// `PRE` common-prefix names can contain spaces; the full name must
+		// survive rather than being truncated to the first token.
+		let out = filter(&ctx, "                           PRE my folder/\n", 0);
+		assert!(out.text.contains("my folder"), "{:?}", out.text);
+	}
+
+	#[test]
+	fn s3_cp_output_is_not_parsed_as_listing() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = aws_ctx("s3", "aws s3 cp ./file.txt s3://bucket/file.txt", &cfg);
+		// `aws s3 cp` emits a transfer result line, not a listing; it must pass
+		// through untouched rather than be reshaped into a bucket/date table.
+		let input = "upload: ./file.txt to s3://bucket/file.txt\n";
+		let out = filter(&ctx, input, 0);
+		assert_eq!(out.text, input);
+	}
+
+	#[test]
+	fn malformed_new_aws_service_json_passthroughs() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		for service in [
+			"sts",
+			"s3",
+			"lambda",
+			"iam",
+			"logs",
+			"ecs",
+			"rds",
+			"cloudformation",
+			"eks",
+			"sqs",
+			"secretsmanager",
+		] {
+			let ctx = aws_ctx(service, "aws service op", &cfg);
+			let input = "{not-json";
+			let out = filter(&ctx, input, 0);
+			assert_eq!(out.text, input, "{service}");
+		}
+	}
+
+	#[test]
+	fn sensitive_aws_keys_never_leak_from_generic() {
+		let mut fields = String::new();
+		for key in SENSITIVE_AWS_KEYS {
+			let _ = write!(fields, r#""{key}":"LEAK_SENTINEL","#);
+		}
+		let input = format!(r#"{{"Unknowns":[{{"Name":"safe",{fields}"Status":"ok"}}]}}"#);
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("aws", &cfg);
+		let out = filter(&ctx, &input, 0);
+		assert!(out.text.contains("safe"));
+		assert!(!out.text.contains("LEAK_SENTINEL"));
+	}
+
+	fn assert_output_pure(out: &str) {
+		assert!(!out.contains('\x1b'));
+		assert!(!out.contains("&&"));
+		assert!(!out.contains(';'));
+		assert!(!out.contains('`'));
 	}
 }

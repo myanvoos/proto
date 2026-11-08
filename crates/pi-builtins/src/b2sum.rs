@@ -1,12 +1,16 @@
-use brush_core::{ShellExtensions, builtins::Registration};
+//! `b2sum` builtin: compute and check BLAKE2b digests.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use clap::ArgMatches;
 use uucore::checksum::{AlgoKind, BlakeLength, parse_blake_length};
 
 use crate::{
 	cksum,
-	host::{Host, Utility, matches_parser, util},
+	host::{Host, Utility, matches_parser},
 };
 
+/// Parsed `b2sum` invocation.
 pub(crate) struct B2sum {
 	matches: ArgMatches,
 }
@@ -38,6 +42,22 @@ fn app() -> clap::Command {
 	cksum::command(B2sum::NAME, true)
 }
 
-pub(crate) fn b2sum_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<B2sum, SE>()
+#[cfg(test)]
+mod tests {
+	use super::B2sum;
+	use crate::host::run_util;
+
+	#[test]
+	fn length_selects_the_blake2b_output_size() {
+		let (code, capture) = run_util::<B2sum>(&["-l", "8"], "abc", "/");
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "6b  -\n");
+	}
+
+	#[test]
+	fn length_must_be_a_multiple_of_eight() {
+		let (code, capture) = run_util::<B2sum>(&["-l", "7"], "", "/");
+		assert_eq!(code, 1);
+		assert!(capture.err().contains("multiple of 8"), "{}", capture.err());
+	}
 }

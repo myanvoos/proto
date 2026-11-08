@@ -4,10 +4,9 @@
 
 #![cfg(unix)]
 
-use std::{io::Read as _, os::unix::process::CommandExt as _};
+use std::os::unix::process::CommandExt as _;
 
-use brush_core::{Shell, SourceInfo, openfiles::OpenFiles};
-use pi_builtins::{BuiltinSet, default_builtins};
+use pi_shell::{ShellExecuteOptions, cancel::CancelToken, execute_shell};
 
 /// Set in the child process that runs a test body.
 const CHILD: &str = "PI_SHELL_TEST_DESCRIPTOR_LIMIT_CHILD";
@@ -75,32 +74,16 @@ fn run(command: &str) -> (Option<i32>, String) {
 		.enable_all()
 		.build()
 		.expect("tokio runtime");
-	let command = command.to_owned();
 	runtime.block_on(async {
-		tokio::spawn(async move {
-			// Exercise the interpreter's descriptor inheritance directly. Proto's
-			// optional per-stage diagnostic capture deliberately opens its own pipes.
-			let mut shell = Shell::builder()
-				.builtins(default_builtins(BuiltinSet::BashMode))
-				.build()
-				.await
-				.expect("shell");
-			let (mut reader, writer) = std::io::pipe().expect("output pipe");
-			let mut params = shell.default_exec_params();
-			params.set_fd(OpenFiles::STDOUT_FD, writer.try_clone().unwrap().into());
-			params.set_fd(OpenFiles::STDERR_FD, writer.into());
-			let result = shell
-				.run_string(&command, &SourceInfo::default(), &params)
-				.await
-				.expect("execution");
-			drop(params);
-			drop(shell);
-			let mut output = String::new();
-			reader.read_to_string(&mut output).unwrap();
-			(Some(i32::from(u8::from(result.exit_code))), output)
-		})
+		let (tx, rx) = flume::unbounded::<String>();
+		let result = execute_shell(
+			ShellExecuteOptions { command: command.to_string(), ..Default::default() },
+			Some(tx),
+			CancelToken::default(),
+		)
 		.await
-		.expect("shell worker")
+		.expect("shell execution");
+		(result.exit_code, rx.try_iter().collect())
 	})
 }
 
@@ -141,8 +124,9 @@ fn nesting_holds_no_descriptor_per_level() {
 	assert_eq!(outcomes, [("function", reached.clone()), ("source", reached)]);
 }
 
-/// Running out of descriptors prints one diagnostic naming the limit, and the
-/// next command still runs. Regression: the shell printed nothing.
+/// Running out of descriptors prints one diagnostic naming the limit (bash's
+/// `file: strerror` redirection error, the limit appended), and the next
+/// command still runs. Regression: the shell printed nothing.
 #[test]
 fn running_out_of_descriptors_names_the_limit() {
 	if !in_limited_child("running_out_of_descriptors_names_the_limit") {
@@ -157,11 +141,7 @@ fn running_out_of_descriptors_names_the_limit() {
 	assert_eq!(code, Some(0), "{output}");
 	assert_eq!(lines.len(), 2, "{output}");
 	assert_eq!(lines[1], "after=1");
-	for part in [
-		"failed to redirect to /dev/null: Too many open files",
-		"limit of 128 open files",
-		"ulimit -n",
-	] {
+	for part in ["/dev/null: Too many open files", "limit of 128 open files", "ulimit -n"] {
 		assert!(lines[0].contains(part), "missing {part:?} in {output}");
 	}
 }

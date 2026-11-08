@@ -1,7 +1,6 @@
 //! `uptime` builtin: tell how long the system has been running.
 //!
-//! Report line, user counting, and boot-time sources match the reference
-//! output.
+//! Report line, user counting, and boot-time sources match the reference output.
 
 use std::{
 	ffi::{OsStr, OsString},
@@ -9,12 +8,11 @@ use std::{
 	path::Path,
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint, builder::ValueParser};
 use jiff::{Timestamp, tz::TimeZone};
 
 use crate::{
-	host::{Host, Utility, format_usage, matches_parser, util},
+	host::{Host, Utility, format_usage, matches_parser},
 	time_zone::shell_time_zone,
 };
 
@@ -72,15 +70,10 @@ impl Utility for Uptime {
 			if utmp.boot_time.is_none() {
 				boot_time_unknown(host);
 			}
-			let (line, complete) =
-				uptime_line(now, &zone, utmp.boot_time, utmp.users, &load_average());
+			let (line, complete) = uptime_line(now, &zone, utmp.boot_time, utmp.users, &load_average());
 			(line, i32::from(!complete))
 		};
-		match host
-			.stdout
-			.write_all(text.as_bytes())
-			.and_then(|()| host.stdout.flush())
-		{
+		match host.stdout.write_all(text.as_bytes()).and_then(|()| host.stdout.flush()) {
 			Ok(()) => status,
 			Err(error) => {
 				host.error(error, 1);
@@ -139,17 +132,11 @@ fn uptime_line(
 	users: usize,
 	loads: &[f64],
 ) -> (String, bool) {
-	let clock = Timestamp::from_second(now).map(|now| {
-		now.to_zoned(zone.clone())
-			.strftime(" %H:%M:%S  ")
-			.to_string()
-	});
+	let clock = Timestamp::from_second(now)
+		.map(|now| now.to_zoned(zone.clone()).strftime(" %H:%M:%S  ").to_string());
 	let mut complete = clock.is_ok();
 	let mut line = clock.unwrap_or_else(|_| " ??:????  ".to_owned());
-	match boot_time
-		.and_then(|boot| now.checked_sub(boot))
-		.filter(|uptime| *uptime >= 0)
-	{
+	match boot_time.and_then(|boot| now.checked_sub(boot)).filter(|uptime| *uptime >= 0) {
 		Some(uptime) => line.push_str(&up_duration(uptime)),
 		None => {
 			line.push_str("up ???? days ??:??,  ");
@@ -175,11 +162,7 @@ fn up_duration(seconds: i64) -> String {
 }
 
 fn user_count(users: usize) -> String {
-	if users == 1 {
-		"1 user".to_owned()
-	} else {
-		format!("{users} users")
-	}
+	if users == 1 { "1 user".to_owned() } else { format!("{users} users") }
 }
 
 /// What follows the user count: `,  load average: a, b, c` and the newline,
@@ -201,11 +184,7 @@ fn load_suffix(loads: &[f64]) -> String {
 /// `-p` output for an uptime of `seconds`, as uutils formats it.
 fn pretty_uptime(seconds: i64) -> String {
 	let plural = |count: i64, unit: &str| {
-		if count == 1 {
-			format!("1 {unit}")
-		} else {
-			format!("{count} {unit}s")
-		}
+		if count == 1 { format!("1 {unit}") } else { format!("{count} {unit}s") }
 	};
 	let days = seconds / 86400;
 	let hours = seconds % 86400 / 3600;
@@ -226,10 +205,7 @@ fn pretty_uptime(seconds: i64) -> String {
 /// `-s` output: the boot time in the shell's time zone.
 fn since_line(boot: i64, zone: &TimeZone) -> String {
 	match Timestamp::from_second(boot) {
-		Ok(boot) => boot
-			.to_zoned(zone.clone())
-			.strftime("%Y-%m-%d %H:%M:%S")
-			.to_string(),
+		Ok(boot) => boot.to_zoned(zone.clone()).strftime("%Y-%m-%d %H:%M:%S").to_string(),
 		Err(_) => boot.to_string(),
 	}
 }
@@ -312,10 +288,7 @@ fn read_utmp(host: &Host, name: &OsStr, check_pids: bool) -> UtmpSummary {
 		.map(|record| record.seconds);
 	let mut first_boot = true;
 	for record in &records {
-		if record.kind == USER_PROCESS
-			&& record.has_user
-			&& !(check_pids && process_is_gone(record.pid))
-		{
+		if record.kind == USER_PROCESS && record.has_user && !(check_pids && process_is_gone(record.pid)) {
 			summary.users += 1;
 		}
 		if record.kind == BOOT_TIME {
@@ -366,9 +339,9 @@ mod layout {
 /// holds no records: a directory or unreadable file reads as empty, and a
 /// FIFO or device is not opened at all (GNU would block on a FIFO).
 #[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
-fn regular_file_bytes(_host: &Host, path: &Path) -> Vec<u8> {
-	match std::fs::metadata(&path) {
-		Ok(metadata) if metadata.is_file() => brush_core::heldfiles::read(&path).unwrap_or_default(),
+fn regular_file_bytes(host: &Host, path: &Path) -> Vec<u8> {
+	match host.fs().metadata(path) {
+		Ok(metadata) if metadata.is_file() => host.fs().read(path).unwrap_or_default(),
 		_ => Vec::new(),
 	}
 }
@@ -380,11 +353,11 @@ fn read_records(host: &Host, path: &Path) -> Vec<Record> {
 	use layout::*;
 
 	let bytes = regular_file_bytes(host, path);
-	let i16_at = |record: &[u8], at: usize| i16::from_ne_bytes([record[at], record[at + 1]]);
-	let i32_at = |record: &[u8], at: usize| {
+	let i16_at = |record: &[u8; RECORD], at: usize| i16::from_ne_bytes([record[at], record[at + 1]]);
+	let i32_at = |record: &[u8; RECORD], at: usize| {
 		i32::from_ne_bytes([record[at], record[at + 1], record[at + 2], record[at + 3]])
 	};
-	let mut chunks = bytes.chunks_exact(RECORD);
+	let mut chunks = bytes.as_chunks::<RECORD>().0.iter();
 	let signed = chunks.next().is_some_and(|signature| {
 		let user = &signature[USER..USER + USER_LEN];
 		user.split(|&byte| byte == 0).next() == Some(SIGNATURE)
@@ -411,11 +384,7 @@ fn read_records(host: &Host, path: &Path) -> Vec<Record> {
 fn read_records(host: &Host, path: &Path) -> Vec<Record> {
 	let bytes = regular_file_bytes(host, path);
 	let text = |field: &[libc::c_char]| -> Vec<u8> {
-		field
-			.iter()
-			.map(|&c| c as u8)
-			.take_while(|&byte| byte != 0)
-			.collect()
+		field.iter().map(|&c| c as u8).take_while(|&byte| byte != 0).collect()
 	};
 	bytes
 		.chunks_exact(size_of::<libc::utmpx>())
@@ -468,7 +437,7 @@ fn system_boot_time(_host: &Host) -> Option<i64> {
 /// gnulib's Linux fallbacks: the modification time of a file only the boot
 /// sequence touches, else now minus `CLOCK_BOOTTIME`.
 #[cfg(target_os = "linux")]
-fn system_boot_time(_host: &Host) -> Option<i64> {
+fn system_boot_time(host: &Host) -> Option<i64> {
 	const BOOT_TOUCHED_FILES: [&str; 4] = [
 		"/var/lib/systemd/random-seed",
 		"/var/lib/urandom/random-seed",
@@ -478,10 +447,8 @@ fn system_boot_time(_host: &Host) -> Option<i64> {
 	// Older stamps are bogus (2005-07-25, predating the distros involved).
 	const PLAUSIBLE: i64 = 1_122_334_455;
 	for file in BOOT_TOUCHED_FILES {
-		if let Some(mtime) = std::fs::metadata(file).ok().map(|metadata| {
-			use std::os::unix::fs::MetadataExt;
-			metadata.mtime()
-		}) && mtime >= PLAUSIBLE
+		if let Some(mtime) = host.fs().metadata(file).ok().and_then(|metadata| metadata.mtime())
+			&& mtime >= PLAUSIBLE
 		{
 			return Some(mtime);
 		}
@@ -511,7 +478,297 @@ fn system_boot_time(_host: &Host) -> Option<i64> {
 	None
 }
 
-/// Creates the `uptime` builtin registration.
-pub(crate) fn uptime_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Uptime, SE>()
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::host::run_util;
+
+	fn run(args: &[&str]) -> (i32, String, String) {
+		let (code, capture) = run_util::<Uptime>(args, "", std::env::temp_dir());
+		(code, capture.out(), capture.err())
+	}
+
+	fn run_with_env(env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
+		let (mut host, capture) = Host::for_test("uptime", "", std::env::temp_dir());
+		for (key, value) in env {
+			host.set_test_var(key, value);
+		}
+		let parsed =
+			<Uptime as clap::Parser>::try_parse_from(std::iter::once("uptime").chain(args.iter().copied()))
+				.expect("valid arguments");
+		let code = parsed.run(&mut host);
+		(code, capture.out(), capture.err())
+	}
+
+	fn utc() -> TimeZone {
+		TimeZone::UTC
+	}
+
+	#[test]
+	fn duration_field_matches_gnu_boundaries() {
+		assert_eq!(up_duration(0), "up  0:00,  ");
+		assert_eq!(up_duration(59), "up  0:00,  ");
+		assert_eq!(up_duration(59 * 60), "up  0:59,  ");
+		assert_eq!(up_duration(3600), "up  1:00,  ");
+		assert_eq!(up_duration(86399), "up 23:59,  ");
+		assert_eq!(up_duration(86400), "up 1 day  0:00,  ");
+		assert_eq!(up_duration(86400 + 21 * 3600 + 13 * 60), "up 1 day 21:13,  ");
+		assert_eq!(up_duration(2 * 86400 + 5 * 60), "up 2 days  0:05,  ");
+		assert_eq!(up_duration(400 * 86400), "up 400 days  0:00,  ");
+	}
+
+	#[test]
+	fn user_count_is_singular_only_for_one() {
+		assert_eq!(user_count(0), "0 users");
+		assert_eq!(user_count(1), "1 user");
+		assert_eq!(user_count(2), "2 users");
+	}
+
+	#[test]
+	fn load_suffix_prints_what_getloadavg_returned() {
+		assert_eq!(load_suffix(&[0.0, 1.005, 12.345]), ",  load average: 0.00, 1.00, 12.35\n");
+		assert_eq!(load_suffix(&[3.5]), ",  load average: 3.50\n");
+		assert_eq!(load_suffix(&[]), "\n");
+	}
+
+	#[test]
+	fn report_line_has_gnu_spacing_and_clock() {
+		// 2026-10-12 08:07:54 UTC, booted 1 day 21:13:30 earlier.
+		let now = 1_791_792_474;
+		let boot = now - (86400 + 21 * 3600 + 13 * 60 + 30);
+		let (line, complete) = uptime_line(now, &utc(), Some(boot), 1, &[5.06, 10.68, 10.42]);
+		assert!(complete);
+		assert_eq!(line, " 08:07:54  up 1 day 21:13,  1 user,  load average: 5.06, 10.68, 10.42\n");
+
+		let (line, _) = uptime_line(now, &TimeZone::get("Europe/Berlin").unwrap(), Some(boot), 3, &[]);
+		assert_eq!(line, " 10:07:54  up 1 day 21:13,  3 users\n");
+	}
+
+	#[test]
+	fn unknown_or_future_boot_time_prints_question_marks() {
+		let now = 1_791_792_474;
+		for boot in [None, Some(now + 1)] {
+			let (line, complete) = uptime_line(now, &utc(), boot, 0, &[1.0, 2.0, 3.0]);
+			assert!(!complete);
+			assert_eq!(line, " 08:07:54  up ???? days ??:??,  0 users,  load average: 1.00, 2.00, 3.00\n");
+		}
+	}
+
+	#[test]
+	fn pretty_format_boundaries() {
+		assert_eq!(pretty_uptime(0), "up 0 minutes");
+		assert_eq!(pretty_uptime(59), "up 0 minutes");
+		assert_eq!(pretty_uptime(60), "up 1 minute");
+		assert_eq!(pretty_uptime(59 * 60), "up 59 minutes");
+		assert_eq!(pretty_uptime(3600), "up 1 hour");
+		assert_eq!(pretty_uptime(2 * 3600 + 60), "up 2 hours, 1 minute");
+		assert_eq!(pretty_uptime(86400), "up 1 day");
+		assert_eq!(pretty_uptime(86400 + 3600 + 60), "up 1 day, 1 hour, 1 minute");
+		assert_eq!(pretty_uptime(3 * 86400 + 5 * 60), "up 3 days, 5 minutes");
+	}
+
+	#[test]
+	fn since_is_boot_time_in_shell_zone() {
+		assert_eq!(since_line(1_791_629_675, &utc()), "2026-10-10 10:54:35");
+		assert_eq!(
+			since_line(1_791_629_675, &TimeZone::get("America/New_York").unwrap()),
+			"2026-10-10 06:54:35"
+		);
+	}
+
+	#[test]
+	fn extra_operand_is_a_usage_error() {
+		let (code, out, err) = run(&["a", "b"]);
+		assert_eq!((code, out.as_str()), (1, ""));
+		assert!(err.starts_with("error: unexpected value 'b' for '[path]' found"), "{err}");
+	}
+
+	#[test]
+	fn options_combine_and_abbreviate() {
+		for (args, since, pretty, path) in [
+			(&["-ps"][..], true, true, None),
+			(&["--pre", "f"][..], false, true, Some("f")),
+			(&["f", "--si"][..], true, false, Some("f")),
+			(&["--", "-p"][..], false, false, Some("-p")),
+		] {
+			let parsed = <Uptime as clap::Parser>::try_parse_from(
+				std::iter::once("uptime").chain(args.iter().copied()),
+			)
+			.expect("valid arguments");
+			let matches = &parsed.matches;
+			assert_eq!(matches.get_flag(options::SINCE), since, "{args:?}");
+			assert_eq!(matches.get_flag(options::PRETTY), pretty, "{args:?}");
+			assert_eq!(
+				matches.get_one::<OsString>(options::PATH).and_then(|path| path.to_str()),
+				path,
+				"{args:?}"
+			);
+		}
+		let (code, _, err) = run(&["-x"]);
+		assert_eq!(code, 1);
+		assert!(err.contains("'-x'"), "{err}");
+	}
+
+	#[test]
+	fn missing_file_reports_unknown_uptime() {
+		let (code, out, err) = run_with_env(&[("TZ", "UTC")], &["/nonexistent/utmp"]);
+		assert_eq!(code, 1);
+		assert_eq!(err, "uptime: couldn't get boot time\n");
+		assert!(out.starts_with(' ') && out.contains("  up ???? days ??:??,  0 users"), "{out}");
+		assert!(out.ends_with('\n'));
+	}
+
+	#[test]
+	fn directory_operand_holds_no_records() {
+		let dir = tempfile::tempdir().unwrap();
+		let (code, out, err) = run_with_env(&[], &[dir.path().to_str().unwrap()]);
+		assert_eq!(code, 1);
+		assert_eq!(err, "uptime: couldn't get boot time\n");
+		assert!(out.contains("up ???? days ??:??,  0 users"), "{out}");
+	}
+
+	#[test]
+	fn since_and_pretty_fail_without_boot_time() {
+		for flag in ["-s", "-p"] {
+			let (code, out, err) = run(&[flag, "/nonexistent/utmp"]);
+			assert_eq!((code, out.as_str()), (1, ""), "{flag}");
+			assert_eq!(err, "uptime: couldn't get boot time\n", "{flag}");
+		}
+	}
+
+	/// Serializes records in the platform's on-disk login-record format.
+	#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+	fn utmp_file(records: &[(i16, i32, &str, i64)]) -> tempfile::NamedTempFile {
+		let mut bytes = Vec::new();
+		#[cfg(target_vendor = "apple")]
+		{
+			use layout::*;
+			let mut push = |kind: i16, pid: i32, user: &[u8], seconds: i64| {
+				let mut record = vec![0_u8; RECORD];
+				record[USER..USER + user.len()].copy_from_slice(user);
+				record[PID..PID + 4].copy_from_slice(&pid.to_ne_bytes());
+				record[TYPE..TYPE + 2].copy_from_slice(&kind.to_ne_bytes());
+				record[SECONDS..SECONDS + 4].copy_from_slice(&(seconds as i32).to_ne_bytes());
+				bytes.extend_from_slice(&record);
+			};
+			push(SIGNATURE_TYPE, 0, SIGNATURE, 0);
+			for &(kind, pid, user, seconds) in records {
+				push(kind, pid, user.as_bytes(), seconds);
+			}
+		}
+		#[cfg(all(target_os = "linux", target_env = "gnu"))]
+		for &(kind, pid, user, seconds) in records {
+			// SAFETY: `utmpx` is plain data; all-zero is valid.
+			let mut entry: libc::utmpx = unsafe { std::mem::zeroed() };
+			entry.ut_type = kind;
+			entry.ut_pid = pid;
+			for (slot, &byte) in entry.ut_user.iter_mut().zip(user.as_bytes()) {
+				*slot = byte as libc::c_char;
+			}
+			entry.ut_tv.tv_sec = seconds as _;
+			// SAFETY: viewing a plain-data struct as its bytes.
+			let raw = unsafe {
+				std::slice::from_raw_parts((&raw const entry).cast::<u8>(), size_of::<libc::utmpx>())
+			};
+			bytes.extend_from_slice(raw);
+		}
+		let mut file = tempfile::NamedTempFile::new().unwrap();
+		file.write_all(&bytes).unwrap();
+		file
+	}
+
+	#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+	#[test]
+	fn file_operand_counts_named_user_processes_and_uses_last_boot_record() {
+		let now = Timestamp::now().as_second();
+		let boot = now - (2 * 86400 + 3 * 3600 + 4 * 60 + 5);
+		let file = utmp_file(&[
+			(BOOT_TIME, 0, "", now - 10 * 86400),
+			(BOOT_TIME, 1, "", boot),
+			(USER_PROCESS, 1, "alice", now),
+			// Named user processes count without a liveness check for FILE.
+			(USER_PROCESS, i32::MAX, "bob", now),
+			// Unnamed and non-user records do not.
+			(USER_PROCESS, 1, "", now),
+			(8, 1, "carol", now),
+		]);
+		let path = file.path().to_str().unwrap();
+
+		let (code, out, err) = run_with_env(&[("TZ", "UTC")], &[path]);
+		assert_eq!((code, err.as_str()), (0, ""));
+		assert!(out.contains("  up 2 days  3:04,  2 users"), "{out}");
+
+		let (code, out, _) = run_with_env(&[("TZ", "UTC")], &["-s", path]);
+		assert_eq!((code, out), (0, format!("{}\n", since_line(boot, &utc()))));
+
+		let (code, out, _) = run(&["--pretty", path]);
+		assert_eq!((code, out.as_str()), (0, "up 2 days, 3 hours, 4 minutes\n"));
+	}
+
+	#[cfg(any(target_vendor = "apple", all(target_os = "linux", target_env = "gnu")))]
+	#[test]
+	fn file_without_boot_record_is_an_error_but_still_counts_users() {
+		let now = Timestamp::now().as_second();
+		let file = utmp_file(&[(USER_PROCESS, 1, "alice", now)]);
+		let (code, out, err) = run(&[file.path().to_str().unwrap()]);
+		assert_eq!(code, 1);
+		assert_eq!(err, "uptime: couldn't get boot time\n");
+		assert!(out.contains("up ???? days ??:??,  1 user"), "{out}");
+	}
+
+	#[cfg(target_vendor = "apple")]
+	#[test]
+	fn unsigned_utmpx_file_holds_no_records() {
+		let now = Timestamp::now().as_second();
+		let signed = utmp_file(&[(BOOT_TIME, 1, "", now - 60), (USER_PROCESS, 1, "alice", now)]);
+		let mut bytes = std::fs::read(signed.path()).unwrap();
+		bytes[..layout::SIGNATURE.len()].copy_from_slice(b"utmpx-9.99");
+		let mut file = tempfile::NamedTempFile::new().unwrap();
+		file.write_all(&bytes).unwrap();
+		let (code, out, err) = run(&[file.path().to_str().unwrap()]);
+		assert_eq!((code, err.as_str()), (1, "uptime: couldn't get boot time\n"));
+		assert!(out.contains("up ???? days ??:??,  0 users"), "{out}");
+	}
+
+	/// GNU blocks forever opening a FIFO operand; the builtin reads nothing
+	/// from it.
+	#[cfg(unix)]
+	#[test]
+	fn fifo_operand_is_not_opened() {
+		let dir = tempfile::tempdir().unwrap();
+		let fifo = dir.path().join("fifo");
+		let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+		// SAFETY: `name` is a live NUL-terminated path.
+		assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+		let (code, out, err) = run(&[fifo.to_str().unwrap()]);
+		assert_eq!((code, err.as_str()), (1, "uptime: couldn't get boot time\n"));
+		assert!(out.contains("0 users"), "{out}");
+	}
+
+	#[cfg(any(target_vendor = "apple", target_os = "linux", windows))]
+	#[test]
+	fn live_system_report() {
+		let (code, out, err) = run(&[]);
+		assert_eq!((code, err.as_str()), (0, ""));
+		let line = out.strip_suffix('\n').expect("newline-terminated");
+		let rest = line.strip_prefix(' ').expect("leading space");
+		let (clock, rest) = rest.split_at(8);
+		assert!(clock.bytes().enumerate().all(|(i, b)| if i % 3 == 2 { b == b':' } else { b.is_ascii_digit() }));
+		assert!(rest.starts_with("  up "), "{line}");
+		assert!(rest.contains(" user"), "{line}");
+
+		let (code, out, _) = run(&["-p"]);
+		assert_eq!(code, 0);
+		assert!(out.starts_with("up ") && out.ends_with("\n"), "{out}");
+	}
+
+	#[cfg(target_vendor = "apple")]
+	#[test]
+	fn live_since_matches_kern_boottime() {
+		let (host, _) = Host::for_test("uptime", "", std::env::temp_dir());
+		let boot = system_boot_time(&host).expect("kern.boottime");
+		let (code, out, err) = run_with_env(&[("TZ", "UTC")], &["-s"]);
+		assert_eq!((code, err.as_str()), (0, ""));
+		assert_eq!(out, format!("{}\n", since_line(boot, &utc())));
+	}
 }

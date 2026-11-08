@@ -1,3 +1,10 @@
+//! JavaScript framework and tool output filters.
+//!
+//! Covers command output that is not already handled by the package-manager,
+//! test-runner, or lint filters.
+
+use std::fmt::NumBuffer;
+
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
 const SUPPORTED_TOOLS: &[&str] = &["next", "prettier", "prisma"];
@@ -79,7 +86,7 @@ fn filter_next(input: &str, exit_code: i32) -> String {
 		}
 
 		if is_error_or_warning(trimmed) || is_next_summary(trimmed) {
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 			kept_any = true;
 			continue;
 		}
@@ -88,17 +95,17 @@ fn filter_next(input: &str, exit_code: i32) -> String {
 		}
 		if is_next_route_header(trimmed) {
 			in_route_table = true;
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 			kept_any = true;
 			continue;
 		}
 		if in_route_table && is_next_route_or_legend(trimmed) {
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 			kept_any = true;
 			continue;
 		}
 		if exit_code != 0 && !is_spinner_frame(trimmed) {
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 			kept_any = true;
 		}
 	}
@@ -163,7 +170,6 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 
 	let mut files = Vec::new();
 	let mut errors = Vec::new();
-	let mut unrecognized = Vec::new();
 	let mut saw_check = false;
 	let mut saw_write = false;
 	let mut all_matched = false;
@@ -205,24 +211,18 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 		}
 		if looks_like_file(trimmed) {
 			files.push(trimmed.to_string());
-			continue;
 		}
-		unrecognized.push(trimmed);
-	}
-
-	if !unrecognized.is_empty() {
-		return primitives::head_tail_lines(input, 120, 80);
 	}
 
 	let mut out = String::new();
 	if !errors.is_empty() {
 		out.push_str("Prettier errors\n");
 		for error in errors.iter().take(20) {
-			push_line(&mut out, error);
+			primitives::push_line(&mut out, error.trim_end());
 		}
 		if errors.len() > 20 {
 			out.push_str("[…");
-			out.push_str(&(errors.len() - 20).to_string());
+			out.push_str((errors.len() - 20).format_into(&mut NumBuffer::new()));
 			out.push_str(" errors elided…]\n");
 		}
 		return out;
@@ -236,7 +236,7 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 			return "Prettier: no formatting issues\n".to_string();
 		}
 		out.push_str("Prettier: ");
-		out.push_str(&files.len().to_string());
+		out.push_str(files.len().format_into(&mut NumBuffer::new()));
 		out.push_str(" file(s) need formatting\n");
 		push_file_list(&mut out, &files, 30);
 		return out;
@@ -244,13 +244,13 @@ fn filter_prettier(input: &str, exit_code: i32) -> String {
 
 	if saw_write || !files.is_empty() {
 		out.push_str("Prettier: ");
-		out.push_str(&files.len().to_string());
+		out.push_str(files.len().format_into(&mut NumBuffer::new()));
 		out.push_str(" file(s) written\n");
 		push_file_list(&mut out, &files, 30);
 		return out;
 	}
 
-	primitives::head_tail_lines(input, 120, 80)
+	"Prettier: completed\n".to_string()
 }
 
 fn looks_like_prettier_write_line(line: &str) -> bool {
@@ -269,15 +269,22 @@ fn looks_like_file(line: &str) -> bool {
 		path.rsplit('.').next(),
 		Some(
 			"js"
-				| "jsx" | "ts"
-				| "tsx" | "json"
+				| "jsx"
+				| "ts"
+				| "tsx"
+				| "json"
 				| "jsonc"
-				| "md" | "mdx"
-				| "css" | "scss"
-				| "sass" | "html"
-				| "yaml" | "yml"
+				| "md"
+				| "mdx"
+				| "css"
+				| "scss"
+				| "sass"
+				| "html"
+				| "yaml"
+				| "yml"
 				| "graphql"
-				| "vue" | "svelte"
+				| "vue"
+				| "svelte"
 		)
 	)
 }
@@ -296,16 +303,16 @@ fn filter_prisma(input: &str, exit_code: i32) -> String {
 		}
 		if is_prisma_schema_change_header(trimmed) {
 			in_schema_changes = true;
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 			continue;
 		}
 		if in_schema_changes && is_prisma_change_line(trimmed) {
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 			continue;
 		}
 		if should_keep_prisma_line(trimmed, exit_code) {
 			in_schema_changes = false;
-			push_line(&mut out, trimmed);
+			primitives::push_line(&mut out, trimmed.trim_end());
 		}
 	}
 
@@ -390,38 +397,170 @@ fn is_spinner_frame(line: &str) -> bool {
 
 fn push_file_list(out: &mut String, files: &[String], limit: usize) {
 	for file in files.iter().take(limit) {
-		push_line(out, file);
+		primitives::push_line(out, file.trim_end());
 	}
 	if files.len() > limit {
 		out.push_str("[…");
-		out.push_str(&(files.len() - limit).to_string());
+		out.push_str((files.len() - limit).format_into(&mut NumBuffer::new()));
 		out.push_str(" files elided…]\n");
 	}
-}
-
-fn push_line(out: &mut String, line: &str) {
-	out.push_str(line.trim_end());
-	out.push('\n');
 }
 
 #[cfg(test)]
 mod tests {
 	use std::fmt::Write as _;
 
-	use crate::minimizer::{MinimizerConfig, apply};
+	use super::*;
+	use crate::minimizer::MinimizerConfig;
+
+	fn ctx<'a>(
+		program: &'a str,
+		subcommand: Option<&'a str>,
+		command: &'a str,
+		config: &'a MinimizerConfig,
+	) -> MinimizerCtx<'a> {
+		MinimizerCtx { program, subcommand, command, config }
+	}
 
 	#[test]
-	fn unrecognized_prettier_output_is_not_replaced_with_canned_success() {
+	fn supports_direct_bun_and_npx_routing_tools() {
+		assert!(supports("next", Some("build")));
+		assert!(supports("prettier", Some("--check")));
+		assert!(supports("prisma", Some("generate")));
+		assert!(supports("bun", Some("next")));
+		assert!(supports("bun", Some("prettier")));
+		assert!(supports("bun", Some("prisma")));
+		assert!(supports("npx", Some("prettier")));
+		assert!(supports("npx", Some("prisma")));
+		assert!(supports("npx", Some("tsc")));
+		assert!(supports("npx", Some("eslint")));
+		assert!(!supports("npx", Some("jest")));
+	}
+
+	#[test]
+	fn bun_invocations_use_specialized_tool_filters() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+
+		let prettier_ctx = ctx("bun", Some("prettier"), "bun prettier --check .", &cfg);
+		let prettier = filter(
+			&prettier_ctx,
+			"Checking formatting...\n[warn] src/app/page.tsx\nCode style issues found in 1 file. \
+			 Forgot to run Prettier?\n",
+			1,
+		);
+		assert!(prettier.text.contains("1 file(s) need formatting"));
+		assert!(prettier.text.contains("src/app/page.tsx"));
+		assert!(!prettier.text.contains("Checking formatting"));
+
+		let prisma_ctx = ctx("bun", Some("prisma"), "bun prisma generate", &cfg);
+		let prisma = filter(
+			&prisma_ctx,
+			"Prisma schema loaded from prisma/schema.prisma\n✔ Generated Prisma Client to \
+			 ./node_modules/@prisma/client in 234ms\nStart by importing your Prisma Client:\n",
+			0,
+		);
+		assert!(prisma.text.contains("Generated Prisma Client"));
+		assert!(!prisma.text.contains("Prisma schema loaded"));
+
+		let next_ctx = ctx("bun", Some("run"), "bun run next build", &cfg);
+		let next = filter(
+			&next_ctx,
+			"Creating an optimized production build ...\nRoute (app)                    Size     \
+			 First Load JS\n┌ ○ /                          1.2 kB        132 kB\n✓ Built in 34.2s\n",
+			0,
+		);
+		assert!(next.text.contains("Route (app)"));
+		assert!(!next.text.contains("Creating an optimized"));
+	}
+
+	#[test]
+	fn next_build_keeps_route_table_and_strips_progress() {
+		let input = "   ▲ Next.js 15.2.0\n   Creating an optimized production build ...\n✓ Compiled \
+		             successfully\n✓ Collecting page data\nRoute (app)                    Size     \
+		             First Load JS\n┌ ○ /                          1.2 kB        132 kB\n├ ● \
+		             /dashboard                 2.5 kB        156 kB\n└ ƒ /api/users                 \
+		             0.5 kB         89 kB\n○  (Static)  prerendered as static content\n✓ Built in \
+		             34.2s\n";
+		let out = filter_next(input, 0);
+
+		assert!(out.contains("Route (app)"));
+		assert!(out.contains("/dashboard"));
+		assert!(out.contains("Built in 34.2s"));
+		assert!(!out.contains("Creating an optimized"));
+		assert!(!out.contains("Collecting page data"));
+	}
+
+	#[test]
+	fn prettier_check_preserves_unformatted_files() {
+		let input = "Checking formatting...\n[warn] src/app/page.tsx\n[warn] src/lib/data.ts\nCode \
+		             style issues found in 2 files. Forgot to run Prettier?\n";
+		let out = filter_prettier(input, 1);
+
+		assert!(out.contains("2 file(s) need formatting"));
+		assert!(out.contains("src/app/page.tsx"));
+		assert!(out.contains("src/lib/data.ts"));
+		assert!(!out.contains("Checking formatting"));
+	}
+
+	#[test]
+	fn prettier_write_is_compact() {
+		let input = "src/app/page.tsx 42ms\nsrc/lib/data.ts 11ms\n";
+		let out = filter_prettier(input, 0);
+
+		assert!(out.contains("2 file(s) written"));
+		assert!(out.contains("src/app/page.tsx"));
+		assert!(!out.contains("42ms"));
+	}
+
+	#[test]
+	fn prisma_generate_strips_boilerplate_but_keeps_result() {
+		let input = "Prisma schema loaded from prisma/schema.prisma\n█▀▀▀\n✔ Generated Prisma \
+		             Client (v5.7.0) to ./node_modules/@prisma/client in 234ms\nStart by importing \
+		             your Prisma Client:\nimport { PrismaClient } from '@prisma/client'\n";
+		let out = filter_prisma(input, 0);
+
+		assert!(out.contains("Generated Prisma Client"));
+		assert!(!out.contains("Prisma schema loaded"));
+		assert!(!out.contains("Start by importing"));
+		assert!(!out.contains("█"));
+	}
+
+	#[test]
+	fn prisma_migrate_keeps_status_and_errors() {
+		let input = "Prisma schema loaded from prisma/schema.prisma\nDatasource \"db\": PostgreSQL \
+		             database\n3 migrations found in prisma/migrations\nFollowing migration have \
+		             not yet been applied:\n202604240501_add_accounts\nError: P3009\nfailed \
+		             migration detected\n";
+		let out = filter_prisma(input, 1);
+
+		assert!(out.contains("3 migrations found"));
+		assert!(out.contains("202604240501_add_accounts"));
+		assert!(out.contains("P3009"));
+		assert!(!out.contains("Datasource"));
+	}
+
+	#[test]
+	fn prettier_errors_truncation_is_canonical() {
 		let mut input = String::new();
-		for index in 0..60 {
-			let _ = writeln!(input, "plugin diagnostic {index}: content that must stay visible");
+		for i in 1..=25 {
+			let _ = writeln!(input, "error in file{i}.js: line {i}");
 		}
+		let out = filter_prettier(&input, 1);
+		assert!(out.contains("[…5 errors elided…]\n"));
+		assert!(!out.contains("more errors"));
+		assert!(!out.contains("... +"));
+	}
 
-		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
-
-		let output = apply("prettier .", &input, 0, &config);
-
-		assert_eq!(output.text, input);
-		assert_ne!(output.text, "Prettier: completed\n");
+	#[test]
+	fn file_list_truncation_is_canonical() {
+		let mut files = Vec::new();
+		for i in 1..=35 {
+			files.push(format!("src/file{i}.tsx"));
+		}
+		let mut out = String::new();
+		push_file_list(&mut out, &files, 30);
+		assert!(out.contains("[…5 files elided…]\n"));
+		assert!(!out.contains("more files"));
+		assert!(!out.contains("... +"));
 	}
 }

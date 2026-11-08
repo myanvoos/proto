@@ -6,8 +6,8 @@
 //! `LC_ALL=C sort` at the prompt. Nothing here calls `setlocale`, which would
 //! change the C locale of the whole host process.
 //!
-//! Used by `sort` and `comm` (collation), `sort` (numerics) and `fold`
-//! (character encoding).
+//! Used by `sort` and `comm` (collation), `sort` (numerics), `uniq`, `date`,
+//! `du`, `df`, `env`, and `fold`.
 
 #![allow(dead_code, reason = "each utility uses a subset")]
 

@@ -1,20 +1,18 @@
+//! `readlink` builtin: print a symbolic link's value or a canonical file name.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	ffi::OsString,
-	fs,
-	io::Write,
+	io::{self, Write},
 	path::{Path, PathBuf},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use uucore::{
-	display::Quotable,
-	fs::{MissingHandling, ResolveMode, canonicalize},
-	libc::EINVAL,
-	line_ending::LineEnding,
-};
+use pi_vfs::{BlockingFs, CanonicalizeOptions, MissingHandling, ResolveMode};
+use uucore::{display::Quotable, libc::EINVAL, line_ending::LineEnding};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes};
 
 const OPT_CANONICALIZE: &str = "canonicalize";
 const OPT_CANONICALIZE_MISSING: &str = "canonicalize-missing";
@@ -27,6 +25,7 @@ const OPT_ZERO: &str = "zero";
 
 const ARG_FILES: &str = "files";
 
+/// Parsed `readlink` invocation.
 pub(crate) struct Readlink {
 	matches: ArgMatches,
 }
@@ -41,6 +40,8 @@ impl Utility for Readlink {
 		let use_zero = self.matches.get_flag(OPT_ZERO);
 		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var("POSIXLY_CORRECT").is_some();
 
+		// GNU readlink -f/-e/-m follows symlinks first and then applies `..`
+		// (physical resolution). Logical mode would collapse `..` first.
 		let resolve_mode = if self.matches.get_flag(OPT_CANONICALIZE)
 			|| self.matches.get_flag(OPT_CANONICALIZE_EXISTING)
 			|| self.matches.get_flag(OPT_CANONICALIZE_MISSING)
@@ -61,8 +62,7 @@ impl Utility for Readlink {
 		let files: Vec<PathBuf> = self
 			.matches
 			.get_many::<OsString>(ARG_FILES)
-			.map(|values| values.map(PathBuf::from).collect())
-			.unwrap_or_default();
+			.map_or_default(|values| values.map(PathBuf::from).collect());
 
 		if files.is_empty() {
 			host.error("missing operand", 1);
@@ -70,7 +70,10 @@ impl Utility for Readlink {
 		}
 
 		if no_trailing_delimiter && files.len() > 1 {
-			let _ = writeln!(host.stderr, "readlink: ignoring --no-newline with multiple arguments");
+			let _ = writeln!(
+				host.stderr,
+				"readlink: ignoring --no-newline with multiple arguments"
+			);
 			no_trailing_delimiter = false;
 		}
 
@@ -80,12 +83,12 @@ impl Utility for Readlink {
 			Some(LineEnding::from_zero_flag(use_zero))
 		};
 
+		let canonicalize = CanonicalizeOptions::new(missing_handling, resolve_mode);
 		for operand in &files {
-			let resolved = host.resolve(operand);
 			let path_result = if resolve_mode == ResolveMode::None {
-				fs::read_link(&resolved)
+				read_link(host.fs(), &host.paths().resolve_link(operand))
 			} else {
-				canonicalize(&resolved, missing_handling, resolve_mode)
+				canonicalize_path(host.fs(), &host.resolve(operand), &canonicalize)
 			};
 
 			match path_result {
@@ -96,7 +99,12 @@ impl Utility for Readlink {
 				},
 				Err(err) => {
 					if verbose {
-						let message = if err.raw_os_error() == Some(EINVAL) {
+						// Reading a non-symlink is EINVAL natively; providers report
+						// it as an invalid-input error.
+						let not_a_link = err.raw_os_error() == Some(EINVAL)
+							|| (resolve_mode == ResolveMode::None
+								&& err.kind() == io::ErrorKind::InvalidInput);
+						let message = if not_a_link {
 							format!("{}: Invalid argument", operand.maybe_quote())
 						} else {
 							format!("{}: {err}", operand.maybe_quote())
@@ -111,6 +119,7 @@ impl Utility for Readlink {
 	}
 }
 
+/// The `readlink` argument model.
 fn app() -> Command {
 	Command::new(Readlink::NAME)
 		.version("0.8.0")
@@ -193,6 +202,35 @@ fn app() -> Command {
 		)
 }
 
+/// The value plain `readlink` prints for `link`.
+///
+/// A provider path that aliases a host file (`skill://name/SKILL.md`) prints
+/// that file's canonical host path; everything else reads one symlink hop. The
+/// host path goes through the uucore-style resolver (as `realpath` does), not
+/// `std::fs::canonicalize`, which spells Windows paths with a `\\?\` prefix.
+fn read_link(filesystem: &BlockingFs, link: &Path) -> io::Result<PathBuf> {
+	match filesystem.backing_path(link)? {
+		Some(backing) => BlockingFs::native().canonicalize_with(backing, &CanonicalizeOptions::default()),
+		None => filesystem.read_link(link),
+	}
+}
+
+/// Canonicalizes `path` for `-f`/`-e`/`-m`.
+///
+/// A provider path that aliases a host file is canonicalized on the host, so
+/// the physical location is printed rather than the alias.
+fn canonicalize_path(
+	filesystem: &BlockingFs,
+	path: &Path,
+	options: &CanonicalizeOptions,
+) -> io::Result<PathBuf> {
+	match filesystem.backing_path(path)? {
+		Some(backing) => BlockingFs::native().canonicalize_with(backing, options),
+		None => filesystem.canonicalize_with(path, options),
+	}
+}
+
+/// Writes a resolved path verbatim, followed by the selected delimiter.
 fn show(out: &mut impl Write, path: &Path, line_ending: Option<LineEnding>) -> std::io::Result<()> {
 	let bytes = os_bytes(path.as_os_str())
 		.ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid path"))?;
@@ -203,6 +241,127 @@ fn show(out: &mut impl Write, path: &Path, line_ending: Option<LineEnding>) -> s
 	out.flush()
 }
 
-pub(crate) fn readlink_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Readlink, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::PathBuf};
+
+	use super::Readlink;
+	use crate::host::run_util;
+
+	fn run_in(cwd: PathBuf, args: &[&str]) -> (i32, String, String) {
+		let (code, capture) = run_util::<Readlink>(args, "", cwd);
+		(code, capture.out(), capture.err())
+	}
+
+	/// Canonicalized temp dir (macOS tempdirs live behind /var -> /private/var,
+	/// which -f/-e/-m resolution would otherwise expand mid-assertion).
+	fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+		let dir = tempfile::tempdir().unwrap();
+		let canon = fs::canonicalize(dir.path()).unwrap();
+		(dir, canon)
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn resolves_relative_operand_against_host_cwd() {
+		let (_dir, root) = canonical_tempdir();
+		std::os::unix::fs::symlink("target-file", root.join("link")).unwrap();
+
+		let (code, stdout, stderr) = run_in(root, &["link"]);
+		assert_eq!(code, 0);
+		assert_eq!(stdout, "target-file\n");
+		assert_eq!(stderr, "");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn canonicalize_follows_symlink_to_absolute_path() {
+		let (_dir, root) = canonical_tempdir();
+		fs::write(root.join("target"), b"x").unwrap();
+		std::os::unix::fs::symlink("target", root.join("link")).unwrap();
+
+		let (code, stdout, stderr) = run_in(root.clone(), &["-f", "link"]);
+		assert_eq!(code, 0);
+		assert_eq!(stdout, format!("{}\n", root.join("target").display()));
+		assert_eq!(stderr, "");
+	}
+
+	#[test]
+	fn canonicalize_missing_builds_path_from_host_cwd() {
+		let (_dir, root) = canonical_tempdir();
+
+		let (code, stdout, stderr) = run_in(root.clone(), &["-m", "missing/sub"]);
+		assert_eq!(code, 0);
+		assert_eq!(stdout, format!("{}\n", root.join("missing/sub").display()));
+		assert_eq!(stderr, "");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn canonicalize_existing_fails_silently_on_missing_final_component() {
+		let (_dir, root) = canonical_tempdir();
+
+		let (code, stdout, stderr) = run_in(root, &["-e", "missing"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn non_symlink_is_silent_failure_by_default_and_einval_with_verbose() {
+		let (_dir, root) = canonical_tempdir();
+		fs::write(root.join("plain"), b"x").unwrap();
+
+		let (code, stdout, stderr) = run_in(root.clone(), &["plain"]);
+		assert_eq!((code, stdout.as_str(), stderr.as_str()), (1, "", ""));
+
+		let (code, stdout, stderr) = run_in(root, &["-v", "plain"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "readlink: plain: Invalid argument\n");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn no_newline_with_multiple_args_warns_and_keeps_delimiter() {
+		let (_dir, root) = canonical_tempdir();
+		std::os::unix::fs::symlink("a", root.join("l1")).unwrap();
+		std::os::unix::fs::symlink("b", root.join("l2")).unwrap();
+
+		let (code, stdout, stderr) = run_in(root, &["-n", "l1", "l2"]);
+		assert_eq!(code, 0);
+		assert_eq!(stdout, "a\nb\n");
+		assert_eq!(stderr, "readlink: ignoring --no-newline with multiple arguments\n");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn zero_terminates_with_nul_and_no_newline_drops_delimiter() {
+		let (_dir, root) = canonical_tempdir();
+		std::os::unix::fs::symlink("a", root.join("l1")).unwrap();
+
+		let (code, stdout, _) = run_in(root.clone(), &["-z", "l1"]);
+		assert_eq!((code, stdout.as_str()), (0, "a\0"));
+
+		let (code, stdout, _) = run_in(root, &["-n", "l1"]);
+		assert_eq!((code, stdout.as_str()), (0, "a"));
+	}
+
+	#[test]
+	fn missing_operand_is_usage_error() {
+		let (code, stdout, stderr) = run_in(PathBuf::from("."), &[]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "readlink: missing operand\n");
+	}
+
+	#[test]
+	fn help_renders_to_stdout() {
+		let (code, stdout, stderr) = run_in(PathBuf::from("."), &["--help"]);
+		assert_eq!(code, 0);
+		assert!(stdout.contains("Usage:"));
+		assert!(stdout.contains("canonical file name"));
+		assert_eq!(stderr, "");
+	}
 }

@@ -1,21 +1,21 @@
+//! `realpath` builtin: print resolved absolute or relative paths.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	ffi::{OsStr, OsString},
 	io::{self, Write},
 	path::{Path, PathBuf},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{
 	Arg, ArgAction, ArgMatches, Command,
 	builder::{TypedValueParser, ValueParserFactory},
 };
-use uucore::{
-	display::Quotable,
-	fs::{MissingHandling, ResolveMode, canonicalize, make_path_relative_to},
-	line_ending::LineEnding,
-};
+use pi_vfs::{BlockingFs, CanonicalizeOptions, MissingHandling, ResolveMode, relative_path};
+use uucore::{display::Quotable, line_ending::LineEnding};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, strip_errno};
 
 const OPT_QUIET: &str = "quiet";
 const OPT_STRIP: &str = "strip";
@@ -29,6 +29,7 @@ const OPT_RELATIVE_TO: &str = "relative-to";
 const OPT_RELATIVE_BASE: &str = "relative-base";
 const ARG_FILES: &str = "files";
 
+/// Custom parser that validates `OsString` is not empty.
 #[derive(Clone, Debug)]
 struct NonEmptyOsStringParser;
 
@@ -61,6 +62,7 @@ impl ValueParserFactory for NonEmptyOsStringParser {
 	}
 }
 
+/// Parsed `realpath` invocation.
 pub(crate) struct Realpath {
 	matches: ArgMatches,
 }
@@ -89,8 +91,12 @@ fn realpath_main(matches: &ArgMatches, host: &mut Host) -> i32 {
 	let can_mode = if matches.get_flag(OPT_CANONICALIZE_MISSING) {
 		MissingHandling::Missing
 	} else if matches.get_flag(OPT_CANONICALIZE_EXISTING) {
+		// -e: all components must exist. Despite the name,
+		// MissingHandling::Existing requires all components to exist.
 		MissingHandling::Existing
 	} else {
+		// Default behavior (same as -E): all but the last component must exist.
+		// MissingHandling::Normal allows the final component to not exist.
 		MissingHandling::Normal
 	};
 	let resolve_mode = if strip {
@@ -105,7 +111,7 @@ fn realpath_main(matches: &ArgMatches, host: &mut Host) -> i32 {
 		match prepare_relative_options(matches, host, can_mode, resolve_mode) {
 			Ok(options) => options,
 			Err((path, err)) => {
-				host.error(format!("{}: {}", path.maybe_quote(), io_error_message(&err)), 1);
+				host.error(format!("{}: {}", path.maybe_quote(), strip_errno(&err)), 1);
 				return host.exit_code();
 			},
 		};
@@ -121,7 +127,7 @@ fn realpath_main(matches: &ArgMatches, host: &mut Host) -> i32 {
 			host,
 		) {
 			if !quiet {
-				host.error(format!("{}: {}", path.maybe_quote(), io_error_message(&err)), 1);
+				host.error(format!("{}: {}", path.maybe_quote(), strip_errno(&err)), 1);
 			} else {
 				host.fail(1);
 			}
@@ -229,6 +235,9 @@ fn app() -> Command {
 
 type PathIoError = (PathBuf, io::Error);
 
+/// Prepare `--relative-to` and `--relative-base` options, converting them to
+/// absolute paths. If `--relative-to` is not a descendant of `--relative-base`,
+/// both values are discarded.
 fn prepare_relative_options(
 	matches: &ArgMatches,
 	host: &Host,
@@ -244,13 +253,14 @@ fn prepare_relative_options(
 	let relative_to = canonicalize_relative_option(relative_to, host, can_mode, resolve_mode)?;
 	let relative_base = canonicalize_relative_option(relative_base, host, can_mode, resolve_mode)?;
 	if let (Some(base), Some(to)) = (relative_base.as_deref(), relative_to.as_deref())
-		&& !to.starts_with(base)
+		&& !is_within(to, base)
 	{
 		return Ok((None, None));
 	}
 	Ok((relative_to, relative_base))
 }
 
+/// Prepare one `relative-*` option.
 fn canonicalize_relative_option(
 	relative: Option<PathBuf>,
 	host: &Host,
@@ -259,24 +269,50 @@ fn canonicalize_relative_option(
 ) -> Result<Option<PathBuf>, PathIoError> {
 	match relative {
 		None => Ok(None),
-		Some(path) => canonicalize_relative(&host.resolve(&path), can_mode, resolve_mode)
+		Some(path) => canonicalize_relative(host.fs(), &host.resolve(&path), can_mode, resolve_mode)
 			.map(Some)
 			.map_err(|err| (path, err)),
 	}
 }
 
+/// Make a `relative-to` or `relative-base` path value absolute.
 fn canonicalize_relative(
+	filesystem: &BlockingFs,
 	path: &Path,
 	can_mode: MissingHandling,
 	resolve: ResolveMode,
 ) -> io::Result<PathBuf> {
-	let absolute = canonicalize(path, can_mode, resolve)?;
-	if can_mode == MissingHandling::Existing && !absolute.is_dir() {
-		absolute.read_dir()?;
+	let (absolute, namespace) =
+		canonicalize_path(filesystem, path, &CanonicalizeOptions::new(can_mode, resolve))?;
+	if can_mode == MissingHandling::Existing && !namespace.is_dir(&absolute) {
+		namespace.read_dir(&absolute)?; // Raise a not-a-directory error.
 	}
 	Ok(absolute)
 }
 
+/// Canonicalizes `path`, returning the result with the filesystem it names.
+///
+/// A provider path that aliases a host file (`skill://name/SKILL.md`) is
+/// canonicalized on the host, so the physical location is printed rather than
+/// the alias.
+fn canonicalize_path(
+	filesystem: &BlockingFs,
+	path: &Path,
+	options: &CanonicalizeOptions,
+) -> io::Result<(PathBuf, BlockingFs)> {
+	match filesystem.backing_path(path)? {
+		Some(backing) => {
+			let native = BlockingFs::native();
+			Ok((native.canonicalize_with(backing, options)?, native))
+		},
+		None => Ok((filesystem.canonicalize_with(path, options)?, filesystem.clone())),
+	}
+}
+
+/// Resolve a path to an absolute form and print it.
+///
+/// If `relative_to` and/or `relative_base` is given, the path is printed in a
+/// relative form according to [`process_relative`].
 fn resolve_path(
 	path: &Path,
 	line_ending: LineEnding,
@@ -286,7 +322,8 @@ fn resolve_path(
 	relative_base: Option<&Path>,
 	host: &mut Host,
 ) -> io::Result<()> {
-	let absolute = canonicalize(host.resolve(path), can_mode, resolve)?;
+	let (absolute, _) =
+		canonicalize_path(host.fs(), &host.resolve(path), &CanonicalizeOptions::new(can_mode, resolve))?;
 	let output_path = process_relative(absolute, relative_base, relative_to);
 	let bytes = os_bytes(output_path.as_os_str())
 		.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path is not valid Unicode"))?;
@@ -295,32 +332,147 @@ fn resolve_path(
 	host.stdout.flush()
 }
 
+/// Conditionally converts an absolute path to a relative form.
+///
+/// With only `relative_to`, the result is relative to it. With only
+/// `relative_base`, descendants are relative to it. With both, descendants of
+/// `relative_base` are relative to `relative_to`; other paths remain absolute.
+/// Paths under a different root than the directory they would be relative to
+/// (another `scheme://`, or a URL and a host path) also remain absolute.
 fn process_relative(
 	path: PathBuf,
 	relative_base: Option<&Path>,
 	relative_to: Option<&Path>,
 ) -> PathBuf {
 	if let Some(base) = relative_base {
-		if path.starts_with(base) {
-			make_path_relative_to(path, relative_to.unwrap_or(base))
+		if is_within(&path, base) {
+			relative_path(&path, relative_to.unwrap_or(base)).unwrap_or(path)
 		} else {
 			path
 		}
 	} else if let Some(to) = relative_to {
-		make_path_relative_to(path, to)
+		relative_path(&path, to).unwrap_or(path)
 	} else {
 		path
 	}
 }
 
-fn io_error_message(error: &io::Error) -> String {
-	let mut message = error.to_string();
-	if let Some(index) = message.find(" (os error ") {
-		message.truncate(index);
-	}
-	message
+/// Whether `path` is `base` or lies beneath it, under the same root.
+fn is_within(path: &Path, base: &Path) -> bool {
+	relative_path(path, base).is_some_and(|relative| !relative.starts_with(".."))
 }
 
-pub(crate) fn realpath_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Realpath, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::PathBuf};
+
+	use super::Realpath;
+	use crate::host::run_util;
+
+	/// Canonicalized temp dir (macOS tempdirs live behind /var -> /private/var,
+	/// which canonicalization would otherwise expand mid-assertion).
+	fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+		let dir = tempfile::tempdir().unwrap();
+		let canonical = fs::canonicalize(dir.path()).unwrap();
+		(dir, canonical)
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn resolves_relative_operand_against_host_cwd() {
+		let (_dir, root) = canonical_tempdir();
+		fs::write(root.join("target"), b"x").unwrap();
+		std::os::unix::fs::symlink("target", root.join("link")).unwrap();
+
+		let (code, capture) = run_util::<Realpath>(&["link"], "", root.clone());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), format!("{}\n", root.join("target").display()));
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn canonicalize_missing_builds_path_from_host_cwd() {
+		let (_dir, root) = canonical_tempdir();
+
+		let (code, capture) = run_util::<Realpath>(&["-m", "missing/sub"], "", root.clone());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), format!("{}\n", root.join("missing/sub").display()));
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn relative_to_option_resolves_against_host_cwd_and_relativizes_output() {
+		let (_dir, root) = canonical_tempdir();
+		fs::create_dir(root.join("sub")).unwrap();
+		fs::write(root.join("sub/file"), b"x").unwrap();
+
+		let (code, capture) =
+			run_util::<Realpath>(&["--relative-to", "sub", "sub/file"], "", root);
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "file\n");
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn zero_flag_terminates_with_nul() {
+		let (_dir, root) = canonical_tempdir();
+		fs::write(root.join("f"), b"x").unwrap();
+
+		let (code, capture) = run_util::<Realpath>(&["-z", "f"], "", root.clone());
+		assert_eq!(code, 0);
+		assert_eq!(capture.stdout(), format!("{}\0", root.join("f").display()).as_bytes());
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn nonexistent_operand_errors_but_later_operands_still_process() {
+		let (_dir, root) = canonical_tempdir();
+		fs::write(root.join("f"), b"x").unwrap();
+
+		let (code, capture) = run_util::<Realpath>(&["missing/x", "f"], "", root.clone());
+		assert_eq!(code, 1);
+		assert_eq!(capture.out(), format!("{}\n", root.join("f").display()));
+		assert!(capture.err().contains("realpath: missing/x"), "stderr: {}", capture.err());
+		assert!(capture.err().contains("No such file"), "stderr: {}", capture.err());
+	}
+
+	#[test]
+	fn quiet_suppresses_error_messages_but_preserves_failure_status() {
+		let (_dir, root) = canonical_tempdir();
+
+		let (code, capture) = run_util::<Realpath>(&["-q", "missing/x"], "", root);
+		assert_eq!(code, 1);
+		assert_eq!(capture.out(), "");
+		assert_eq!(capture.err(), "");
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn strip_keeps_symlinks_unresolved() {
+		let (_dir, root) = canonical_tempdir();
+		fs::write(root.join("target"), b"x").unwrap();
+		std::os::unix::fs::symlink("target", root.join("link")).unwrap();
+
+		let (code, capture) = run_util::<Realpath>(&["-s", "link"], "", root.clone());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), format!("{}\n", root.join("link").display()));
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn empty_operand_is_rejected() {
+		let (code, capture) = run_util::<Realpath>(&[""], "", ".");
+		assert_eq!(code, 1);
+		assert_eq!(capture.out(), "");
+		assert!(capture.err().contains("invalid value"), "stderr: {}", capture.err());
+	}
+
+	#[test]
+	fn help_renders_to_host_stdout() {
+		let (code, capture) = run_util::<Realpath>(&["--help"], "", ".");
+		assert_eq!(code, 0);
+		assert!(capture.out().contains("Usage:"));
+		assert!(capture.out().contains("Print the resolved path"));
+		assert_eq!(capture.err(), "");
+	}
 }

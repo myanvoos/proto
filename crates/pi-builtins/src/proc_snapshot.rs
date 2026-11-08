@@ -5,13 +5,15 @@
 //! builtins above stay platform-agnostic. The platform queries themselves —
 //! procfs parsing, pidfds, libproc, Toolhelp, process handles — live in
 //! [`sys`], which `pi-shell`'s identity-pinned process references
-//! (`pi_shell::process`) are built on too, so each query has one
+//! (`pi_shell::proctree`) are built on too, so each query has one
 //! implementation and a platform fix lands once.
 
 // Consumers (`ps`, `top`, `pgrep`, `pkill`, `pidwait`, `kill`) are each
 // feature-gated, so a build with only some of them enabled legitimately uses
 // only part of this API.
 #![allow(dead_code, reason = "consumed by the feature-gated process builtins")]
+
+use std::time::Duration;
 
 /// Whether a process reference is still live.
 ///
@@ -23,6 +25,20 @@ pub enum ProcessStatus {
 	Running,
 	/// The referenced process has exited or is no longer observable.
 	Exited,
+}
+
+/// A process's accumulated CPU time, split the way the kernel accounts it.
+#[derive(Clone, Copy, Debug)]
+pub struct CpuTimes {
+	pub user:   Duration,
+	pub system: Duration,
+}
+
+impl CpuTimes {
+	/// User plus system time: `ps`'s TIME column and `top`'s CPU share.
+	pub fn total(self) -> Duration {
+		self.user.saturating_add(self.system)
+	}
 }
 
 /// One thread of a process, as `ps -M` lists it.
@@ -40,8 +56,8 @@ pub struct ThreadInfo {
 	/// Policy letter Apple `ps -M` appends to the priority: `T` timesharing,
 	/// `R` round-robin, `F` FIFO.
 	pub policy:      Option<char>,
-	pub user_time:   Option<std::time::Duration>,
-	pub system_time: Option<std::time::Duration>,
+	pub user_time:   Option<Duration>,
+	pub system_time: Option<Duration>,
 	/// Kernel-decayed recent CPU share on macOS; lifetime average elsewhere.
 	pub cpu_percent: Option<f64>,
 }
@@ -88,15 +104,9 @@ fn parse_procargs2(buffer: &[u8]) -> Vec<String> {
 		return Vec::new();
 	};
 	let argc = usize::try_from(i32::from_ne_bytes(*argc)).unwrap_or(0);
-	let exec_path_end = rest
-		.iter()
-		.position(|byte| *byte == 0)
-		.unwrap_or(rest.len());
+	let exec_path_end = rest.iter().position(|byte| *byte == 0).unwrap_or(rest.len());
 	let rest = &rest[exec_path_end..];
-	let argv_start = rest
-		.iter()
-		.position(|byte| *byte != 0)
-		.unwrap_or(rest.len());
+	let argv_start = rest.iter().position(|byte| *byte != 0).unwrap_or(rest.len());
 	rest[argv_start..]
 		.split(|byte| *byte == 0)
 		.take(argc)
@@ -191,7 +201,7 @@ pub mod sys {
 mod proc_snapshot {
 	use std::{collections::HashMap, fs, os::fd::AsFd, time::Duration};
 
-	use super::{ProcessStatus, ThreadInfo, sys};
+	use super::{CpuTimes, ProcessStatus, ThreadInfo, sys};
 
 	#[derive(Clone)]
 	pub struct ProcInfo {
@@ -242,7 +252,13 @@ mod proc_snapshot {
 			let args = sys::cmdline(pid).unwrap_or_default();
 			let uid = status_ids(pid, "Uid:").map(|ids| (ids.0, ids.1));
 			let gid = status_ids(pid, "Gid:");
-			(sys::start_time(pid)? == stat.start_time).then_some(Self { pid, stat, args, uid, gid })
+			(sys::start_time(pid)? == stat.start_time).then_some(Self {
+				pid,
+				stat,
+				args,
+				uid,
+				gid,
+			})
 		}
 
 		pub const fn pid(&self) -> i32 {
@@ -365,9 +381,10 @@ mod proc_snapshot {
 			sys::pidfd_send_signal(pidfd.as_fd(), signal)
 		}
 
-		pub fn cpu_time(&self) -> Option<Duration> {
-			let ticks = clock_ticks()?;
-			Some(Duration::from_secs_f64((self.stat.utime + self.stat.stime) as f64 / ticks as f64))
+		pub fn cpu_times(&self) -> Option<CpuTimes> {
+			let ticks = clock_ticks()? as f64;
+			let seconds = |value: u64| Duration::from_secs_f64(value as f64 / ticks);
+			Some(CpuTimes { user: seconds(self.stat.utime), system: seconds(self.stat.stime) })
 		}
 
 		pub fn resident_bytes(&self) -> Option<u64> {
@@ -407,17 +424,12 @@ mod proc_snapshot {
 			.flatten()
 			.filter_map(|entry| parse_stat(&fs::read_to_string(entry.path().join("stat")).ok()?))
 			.map(|stat| {
-				let seconds =
-					|value: u64| ticks.map(|ticks| Duration::from_secs_f64(value as f64 / ticks));
+				let seconds = |value: u64| ticks.map(|ticks| Duration::from_secs_f64(value as f64 / ticks));
 				// A thread started within the current clock tick has no elapsed time
 				// yet; procps reports 0% rather than an unknown share.
 				let cpu_percent = uptime.zip(ticks).map(|(uptime, ticks)| {
 					let age = uptime - stat.start_time as f64 / ticks;
-					if age > 0.0 {
-						100.0 * (stat.utime + stat.stime) as f64 / ticks / age
-					} else {
-						0.0
-					}
+					if age > 0.0 { 100.0 * (stat.utime + stat.stime) as f64 / ticks / age } else { 0.0 }
 				});
 				ThreadInfo {
 					state: stat.state,
@@ -617,8 +629,7 @@ pub mod sys {
 		path.split(|byte| *byte == 0).next()
 	}
 
-	/// The argument vector of `pid` from `KERN_PROCARGS2`; empty when
-	/// unreadable.
+	/// The argument vector of `pid` from `KERN_PROCARGS2`; empty when unreadable.
 	pub fn args(pid: i32) -> Vec<String> {
 		let mut mib = [libc::CTL_KERN, KERN_PROCARGS2, pid];
 		let mut size = 0usize;
@@ -655,13 +666,22 @@ mod proc_snapshot {
 		collections::HashMap,
 		ffi::CStr,
 		path::Path,
+		sync::LazyLock,
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
 
-	use super::{ProcessStatus, ThreadInfo, sys};
+	use super::{CpuTimes, ProcessStatus, ThreadInfo, sys};
 
-	/// `proc_pidinfo` flavor listing a task's thread handles; absent from
-	/// `libc`.
+	#[allow(deprecated)]
+	static TIMEBASE: LazyLock<Option<(u32, u32)>> = LazyLock::new(|| {
+		let mut info = libc::mach_timebase_info_data_t { numer: 0, denom: 0 };
+		// SAFETY: info points to a writable Mach timebase record.
+		let status = unsafe { libc::mach_timebase_info(&raw mut info) };
+		(status == libc::KERN_SUCCESS && info.numer != 0 && info.denom != 0)
+			.then_some((info.numer, info.denom))
+	});
+
+	/// `proc_pidinfo` flavor listing a task's thread handles; absent from `libc`.
 	const PROC_PIDLISTTHREADS: libc::c_int = 6;
 
 	#[derive(Clone)]
@@ -700,11 +720,7 @@ mod proc_snapshot {
 			// IDs so a PID recycled mid-snapshot cannot be signalled later.
 			let before = sys::unique_id(pid);
 			let short = sys::short_bsdinfo(pid)?;
-			let short_id = if before == sys::unique_id(pid) {
-				before.unwrap_or(0)
-			} else {
-				0
-			};
+			let short_id = if before == sys::unique_id(pid) { before.unwrap_or(0) } else { 0 };
 			Some(Self {
 				pid,
 				info: bsdinfo_from_short(&short),
@@ -875,9 +891,21 @@ mod proc_snapshot {
 			unsafe { libc::kill(self.pid(), signal) == 0 }
 		}
 
-		pub fn cpu_time(&self) -> Option<Duration> {
+		pub fn cpu_times(&self) -> Option<CpuTimes> {
 			let task = self.task.as_ref()?;
-			Some(Duration::from_nanos(task.pti_total_user.saturating_add(task.pti_total_system)))
+			let (numer, denom) = (*TIMEBASE)?;
+			// PROC_PIDTASKINFO CPU counters are Mach absolute-time ticks, not nanoseconds.
+			let duration = |ticks: u64| {
+				let nanos = u128::from(ticks) * u128::from(numer) / u128::from(denom);
+				Some(Duration::new(
+					u64::try_from(nanos / 1_000_000_000).ok()?,
+					(nanos % 1_000_000_000) as u32,
+				))
+			};
+			Some(CpuTimes {
+				user:   duration(task.pti_total_user)?,
+				system: duration(task.pti_total_system)?,
+			})
 		}
 
 		pub fn resident_bytes(&self) -> Option<u64> {
@@ -1035,6 +1063,47 @@ mod proc_snapshot {
 			)
 		};
 		(actual >= size_of::<libc::proc_taskinfo>() as i32).then_some(info)
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use std::time::{Duration, Instant};
+
+		use super::{CpuTimes, ProcInfo};
+
+		fn process_cpu() -> Duration {
+			ProcInfo::from_pid(std::process::id() as i32)
+				.and_then(|process| process.cpu_times())
+				.map(CpuTimes::total)
+				.expect("process CPU time")
+		}
+
+		fn usage_cpu() -> Duration {
+			// SAFETY: rusage is an integer record that may be zero-initialized.
+			let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+			// SAFETY: usage is a valid writable rusage record.
+			assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &raw mut usage) }, 0);
+			let micros = (usage.ru_utime.tv_sec + usage.ru_stime.tv_sec) as u64 * 1_000_000
+				+ (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) as u64;
+			Duration::from_micros(micros)
+		}
+
+		#[test]
+		fn process_cpu_time_matches_system_usage_after_work() {
+			let before = process_cpu();
+			let usage_before = usage_cpu();
+			let start = Instant::now();
+			while start.elapsed() < Duration::from_millis(150) {
+				std::hint::spin_loop();
+			}
+			let usage_delta = usage_cpu() - usage_before;
+			let delta = process_cpu() - before;
+			assert!(usage_delta > Duration::from_millis(20), "insufficient CPU time: {usage_delta:?}");
+			assert!(
+				delta.abs_diff(usage_delta) < Duration::from_millis(40).max(usage_delta / 4),
+				"process CPU time {delta:?} differs from getrusage {usage_delta:?}"
+			);
+		}
 	}
 }
 
@@ -1422,8 +1491,7 @@ pub mod sys {
 		}
 		// SAFETY: CommandLineToArgvW returned `argc` argument pointers, valid
 		// until LocalFree.
-		let pointers =
-			unsafe { std::slice::from_raw_parts(argv, usize::try_from(argc).unwrap_or(0)) };
+		let pointers = unsafe { std::slice::from_raw_parts(argv, usize::try_from(argc).unwrap_or(0)) };
 		let args = pointers
 			.iter()
 			.filter(|arg| !arg.is_null())
@@ -1465,7 +1533,7 @@ mod proc_snapshot {
 	};
 
 	use super::{
-		ProcessStatus, ThreadInfo,
+		CpuTimes, ProcessStatus, ThreadInfo,
 		sys::{self, FileTime, ProcessEntry},
 	};
 
@@ -1687,9 +1755,9 @@ mod proc_snapshot {
 				&& sys::terminate(&handle)
 		}
 
-		pub fn cpu_time(&self) -> Option<Duration> {
+		pub fn cpu_times(&self) -> Option<CpuTimes> {
 			let (_, kernel, user) = sys::process_times(&self.handle)?;
-			Some(ticks_duration(kernel.saturating_add(user)))
+			Some(CpuTimes { user: ticks_duration(user), system: ticks_duration(kernel) })
 		}
 
 		pub fn resident_bytes(&self) -> Option<u64> {
@@ -1739,11 +1807,7 @@ mod proc_snapshot {
 					system_time: times.map(|(_, kernel, _)| ticks_duration(kernel)),
 					cpu_percent: times.map(|(creation, kernel, user)| {
 						let age = now.saturating_sub(creation);
-						if age > 0 {
-							100.0 * kernel.saturating_add(user) as f64 / age as f64
-						} else {
-							0.0
-						}
+						if age > 0 { 100.0 * kernel.saturating_add(user) as f64 / age as f64 } else { 0.0 }
 					}),
 				});
 			}
@@ -1817,28 +1881,27 @@ pub use proc_snapshot::{ProcInfo, threads_by_pid};
 
 /// The processes a signal must never reach: this one and its ancestors.
 ///
-/// Resolve once per command, then read the fields. Self-kill was always
-/// refused, but an ancestor is a different process — and usually a different
-/// process group and session — so nothing stopped `kill <terminal pid>` or
-/// `pkill <terminal>` from taking down the terminal the whole session lives in,
-/// harness included. Everything above us in the tree is load-bearing for our
-/// own existence.
+/// Resolve once per command, then read the fields. Self-kill was always refused,
+/// but an ancestor is a different process — and usually a different process group
+/// and session — so nothing stopped `kill <terminal pid>` or `pkill <terminal>`
+/// from taking down the terminal the whole session lives in, harness included.
+/// Everything above us in the tree is load-bearing for our own existence.
 ///
 /// Two properties are deliberate:
 ///
-/// * **Resolved, not cached.** A parent that detaches us and then exits frees
-///   its pid for the OS to recycle; a remembered chain would go on refusing
-///   that pid and quietly protect whatever unrelated process inherited it. Each
-///   resolve reflects the tree as it is now.
-/// * **Inline, not hashed.** A parent chain is four or five numbers, so it
-///   lives in stack-inline storage that callers scan directly. There is no
-///   per-target query entry point here, because one invites re-resolving per
-///   target — which is a full process-table walk each time.
+/// * **Resolved, not cached.** A parent that detaches us and then exits frees its
+///   pid for the OS to recycle; a remembered chain would go on refusing that pid
+///   and quietly protect whatever unrelated process inherited it. Each resolve
+///   reflects the tree as it is now.
+/// * **Inline, not hashed.** A parent chain is four or five numbers, so it lives
+///   in stack-inline storage that callers scan directly. There is no per-target
+///   query entry point here, because one invites re-resolving per target — which
+///   is a full process-table walk each time.
 ///
 /// Listing is unaffected: `pgrep` still reports ancestors and `ps` still shows
 /// them. Only signalling consults this.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-pub(crate) struct HostProcesses {
+pub struct HostProcesses {
 	/// This process and its ancestors, nearest first.
 	pub pids:  smallvec::SmallVec<[i32; 16]>,
 	/// The process groups those processes belong to.
@@ -1848,8 +1911,8 @@ pub(crate) struct HostProcesses {
 /// One process as the chain walk sees it.
 ///
 /// Keeping the walk over this rather than over [`ProcInfo`] lets the recycling
-/// cases — which are otherwise only reachable by winning a race against the OS
-/// — be tested with a synthetic tree.
+/// cases — which are otherwise only reachable by winning a race against the OS —
+/// be tested with a synthetic tree.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 #[derive(Clone, Copy)]
 struct ChainNode {
@@ -1862,22 +1925,37 @@ struct ChainNode {
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 impl HostProcesses {
-	/// Walks the parent chain from the current process, taking one process-table
-	/// snapshot.
-	pub fn resolve() -> Self {
-		Self::resolve_in(&ProcInfo::all())
+	/// Whether signalling `target` would reach this process or one of its
+	/// ancestors.
+	///
+	/// `target` follows `kill(2)`: a positive value is a pid, `0` is the caller's
+	/// own process group, `-1` is every process the caller may signal, and any
+	/// other negative value is the process group `-target`. The caller's own
+	/// group needs no special case — it is in [`Self::pgids`] by construction.
+	///
+	/// Reads the already-resolved chain, so a loop over operands walks the
+	/// process table once, not once per operand.
+	#[must_use]
+	pub fn blocks(&self, target: i32) -> bool {
+		if target == -1 || target == 0 {
+			return true;
+		}
+		match target.checked_neg() {
+			Some(pgid) if pgid > 0 => self.pgids.contains(&pgid),
+			_ => self.pids.contains(&target),
+		}
 	}
 
-	/// [`Self::resolve`] against a snapshot the caller already holds.
-	///
-	/// `pkill` snapshots the table to select its targets; this spares it a
-	/// second.
-	pub fn resolve_in(all: &[ProcInfo]) -> Self {
+	/// Walks the parent chain from the current process through `all`, a
+	/// process-table snapshot the caller already holds (`pkill` snapshots the
+	/// table to select its targets; this spares it a second).
+	pub(crate) fn resolve_in(all: &[ProcInfo]) -> Self {
 		let Ok(self_pid) = i32::try_from(std::process::id()) else {
 			return Self { pids: smallvec::SmallVec::new(), pgids: smallvec::SmallVec::new() };
 		};
 		Self::walk(self_pid, |pid| {
-			all.iter()
+			all
+				.iter()
 				.find(|process| process.pid() == pid)
 				.map(|process| ChainNode {
 					ppid:  process.ppid(),
@@ -1889,14 +1967,14 @@ impl HostProcesses {
 
 	/// Walks from `self_pid` up through `lookup`, collecting the chain.
 	///
-	/// A recorded parent pid is followed only when the process holding it is
-	/// both **present** and **no younger than its child**. Presence alone is
-	/// not enough: an entry can name a parent that already exited, and once
-	/// that number is recycled the replacement *is* present — protecting it
-	/// would hand our immunity to an unrelated process. A real parent cannot
-	/// have started after its child, so a later start time identifies the
-	/// impostor. Equal start times are accepted, since a `fork` within one
-	/// clock tick is indistinguishable at this resolution.
+	/// A recorded parent pid is followed only when the process holding it is both
+	/// **present** and **no younger than its child**. Presence alone is not enough:
+	/// an entry can name a parent that already exited, and once that number is
+	/// recycled the replacement *is* present — protecting it would hand our
+	/// immunity to an unrelated process. A real parent cannot have started after
+	/// its child, so a later start time identifies the impostor. Equal start times
+	/// are accepted, since a `fork` within one clock tick is indistinguishable at
+	/// this resolution.
 	fn walk(self_pid: i32, lookup: impl Fn(i32) -> Option<ChainNode>) -> Self {
 		let mut pids = smallvec::SmallVec::new();
 		let mut pgids = smallvec::SmallVec::new();
@@ -1933,7 +2011,9 @@ impl HostProcesses {
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 mod tests {
-	use super::{ChainNode, HostProcesses, ProcInfo, macos_pid_buffer_size, parse_procargs2};
+	use super::{HostProcesses, ProcInfo};
+
+	use super::{ChainNode, macos_pid_buffer_size, parse_procargs2};
 
 	#[test]
 	fn macos_pid_buffer_size_preserves_count_and_checks_byte_capacity() {
@@ -1951,8 +2031,7 @@ mod tests {
 	/// form, and only argc tells them apart.
 	#[test]
 	fn procargs2_yields_argv_without_exec_path_or_environment() {
-		let buffer =
-			[&2i32.to_ne_bytes()[..], b"/bin/sleep\0\0\0\0sleep\x0030\0HOME=/root\0"].concat();
+		let buffer = [&2i32.to_ne_bytes()[..], b"/bin/sleep\0\0\0\0sleep\x0030\0HOME=/root\0"].concat();
 		assert_eq!(parse_procargs2(&buffer), ["sleep", "30"]);
 		let negative = [&(-1i32).to_ne_bytes()[..], b"/bin/sleep\0sleep\0"].concat();
 		assert!(parse_procargs2(&negative).is_empty());
@@ -2007,9 +2086,7 @@ mod tests {
 	}
 
 	/// Builds a lookup over a synthetic `(pid, ppid, pgid, start)` tree.
-	fn tree(
-		nodes: &[(i32, Option<i32>, Option<i32>, u64)],
-	) -> impl Fn(i32) -> Option<ChainNode> + '_ {
+	fn tree(nodes: &[(i32, Option<i32>, Option<i32>, u64)]) -> impl Fn(i32) -> Option<ChainNode> + '_ {
 		|pid| {
 			nodes
 				.iter()
@@ -2018,11 +2095,10 @@ mod tests {
 		}
 	}
 
-	/// The case presence alone cannot catch: our recorded parent exited and its
-	/// pid was reused, so the number *is* in the table — held by a process that
-	/// started after us. Following it would hand our immunity to an unrelated
-	/// process, and on a long-lived shell that is a silent `kill` failure
-	/// against a real target.
+	/// The case presence alone cannot catch: our recorded parent exited and its pid
+	/// was reused, so the number *is* in the table — held by a process that started
+	/// after us. Following it would hand our immunity to an unrelated process, and
+	/// on a long-lived shell that is a silent `kill` failure against a real target.
 	#[test]
 	fn a_recycled_parent_pid_is_not_followed() {
 		// 100 is us, started at t=50; our recorded parent 42 is now a process that
@@ -2035,8 +2111,8 @@ mod tests {
 		assert!(!host.pgids.contains(&9), "the impostor's group must not be protected either");
 	}
 
-	/// The mirror of the above: a genuine parent started before its child and
-	/// must be followed, or the guard protects nothing but ourselves.
+	/// The mirror of the above: a genuine parent started before its child and must
+	/// be followed, or the guard protects nothing but ourselves.
 	#[test]
 	fn an_older_parent_is_followed() {
 		let host = HostProcesses::walk(
@@ -2047,13 +2123,15 @@ mod tests {
 		assert!(host.pgids.contains(&9), "an ancestor's group must be protected");
 	}
 
-	/// A `fork` inside one clock tick gives parent and child the same start
-	/// time, so equality must be accepted — rejecting it would drop real
-	/// parents on Linux, where start time is measured in jiffies.
+	/// A `fork` inside one clock tick gives parent and child the same start time, so
+	/// equality must be accepted — rejecting it would drop real parents on Linux,
+	/// where start time is measured in jiffies.
 	#[test]
 	fn a_same_tick_parent_is_followed() {
-		let host =
-			HostProcesses::walk(100, tree(&[(100, Some(42), Some(7), 50), (42, None, Some(7), 50)]));
+		let host = HostProcesses::walk(
+			100,
+			tree(&[(100, Some(42), Some(7), 50), (42, None, Some(7), 50)]),
+		);
 		assert_eq!(host.pids.as_slice(), [100, 42], "same-tick parent must still be an ancestor");
 	}
 
@@ -2075,16 +2153,15 @@ mod tests {
 		assert_eq!(host.pids.as_slice(), [100, 42], "the cycle must close the walk");
 	}
 
-	/// The resolved chain must be a real, contiguous parent walk over the
-	/// snapshot: it starts at us, every later entry is the recorded parent of
-	/// the one before it, and every entry after the first was actually
-	/// observed.
+	/// The resolved chain must be a real, contiguous parent walk over the snapshot:
+	/// it starts at us, every later entry is the recorded parent of the one before
+	/// it, and every entry after the first was actually observed.
 	///
 	/// Asserted as an invariant rather than against a second hand-rolled walk,
 	/// because the naive walk is what gets this wrong: a recorded parent pid can
-	/// name a process that has already exited (observed in practice on macOS,
-	/// where a detached `zsh` kept reporting a departed parent), and following
-	/// it blindly is the pid-recycling hazard this type exists to avoid.
+	/// name a process that has already exited (observed in practice on macOS, where
+	/// a detached `zsh` kept reporting a departed parent), and following it blindly
+	/// is the pid-recycling hazard this type exists to avoid.
 	#[test]
 	fn chain_is_a_contiguous_parent_walk_over_observed_processes() {
 		let all = ProcInfo::all();
@@ -2110,9 +2187,9 @@ mod tests {
 	}
 
 	/// The walk must not stop early: it continues while the next parent is a
-	/// distinct, observed process that is no younger than its child. Stopping
-	/// one link short is what would leave the terminal signallable, since a
-	/// terminal sits two or more levels up (terminal -> shell -> harness).
+	/// distinct, observed process that is no younger than its child. Stopping one
+	/// link short is what would leave the terminal signallable, since a terminal
+	/// sits two or more levels up (terminal -> shell -> harness).
 	///
 	/// The three legitimate stop reasons are enumerated so a real machine with a
 	/// stale or recycled parent link does not make this flaky.
@@ -2136,11 +2213,11 @@ mod tests {
 		);
 	}
 
-	/// A pid outside our ancestry must stay signallable, or `kill` becomes
-	/// useless. Guards against over-broad protection (a whole session, say).
+	/// A pid outside our ancestry must stay signallable, or `kill` becomes useless.
+	/// Guards against over-broad protection (a whole session, say).
 	#[test]
 	fn leaves_unrelated_processes_out_of_the_chain() {
-		let host = HostProcesses::resolve();
+		let host = HostProcesses::resolve_in(&ProcInfo::all());
 		assert!(
 			ProcInfo::all()
 				.iter()
@@ -2151,8 +2228,8 @@ mod tests {
 	}
 
 	/// Regression guard for the pid-recycling hazard: the chain comes from the
-	/// snapshot handed in, so a parent absent from it — exited, and its number
-	/// free for reuse — is never carried forward.
+	/// snapshot handed in, so a parent absent from it — exited, and its number free
+	/// for reuse — is never carried forward.
 	#[test]
 	fn a_departed_parent_leaves_no_stale_pid() {
 		let self_pid = i32::try_from(std::process::id()).expect("pid fits in i32");
@@ -2176,22 +2253,22 @@ mod tests {
 		}
 	}
 
-	/// Our own process group is recorded without being special-cased, which is
-	/// what lets `kill -<pgid>` be refused by a plain membership test.
+	/// Our own process group is recorded without being special-cased, which is what
+	/// lets `kill -<pgid>` be refused by a plain membership test.
 	#[cfg(unix)]
 	#[test]
 	fn records_our_own_process_group() {
-		let host = HostProcesses::resolve();
+		let host = HostProcesses::resolve_in(&ProcInfo::all());
 		// SAFETY: getpgrp takes no arguments and touches no memory.
 		let pgid = unsafe { libc::getpgrp() };
 		assert!(host.pgids.contains(&pgid), "own process group {pgid} missing");
 	}
 
-	/// The chain is a handful of numbers; keeping it in inline storage is the
-	/// whole reason this is not a hashed set.
+	/// The chain is a handful of numbers; keeping it in inline storage is the whole
+	/// reason this is not a hashed set.
 	#[test]
 	fn chain_stays_in_inline_storage() {
-		let host = HostProcesses::resolve();
+		let host = HostProcesses::resolve_in(&ProcInfo::all());
 		assert!(
 			!host.pids.spilled() && !host.pgids.spilled(),
 			"chain spilled to the heap: {} pids, {} pgids",

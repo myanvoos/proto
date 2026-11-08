@@ -1,3 +1,5 @@
+//! `top` builtin, moved from `pi-shell`.
+
 use std::{
 	collections::{HashMap, HashSet},
 	fmt::Write as _,
@@ -6,11 +8,13 @@ use std::{
 	time::Duration,
 };
 
-use brush_core::{ExecutionContext, ExecutionExitCode, ExecutionResult, builtins};
 use clap::Parser;
 use tokio::time;
 
-use crate::proc_snapshot::{ProcInfo, sanitize_process_command};
+use crate::{
+	host::{INTERRUPTED_EXIT_CODE, ProcContext, Process},
+	proc_snapshot::{CpuTimes, ProcInfo, sanitize_process_command},
+};
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum TopSortKey {
@@ -24,6 +28,7 @@ enum TopSortKey {
 	Time,
 }
 
+/// Column keys accepted by macOS-style `-stats` (comma-separated).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 enum TopStat {
 	Pid,
@@ -49,6 +54,7 @@ enum TopStat {
 	Command,
 }
 
+/// Column order used when `-stats` is not given.
 const DEFAULT_TOP_STATS: &[TopStat] = &[
 	TopStat::Pid,
 	TopStat::User,
@@ -80,6 +86,7 @@ impl TopStat {
 		}
 	}
 
+	/// Right-align width; 0 renders as-is (used for the free-form command).
 	fn width(self) -> usize {
 		match self {
 			Self::Pid => 7,
@@ -95,39 +102,49 @@ impl TopStat {
 	}
 }
 
+/// Display processes.
 #[derive(Parser)]
 #[command(name = "top", version, about = "Display processes", disable_help_flag = false)]
 pub(crate) struct TopCommand {
+	/// Write plain-text snapshots suitable for pipes and files.
 	#[arg(short = 'b', long)]
 	batch: bool,
 
+	/// Number of snapshots to produce.
 	#[cfg(target_os = "macos")]
 	#[arg(short = 'l', long = "samples", value_parser = clap::value_parser!(u64).range(1..))]
 	iterations: Option<u64>,
 
+	/// Number of snapshots to produce.
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'n', long = "iterations", value_parser = clap::value_parser!(u64).range(1..))]
 	iterations: Option<u64>,
 
+	/// Seconds between snapshots.
 	#[cfg(target_os = "macos")]
 	#[arg(short = 's', long = "delay", default_value_t = 1.0)]
 	delay: f64,
 
+	/// Seconds between snapshots.
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'd', long = "delay", default_value_t = 3.0)]
 	delay: f64,
 
+	/// Maximum number of process rows per snapshot.
 	#[cfg(target_os = "macos")]
 	#[arg(short = 'n', long = "rows")]
 	rows: Option<usize>,
 
+	/// Maximum number of process rows per snapshot.
 	#[cfg(not(target_os = "macos"))]
 	#[arg(short = 'r', long = "rows")]
 	rows: Option<usize>,
 
+	/// Only show these process IDs (may be repeated or comma-separated).
 	#[arg(short = 'p', long = "pid", value_delimiter = ',')]
 	pids: Vec<i32>,
 
+	/// Only show processes with this numeric real or effective user ID.
 	#[arg(short = 'u', long = "user")]
 	user: Option<u32>,
 
@@ -136,9 +153,11 @@ pub(crate) struct TopCommand {
 	#[cfg_attr(not(target_os = "macos"), arg(default_value_t = TopSortKey::Cpu))]
 	sort: TopSortKey,
 
+	/// Show the complete command line instead of the executable name.
 	#[arg(short = 'c', long = "full-command")]
 	full_command: bool,
 
+	/// Columns to display, in order (comma-separated, macOS `-stats` style).
 	#[arg(long = "stats", value_enum, value_delimiter = ',', ignore_case = true)]
 	stats: Vec<TopStat>,
 }
@@ -157,6 +176,7 @@ struct TopProcessRow {
 	command:       String,
 }
 
+/// Long option names `top` accepts with a macOS-style single dash.
 const TOP_LONG_OPTIONS: &[&str] = &[
 	"batch",
 	"samples",
@@ -172,6 +192,8 @@ const TOP_LONG_OPTIONS: &[&str] = &[
 	"version",
 ];
 
+/// Rewrites macOS-style single-dash long options (`-pid`, `-stats pid,cpu`)
+/// into clap-style `--` options; everything else passes through untouched.
 fn normalize_top_flag(arg: String) -> String {
 	if let Some(rest) = arg.strip_prefix('-')
 		&& !rest.starts_with('-')
@@ -184,20 +206,12 @@ fn normalize_top_flag(arg: String) -> String {
 	arg
 }
 
-impl builtins::Command for TopCommand {
-	type Error = brush_core::Error;
-
-	fn new<I>(args: I) -> Result<Self, clap::Error>
-	where
-		I: IntoIterator<Item = String>,
-	{
-		Self::try_parse_from(args.into_iter().map(normalize_top_flag))
+impl Process for TopCommand {
+	fn rewrite_argv(argv: Vec<String>) -> Vec<String> {
+		argv.into_iter().map(normalize_top_flag).collect()
 	}
 
-	fn execute<SE: brush_core::ShellExtensions>(
-		&self,
-		context: ExecutionContext<'_, SE>,
-	) -> impl Future<Output = std::result::Result<ExecutionResult, brush_core::Error>> + Send {
+	fn run(&self, context: &ProcContext) -> impl Future<Output = std::io::Result<i32>> + Send {
 		let iterations = self.iterations;
 		let delay = self.delay;
 		let row_limit = self.rows;
@@ -214,12 +228,18 @@ impl builtins::Command for TopCommand {
 		async move {
 			if !delay.is_finite() || delay < 0.0 || delay > Duration::MAX.as_secs_f64() {
 				writeln!(context.stderr(), "top: invalid delay '{delay}'")?;
-				return Ok(ExecutionResult::new(1));
+				return Ok(1);
 			}
 			if row_limit == Some(0) {
 				writeln!(context.stderr(), "top: row count must be greater than zero")?;
-				return Ok(ExecutionResult::new(1));
+				return Ok(1);
 			}
+			#[cfg(target_os = "windows")]
+			if user.is_some() {
+				writeln!(context.stderr(), "top: user filtering is unavailable on Windows")?;
+				return Ok(2);
+			}
+
 			let delay = Duration::from_secs_f64(delay);
 			let pid_filter: HashSet<i32> = pids.into_iter().collect();
 			let mut previous = HashMap::<i32, (u64, Duration)>::new();
@@ -228,7 +248,7 @@ impl builtins::Command for TopCommand {
 
 			loop {
 				if context.is_cancelled() {
-					return Ok(ExecutionExitCode::Interrupted.into());
+					return Ok(INTERRUPTED_EXIT_CODE);
 				}
 
 				let now = std::time::Instant::now();
@@ -250,7 +270,7 @@ impl builtins::Command for TopCommand {
 					}
 
 					let start_time = process.start_time();
-					let cpu_time = process.cpu_time();
+					let cpu_time = process.cpu_times().map(CpuTimes::total);
 					let cpu_percent = cpu_time
 						.and_then(|current| {
 							previous
@@ -295,16 +315,21 @@ impl builtins::Command for TopCommand {
 
 				sort_top_rows(&mut rows, sort);
 				let output = render_top_snapshot(&rows, row_limit, sample + 1, &stats);
-				if let Err(err) = write!(context.stdout(), "{output}") {
+				let write_result = context.stdout().write_all(output.as_bytes());
+				let written = match write_result {
+					Ok(()) => context.flush_output().await,
+					Err(err) => Err(err),
+				};
+				if let Err(err) = written {
 					if err.kind() == io::ErrorKind::BrokenPipe {
-						return Ok(ExecutionResult::success());
+						return Ok(crate::host::SIGPIPE_EXIT_CODE);
 					}
-					return Err(err.into());
+					return Err(err);
 				}
 
 				sample += 1;
 				if iterations.is_some_and(|count| sample >= count) {
-					return Ok(ExecutionResult::success());
+					return Ok(0);
 				}
 				previous = next_previous;
 				previous_sample = now;
@@ -315,7 +340,7 @@ impl builtins::Command for TopCommand {
 					tokio::select! {
 						() = &mut sleep => {},
 						() = cancel_token.cancelled() => {
-							return Ok(ExecutionExitCode::Interrupted.into());
+							return Ok(INTERRUPTED_EXIT_CODE);
 						},
 					}
 				} else {
@@ -473,4 +498,126 @@ fn format_top_time(duration: Duration) -> String {
 	let seconds = total_seconds % 60;
 	let hundredths = duration.subsec_millis() / 10;
 	format!("{minutes}:{seconds:02}.{hundredths:02}")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn row(
+		pid: i32,
+		command: &str,
+		cpu_percent: f64,
+		resident_size: u64,
+		cpu_time: u64,
+	) -> TopProcessRow {
+		TopProcessRow {
+			pid,
+			user: Some(501),
+			state: 'S',
+			cpu_percent,
+			cpu_time: Some(Duration::from_secs(cpu_time)),
+			virtual_size: Some(2048),
+			resident_size: Some(resident_size),
+			threads: Some(2),
+			nice: Some(0),
+			command: command.to_string(),
+		}
+	}
+
+	fn sorted_pids(key: TopSortKey) -> Vec<i32> {
+		let mut rows = vec![
+			row(1, "zeta", 20.0, 300, 2),
+			row(3, "alpha", 10.0, 200, 3),
+			row(2, "alpha", 30.0, 100, 1),
+		];
+		sort_top_rows(&mut rows, key);
+		rows.into_iter().map(|row| row.pid).collect()
+	}
+
+	#[test]
+	fn formats_byte_units() {
+		assert_eq!(format_top_bytes(999), "999");
+		assert_eq!(format_top_bytes(1536), "1.5k");
+		assert_eq!(format_top_bytes(2 * 1024 * 1024), "2.0m");
+		assert_eq!(format_top_bytes(3 * 1024 * 1024 * 1024), "3.0g");
+	}
+
+	#[test]
+	fn formats_cpu_time() {
+		assert_eq!(format_top_time(Duration::from_millis(62_349)), "1:02.34");
+		assert_eq!(format_top_time(Duration::from_secs(3_600)), "60:00.00");
+	}
+
+	#[test]
+	fn sorts_rows_by_each_key() {
+		assert_eq!(sorted_pids(TopSortKey::Pid), vec![3, 2, 1]);
+		assert_eq!(sorted_pids(TopSortKey::Command), vec![3, 2, 1]);
+		assert_eq!(sorted_pids(TopSortKey::Cpu), vec![2, 1, 3]);
+		assert_eq!(sorted_pids(TopSortKey::Mem), vec![1, 3, 2]);
+		assert_eq!(sorted_pids(TopSortKey::Time), vec![3, 1, 2]);
+	}
+
+	#[test]
+	fn snapshot_honors_row_limit() {
+		let rows = vec![
+			row(3, "visible-three", 0.0, 0, 0),
+			row(2, "visible-two", 0.0, 0, 0),
+			row(1, "hidden-one", 0.0, 0, 0),
+		];
+		let output = render_top_snapshot(&rows, Some(2), 7, DEFAULT_TOP_STATS);
+		assert!(output.contains("top - snapshot 7"));
+		assert!(output.contains("visible-three"));
+		assert!(output.contains("visible-two"));
+		assert!(!output.contains("hidden-one"));
+	}
+
+	#[test]
+	fn parses_macos_single_dash_long_options() {
+		use clap::Parser as _;
+
+		use crate::host::Process as _;
+		let argv = TopCommand::rewrite_argv(
+			["top", "-pid", "56943,101", "-stats", "pid,cpu,th,mem,pstate"]
+				.into_iter()
+				.map(String::from)
+				.collect(),
+		);
+		let cmd = TopCommand::try_parse_from(argv).expect("macOS-style flags must parse");
+		assert_eq!(cmd.pids, vec![56943, 101]);
+		assert_eq!(cmd.stats, vec![
+			TopStat::Pid,
+			TopStat::Cpu,
+			TopStat::Threads,
+			TopStat::Res,
+			TopStat::State
+		]);
+	}
+
+	#[test]
+	fn snapshot_renders_selected_stats_in_order() {
+		let rows = vec![row(42, "worker", 12.3, 4096, 61)];
+		let output = render_top_snapshot(&rows, None, 1, &[
+			TopStat::Pid,
+			TopStat::Cpu,
+			TopStat::Threads,
+			TopStat::Res,
+			TopStat::State,
+		]);
+		let header = output
+			.lines()
+			.find(|line| line.contains("PID"))
+			.expect("header line");
+		assert_eq!(header.split_whitespace().collect::<Vec<_>>(), vec![
+			"PID", "%CPU", "TH", "RES", "S"
+		]);
+		let row_line = output
+			.lines()
+			.find(|line| line.contains("42"))
+			.expect("process row");
+		assert_eq!(row_line.split_whitespace().collect::<Vec<_>>(), vec![
+			"42", "12.3", "2", "4.0k", "S"
+		]);
+		assert!(!output.contains("worker"));
+	}
 }

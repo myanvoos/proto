@@ -1,4 +1,6 @@
-use std::fmt::Write as _;
+//! Go toolchain output filters.
+
+use std::fmt::{NumBuffer, Write as _};
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
 
@@ -39,7 +41,7 @@ fn is_go_tool_golangci_lint(ctx: &MinimizerCtx<'_>) -> bool {
 	}
 
 	let mut saw_tool = false;
-	for token in ctx.tokens {
+	for token in ctx.command.split_whitespace() {
 		if saw_tool {
 			return token == "golangci-lint";
 		}
@@ -51,6 +53,10 @@ fn is_go_tool_golangci_lint(ctx: &MinimizerCtx<'_>) -> bool {
 }
 
 fn filter_go_test(input: &str, exit_code: i32) -> String {
+	// On success, no per-test/per-package detail carries signal: re-derive rtk's
+	// aggregation against DEFAULT text (and opportunistic JSON), counting
+	// package and test markers into a single summary line instead of echoing
+	// every PASS/ok.
 	if exit_code == 0 {
 		return aggregate_go_test_success(input);
 	}
@@ -93,7 +99,10 @@ fn filter_go_test(input: &str, exit_code: i32) -> String {
 	primitives::head_tail_lines(&primitives::dedup_consecutive_lines(&out), 140, 80)
 }
 
+/// Success-path aggregation: count package and test markers (re-derived for
+/// DEFAULT text, with opportunistic JSON rendering) and emit one summary line.
 fn aggregate_go_test_success(input: &str) -> String {
+	// Benchmark output is signal — don't collapse it into a count.
 	if input
 		.lines()
 		.any(|l| l.trim_start().starts_with("Benchmark"))
@@ -111,6 +120,10 @@ fn aggregate_go_test_success(input: &str) -> String {
 			continue;
 		}
 
+		// Opportunistic JSON: render to the same text shape, then count.
+		// Also check for JSON-wrapped benchmark output — those lines start with
+		// "{" so the raw-line guard above misses them.  Bail to head_tail
+		// early so benchmark results are never collapsed into a package count.
 		if trimmed.starts_with('{')
 			&& let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
 			&& let Some(output) = value.get("Output").and_then(|v| v.as_str())
@@ -319,9 +332,9 @@ fn summarize_golangci_json(line: &str) -> Option<String> {
 			.map_or("", |value| value);
 		out.push_str(file);
 		out.push(':');
-		out.push_str(&line_no.to_string());
+		out.push_str(line_no.format_into(&mut NumBuffer::new()));
 		out.push(':');
-		out.push_str(&col_no.to_string());
+		out.push_str(col_no.format_into(&mut NumBuffer::new()));
 		out.push_str(": ");
 		out.push_str(text);
 		out.push_str(" (");
@@ -330,7 +343,7 @@ fn summarize_golangci_json(line: &str) -> Option<String> {
 	}
 	if issues.len() > 40 {
 		out.push_str("[…");
-		out.push_str(&(issues.len() - 40).to_string());
+		out.push_str((issues.len() - 40).format_into(&mut NumBuffer::new()));
 		out.push_str(" issues elided…]\n");
 	}
 	Some(out)
@@ -384,7 +397,12 @@ fn is_go_noise(line: &str) -> bool {
 
 fn is_golangci_noise(line: &str) -> bool {
 	let lower = line.to_ascii_lowercase();
-
+	// Strip runner-log info/warn chatter (snip strips `^level=` wholesale), but
+	// DELIBERATELY KEEP `level=error` — those lines carry config/typecheck
+	// failures that would otherwise vanish silently.
+	// `level=error` carries config/typecheck failures (incl. the canonical
+	// `level=error msg="[linters_context]…"` typecheck headline) — never strip
+	// it, even when it routes through the linters_context component.
 	if lower.starts_with("level=error") {
 		return false;
 	}
@@ -394,4 +412,272 @@ fn is_golangci_noise(line: &str) -> bool {
 		|| lower.starts_with("level=") && lower.contains("msg=\"[linters_context]")
 		|| lower.starts_with("golangci-lint has version")
 		|| lower.starts_with("running ") && lower.contains("linters")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::minimizer::MinimizerConfig;
+
+	#[test]
+	fn keeps_go_test_failure_from_json_lines() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("test"),
+			command:    "go test ./...",
+			config:     &cfg,
+		};
+		let input = r#"{"Action":"run","Package":"example.com/app","Test":"TestBad"}
+{"Action":"output","Package":"example.com/app","Test":"TestBad","Output":"=== RUN   TestBad\n"}
+{"Action":"output","Package":"example.com/app","Test":"TestBad","Output":"    app_test.go:12: expected 2, got 1\n"}
+{"Action":"fail","Package":"example.com/app","Test":"TestBad"}
+{"Action":"fail","Package":"example.com/app"}
+"#;
+
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("app_test.go:12"));
+		assert!(out.text.contains("expected 2, got 1"));
+		assert!(out.text.contains("--- FAIL: TestBad"));
+		assert!(!out.text.contains("=== RUN"));
+	}
+
+	#[test]
+	fn keeps_go_test_json_location_followup_context() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("test"),
+			command:    "go test -json ./...",
+			config:     &cfg,
+		};
+		let input = r#"{"Action":"output","Package":"example.com/app","Test":"TestBad","Output":"    app_test.go:42:\n"}
+	{"Action":"output","Package":"example.com/app","Test":"TestBad","Output":"        important table diff without keywords\n"}
+	{"Action":"output","Package":"example.com/app","Output":"Test killed with quit: ran too long\n"}
+	{"Action":"fail","Package":"example.com/app","Test":"TestBad"}
+	"#;
+
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("app_test.go:42:"));
+		assert!(out.text.contains("important table diff without keywords"));
+		assert!(out.text.contains("Test killed with quit"));
+	}
+
+	#[test]
+	fn go_test_verbose_success_aggregates_to_summary() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("test"),
+			command:    "go test ./... -v",
+			config:     &cfg,
+		};
+		let input = "=== RUN   TestControllers\nRunning Suite: Controller Suite\nSUCCESS! -- 1 \
+		             Passed | 0 Failed | 0 Pending\n--- PASS: TestControllers (6.04s)\nPASS\nok  \
+		             kubecraft.ai/.../controller  6.610s\n=== RUN   TestNewClient\n--- PASS: \
+		             TestNewClient (0.00s)\nPASS\nok  kubecraft.ai/.../llm  0.776s\n";
+		let out = filter(&ctx, input, 0);
+		// On success the two `ok` packages collapse to one summary line; the
+		// per-test PASS lines and `=== RUN`/ginkgo banner noise disappear.
+		assert!(out.text.contains("go test: 2 packages ok"));
+		assert!(!out.text.contains("--- PASS"));
+		assert!(!out.text.contains("=== RUN"));
+		assert!(!out.text.contains("SUCCESS!"));
+	}
+
+	#[test]
+	fn go_test_success_default_text_counts_no_tests_and_skips() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("test"),
+			command:    "go test ./...",
+			config:     &cfg,
+		};
+		let input = "ok  \texample.com/a\t0.10s\n?   \texample.com/b\t[no test files]\nok  \
+		             \texample.com/c\t0.20s\n--- SKIP: TestSkipped (0.00s)\nok  \
+		             \texample.com/d\t0.30s\n";
+		let out = filter(&ctx, input, 0);
+		assert_eq!(out.text.trim(), "go test: 3 packages ok, 1 no tests, 1 tests skipped");
+	}
+
+	#[test]
+	fn summarizes_golangci_json_issues() {
+		let input = r#"{"Issues":[{"FromLinter":"govet","Text":"unreachable code","Pos":{"Filename":"main.go","Line":7,"Column":2}}]}"#;
+		let out = filter_golangci_lint(input);
+		assert!(out.contains("golangci-lint: 1 issues"));
+		assert!(out.contains("main.go:7:2: unreachable code (govet)"));
+
+		// Match up-to-40 limits, testing elison formatting
+		let mut many_issues = r#"{"Issues":["#.to_string();
+		for i in 0..42 {
+			if i > 0 {
+				many_issues.push(',');
+			}
+			let _ = write!(
+				many_issues,
+				r#"{{"FromLinter":"govet","Text":"err {i}","Pos":{{"Filename":"main.go","Line":{i},"Column":2}}}}"#
+			);
+		}
+		many_issues.push_str("]}");
+		let out_many = filter_golangci_lint(&many_issues);
+		assert!(out_many.contains("golangci-lint: 42 issues"));
+		assert!(out_many.contains("[…2 issues elided…]"));
+	}
+
+	#[test]
+	fn go_tool_golangci_lint_is_filtered() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("tool"),
+			command:    "go tool golangci-lint run ./...",
+			config:     &cfg,
+		};
+		let input = r#"{"Issues":[{"FromLinter":"govet","Text":"bad","Pos":{"Filename":"main.go","Line":7,"Column":2}}]}"#;
+		let out = filter(&ctx, input, 1);
+		assert!(out.changed);
+		assert!(out.text.contains("main.go:7:2: bad (govet)"));
+	}
+
+	#[test]
+	fn looks_like_go_error_recognizes_non_location_error_shapes() {
+		// Ported from rtk go_cmd inline inputs: module/compiler failures that
+		// carry no file.go:line:col location must still register as errors.
+		assert!(looks_like_go_error("undefined: missingFunc"));
+		assert!(looks_like_go_error("cannot find package \"foo/bar\""));
+		assert!(looks_like_go_error(
+			"found packages a (a.go) and b (b.go) in /tmp/rtk-go-build-probe-mix"
+		));
+		assert!(looks_like_go_error("imports example.com/cycle/a: import cycle not allowed"));
+		assert!(looks_like_go_error(
+			"package example.com/buildtag: build constraints exclude all Go files in /tmp/x"
+		));
+		assert!(looks_like_go_error("no Go files in /tmp/example"));
+		assert!(looks_like_go_error(
+			"go: cannot load module missing listed in go.work file: open missing/go.mod: no such \
+			 file or directory"
+		));
+		assert!(looks_like_go_error("go: updates to go.mod needed; to update it: go mod tidy"));
+		assert!(looks_like_go_error(
+			"go: inconsistent vendoring in /tmp/example: run 'go mod vendor' to sync"
+		));
+		assert!(looks_like_go_error(
+			"runtime.main_main·f: function main is undeclared in the main package"
+		));
+		assert!(looks_like_go_error(
+			"pattern ./...: directory prefix . does not contain main module or its selected \
+			 dependencies"
+		));
+		// go.mod-not-found is already covered via the `go: ... not found` arm.
+		assert!(looks_like_go_error(
+			"go: go.mod file not found in current directory or any parent directory; see 'go help \
+			 modules'"
+		));
+		// NOTE: `go: downloading …/errors …` trips the broad `go: …error…` arm,
+		// but `is_go_noise` strips those lines upstream in filter_go_build
+		// before this helper runs, so the build-level test below is the real
+		// guard.
+	}
+
+	#[test]
+	fn go_build_failure_preserves_non_location_error_shapes() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("build"),
+			command:    "go build ./...",
+			config:     &cfg,
+		};
+		let input = "pattern ./...: directory prefix . does not contain main module or its selected \
+		             dependencies\nno Go files in /tmp/example\ngo: inconsistent vendoring in \
+		             /tmp/x: run 'go mod vendor'\nruntime.main_main·f: function main is undeclared \
+		             in the main package\n";
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("does not contain main module"));
+		assert!(out.text.contains("no Go files in /tmp/example"));
+		assert!(out.text.contains("inconsistent vendoring"));
+		assert!(
+			out.text
+				.contains("function main is undeclared in the main package")
+		);
+	}
+
+	#[test]
+	fn golangci_strips_info_warn_but_keeps_level_error() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "golangci-lint",
+			subcommand: Some("run"),
+			command:    "golangci-lint run ./...",
+			config:     &cfg,
+		};
+		// Real default (non-json) golangci run: the typecheck headline is emitted
+		// by the logrus logger in its canonical `level=error
+		// msg="[linters_context]…"` shape — the exact format that must survive.
+		// Surrounding runner chatter (incl. a warn-level linters_context line)
+		// is stripped.
+		let input = "level=info Active 5 linters\nlevel=warning The linter 'deadcode' is \
+		             deprecated\nlevel=warning msg=\"[linters_context] stale cache\"\nlevel=error \
+		             msg=\"[linters_context] typechecking error: cannot find \
+		             package\"\nmain.go:10:2: undefined: Foo (typecheck)\n";
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("level=error"));
+		assert!(out.text.contains("typechecking error"));
+		// `group_by_file` regroups the per-issue line under a `main.go:` header,
+		// so assert on the surviving location + linter, not the joined string.
+		assert!(out.text.contains("main.go"));
+		assert!(out.text.contains("undefined: Foo (typecheck)"));
+		assert!(!out.text.contains("level=info"));
+		assert!(!out.text.contains("level=warning"));
+		// The warn-level linters_context chatter is still dropped — the keep is
+		// scoped to error level, not to every linters_context line.
+		assert!(!out.text.contains("stale cache"));
+	}
+
+	#[test]
+	fn unknown_go_tool_is_passthrough() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = MinimizerCtx {
+			program:    "go",
+			subcommand: Some("tool"),
+			command:    "go tool pprof profile.out",
+			config:     &cfg,
+		};
+		let input = "Type: cpu\nShowing nodes accounting for 10ms\ngo: downloading noise\n";
+		let out = filter(&ctx, input, 0);
+		assert_eq!(out.text, input);
+		assert!(!out.changed);
+	}
+
+	#[test]
+	fn go_json_no_double_count() {
+		// A -json stream has both an Output "ok\t{pkg}" line AND a pass event.
+		// We must count only once.
+		let json = "{\"Action\":\"output\",\"Package\":\"example/pkg\",\"Output\":\"ok\\texample/\
+		            pkg\\n\"}\n{\"Action\":\"pass\",\"Package\":\"example/pkg\",\"Elapsed\":0.123}\n";
+		let result = aggregate_go_test_success(json);
+		assert!(result.contains("1 packages ok"), "got: {result}");
+		assert!(!result.contains("2 packages ok"), "double-counted: {result}");
+	}
+
+	#[test]
+	fn go_benchmark_preserved_on_success() {
+		let input = "BenchmarkFoo-8\t1000000\t1234 ns/op\nok\texample/pkg\t1.234s\n";
+		let result = filter_go_test(input, 0);
+		assert!(result.contains("BenchmarkFoo"), "benchmark stripped: {result}");
+	}
+
+	#[test]
+	fn test_json_benchmark_preserved() {
+		let input = r#"{"Action":"run","Test":"BenchmarkFoo"}
+{"Action":"output","Output":"BenchmarkFoo-8   1000   1234 ns/op\n"}
+{"Action":"output","Output":"ok  example.com/pkg  1.234s\n"}
+{"Action":"pass","Elapsed":1.234}"#;
+		let result = aggregate_go_test_success(input);
+		// Should NOT produce "packages ok" summary — should return head_tail of
+		// input
+		assert!(!result.contains("packages ok"), "benchmark json run must not be collapsed");
+		assert!(result.contains("BenchmarkFoo"), "benchmark lines must survive");
+	}
 }

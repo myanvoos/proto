@@ -4,18 +4,17 @@
 //! The reported identity is the host process's, which is correct for an
 //! in-process builtin.
 
-use std::io::Write;
+use std::{fmt::NumBuffer, io::Write};
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use libc::{gid_t, uid_t};
-use rustix::process::{getegid, geteuid, getgid, getuid};
 use uucore::{
 	display::Quotable,
 	entries::{Locate, Passwd, get_groups_gnu, gid2grp, uid2usr},
+	process::{getegid, geteuid, getgid, getuid},
 };
 
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use crate::host::{Host, Utility, format_usage, matches_parser};
 
 mod options {
 	pub const OPT_IGNORE: &str = "ignore";
@@ -60,11 +59,7 @@ impl Utility for Id {
 		let use_name = m.get_flag(options::OPT_NAME);
 		let use_real = m.get_flag(options::OPT_REAL_ID);
 		let zero = m.get_flag(options::OPT_ZERO);
-		let users: Vec<&String> = m
-			.get_many::<String>(options::ARG_USERS)
-			.into_iter()
-			.flatten()
-			.collect();
+		let users: Vec<&String> = m.get_many::<String>(options::ARG_USERS).into_iter().flatten().collect();
 
 		// No SELinux/SMACK support exists for an in-process builtin.
 		if m.get_flag(options::OPT_CONTEXT) {
@@ -89,10 +84,9 @@ impl Utility for Id {
 			return 1;
 		}
 
-		let mut printer =
-			Printer { out: Vec::new(), errors: Vec::new(), ok: true, use_name, use_real, zero };
+		let mut printer = Printer { out: Vec::new(), errors: Vec::new(), ok: true, use_name, use_real, zero };
 		if users.is_empty() {
-			let ids = Ids { ruid: getuid().as_raw(), euid: geteuid().as_raw(), rgid: getgid().as_raw(), egid: getegid().as_raw() };
+			let ids = Ids { ruid: getuid(), euid: geteuid(), rgid: getgid(), egid: getegid() };
 			printer.print_stuff(mode, None, &ids, false);
 		} else {
 			let multiple = users.len() > 1;
@@ -118,11 +112,7 @@ impl Utility for Id {
 /// GNU's message for an unknown USER. Its numeric fallback runs `strtoumax`,
 /// which on Darwin leaves EINVAL for non-numeric input, and GNU reports it.
 fn no_such_user(spec: &str) -> String {
-	let numeric = spec
-		.strip_prefix('+')
-		.unwrap_or(spec)
-		.parse::<uid_t>()
-		.is_ok();
+	let numeric = spec.strip_prefix('+').unwrap_or(spec).parse::<uid_t>().is_ok();
 	if cfg!(target_vendor = "apple") && !numeric {
 		format!("{}: no such user: Invalid argument", spec.quote())
 	} else {
@@ -174,12 +164,10 @@ impl Printer {
 				self.out.extend_from_slice(name.as_bytes());
 				return;
 			}
-			self
-				.errors
-				.push(format!("cannot find name for user ID {uid}"));
+			self.errors.push(format!("cannot find name for user ID {uid}"));
 			self.ok = false;
 		}
-		self.out.extend_from_slice(uid.to_string().as_bytes());
+		self.out.extend_from_slice(uid.format_into(&mut NumBuffer::new()).as_bytes());
 	}
 
 	fn print_group(&mut self, gid: gid_t) {
@@ -188,12 +176,10 @@ impl Printer {
 				self.out.extend_from_slice(name.as_bytes());
 				return;
 			}
-			self
-				.errors
-				.push(format!("cannot find name for group ID {gid}"));
+			self.errors.push(format!("cannot find name for group ID {gid}"));
 			self.ok = false;
 		}
-		self.out.extend_from_slice(gid.to_string().as_bytes());
+		self.out.extend_from_slice(gid.format_into(&mut NumBuffer::new()).as_bytes());
 	}
 
 	/// The user's groups (getgrouplist) or the process's (getgroups, egid
@@ -204,9 +190,7 @@ impl Printer {
 			None => match get_groups_gnu(None) {
 				Ok(groups) => groups,
 				Err(_) => {
-					self
-						.errors
-						.push("failed to get groups for the current process".to_owned());
+					self.errors.push("failed to get groups for the current process".to_owned());
 					self.ok = false;
 					return Vec::new();
 				},
@@ -231,7 +215,8 @@ impl Printer {
 
 	fn print_full_info(&mut self, pw: Option<&Passwd>, ids: &Ids) {
 		let field = |out: &mut Vec<u8>, label: &str, id: u32, name: Option<String>| {
-			out.extend_from_slice(format!("{label}{id}").as_bytes());
+			out.extend_from_slice(label.as_bytes());
+			out.extend_from_slice(id.format_into(&mut NumBuffer::new()).as_bytes());
 			if let Some(name) = name {
 				out.extend_from_slice(format!("({name})").as_bytes());
 			}
@@ -257,9 +242,7 @@ impl Printer {
 /// GNU `mgetgroups` dedup, which uucore's group lists lack: drop entries equal
 /// to the first or to the previously kept entry.
 fn mgetgroups_dedup(mut groups: Vec<gid_t>) -> Vec<gid_t> {
-	let Some(&first) = groups.first() else {
-		return groups;
-	};
+	let Some(&first) = groups.first() else { return groups };
 	let mut kept = 1;
 	for i in 1..groups.len() {
 		let g = groups[i];
@@ -332,10 +315,7 @@ fn app() -> Command {
 			Arg::new(options::OPT_ZERO)
 				.short('z')
 				.long(options::OPT_ZERO)
-				.help(
-					"delimit entries with NUL characters, not whitespace;\nnot permitted in default \
-					 format",
-				)
+				.help("delimit entries with NUL characters, not whitespace;\nnot permitted in default format")
 				.action(ArgAction::SetTrue),
 		)
 		.arg(
@@ -353,7 +333,76 @@ fn app() -> Command {
 		)
 }
 
-/// Creates the `id` builtin registration.
-pub(crate) fn id_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Id, SE>()
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::host::run_util;
+
+	fn run(args: &[&str]) -> (i32, Vec<u8>, String) {
+		let (code, cap) = run_util::<Id>(args, "", ".");
+		(code, cap.stdout(), cap.err())
+	}
+
+	#[test]
+	fn default_format_rejects_name_real_and_zero() {
+		let msg = "id: printing only names or real IDs requires -u, -g, or -G\n";
+		assert_eq!(run(&["-n"]), (1, Vec::new(), msg.into()));
+		assert_eq!(run(&["-r"]), (1, Vec::new(), msg.into()));
+		assert_eq!(run(&["-z"]), (1, Vec::new(), "id: option --zero not permitted in default format\n".into()));
+	}
+
+	#[test]
+	fn more_than_one_choice_is_a_usage_error() {
+		let (code, out, err) = run(&["-ug"]);
+		assert_eq!((code, out.is_empty()), (1, true));
+		assert!(!err.is_empty());
+	}
+
+	#[test]
+	fn context_is_unsupported() {
+		assert_eq!(
+			run(&["-Z"]),
+			(1, Vec::new(), "id: --context (-Z) works only on an SELinux-enabled kernel\n".into())
+		);
+	}
+
+	#[test]
+	fn root_by_name_and_number_agree() {
+		let (code, by_name, _) = run(&["-u", "root"]);
+		assert_eq!((code, by_name), (0, b"0\n".to_vec()));
+		let (code, by_num, _) = run(&["-un", "0"]);
+		assert_eq!((code, by_num), (0, b"root\n".to_vec()));
+	}
+
+	#[test]
+	fn unknown_user_fails_but_continues() {
+		let (code, out, err) = run(&["-u", "nosuchuser", "root"]);
+		assert_eq!((code, out), (1, b"0\n".to_vec()));
+		assert!(err.starts_with("id: 'nosuchuser': no such user"), "{err}");
+		let (code, _, err) = run(&["99999"]);
+		assert_eq!((code, err.as_str()), (1, "id: '99999': no such user\n"));
+	}
+
+	#[test]
+	fn zero_group_lists_for_several_users_end_with_double_nul() {
+		let (code, out, _) = run(&["-zG", "root", "root"]);
+		assert_eq!(code, 0);
+		assert!(out.ends_with(b"\0\0") && out.starts_with(b"0\0"));
+		let (_, single, _) = run(&["-zG", "root"]);
+		assert!(single.ends_with(b"\0") && !single.ends_with(b"\0\0"));
+	}
+
+	#[test]
+	fn current_group_list_starts_with_egid_without_duplicates() {
+		let (code, out, _) = run(&["-G"]);
+		assert_eq!(code, 0);
+		let ids: Vec<u32> = String::from_utf8(out).unwrap().split_whitespace().map(|s| s.parse().unwrap()).collect();
+		assert_eq!(ids[0], getegid());
+		assert!(!ids[1..].contains(&ids[0]));
+	}
+
+	#[test]
+	fn dedup_follows_mgetgroups() {
+		assert_eq!(mgetgroups_dedup(vec![20, 20, 1, 1, 20, 2, 1]), vec![20, 1, 2, 1]);
+	}
 }

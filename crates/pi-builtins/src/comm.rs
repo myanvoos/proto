@@ -1,19 +1,22 @@
+//! `comm` builtin: compare two sorted files line by line.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	cmp::Ordering,
 	ffi::{OsStr, OsString},
-	fs,
 	io::{self, BufRead, BufReader, Read, Write},
 	path::Path,
 	sync::Arc,
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use icu_collator::CollatorBorrowed;
+use pi_vfs::BlockingFs;
 use uucore::{display::Quotable, line_ending::LineEnding};
 
 use crate::{
-	host::{Host, Utility, format_usage, matches_parser, util},
+	host::{Host, Utility, format_usage, matches_parser},
 	locale::shell_collator,
 };
 
@@ -111,14 +114,14 @@ impl<'a> LineReader<'a> {
 	}
 }
 
-fn files_identical(path1: &Path, path2: &Path) -> io::Result<bool> {
-	let m1 = fs::metadata(path1)?;
-	let m2 = fs::metadata(path2)?;
+fn files_identical(fs: &BlockingFs, path1: &Path, path2: &Path) -> io::Result<bool> {
+	let m1 = fs.metadata(path1)?;
+	let m2 = fs.metadata(path2)?;
 	if !m1.is_file() || !m2.is_file() || m1.len() != m2.len() {
 		return Ok(false);
 	}
-	let mut a = BufReader::new(brush_core::heldfiles::open_read(path1)?);
-	let mut b = BufReader::new(brush_core::heldfiles::open_read(path2)?);
+	let mut a = BufReader::new(fs.open(path1)?);
+	let mut b = BufReader::new(fs.open(path2)?);
 	let mut ba = [0; 8192];
 	let mut bb = [0; 8192];
 	loop {
@@ -148,14 +151,8 @@ fn write_delimited(writer: &mut impl Write, delim: &[u8], line: &[u8]) -> io::Re
 	writer.write_all(line)
 }
 
-fn read_context(
-	reader: &mut LineReader<'_>,
-	buf: &mut Vec<u8>,
-	name: &OsStr,
-) -> Result<usize, String> {
-	reader
-		.read_line(buf)
-		.map_err(|e| format!("{}: {e}", name.maybe_quote()))
+fn read_context(reader: &mut LineReader<'_>, buf: &mut Vec<u8>, name: &OsStr) -> Result<usize, String> {
+	reader.read_line(buf).map_err(|e| format!("{}: {e}", name.maybe_quote()))
 }
 
 fn compare(
@@ -181,8 +178,10 @@ fn compare(
 	let (mut n1, mut n2, mut n3) = (0usize, 0usize, 0usize);
 	let explicit = opts.get_flag(options::CHECK_ORDER);
 	let should_check = !opts.get_flag(options::NO_CHECK_ORDER) && (explicit || !identical);
-	let (mut c1, mut c2) =
-		(OrderChecker::new(FileNumber::One, explicit), OrderChecker::new(FileNumber::Two, explicit));
+	let (mut c1, mut c2) = (
+		OrderChecker::new(FileNumber::One, explicit),
+		OrderChecker::new(FileNumber::Two, explicit),
+	);
 	let mut delayed_error = false;
 	while na != 0 || nb != 0 {
 		let ord = match (na, nb) {
@@ -196,9 +195,7 @@ fn compare(
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_1) {
-					stdout
-						.write_all(&ra)
-						.map_err(|e| format!("write error: {e}"))?;
+					stdout.write_all(&ra).map_err(|e| format!("write error: {e}"))?;
 				}
 				ra.clear();
 				na = read_context(a, &mut ra, name1)?;
@@ -217,7 +214,9 @@ fn compare(
 				n2 += 1;
 			},
 			Ordering::Equal => {
-				if should_check && (!c1.verify_order(&ra, order, stderr) || !c2.verify_order(&rb, order, stderr)) {
+				if should_check
+					&& (!c1.verify_order(&ra, order, stderr) || !c2.verify_order(&rb, order, stderr))
+				{
 					break;
 				}
 				if !opts.get_flag(options::COLUMN_3) {
@@ -252,6 +251,7 @@ fn compare(
 }
 
 fn open_file<'a>(
+	fs: &BlockingFs,
 	name: &OsStr,
 	resolved: &Path,
 	stdin: Option<&'a mut dyn Read>,
@@ -260,15 +260,13 @@ fn open_file<'a>(
 	if name == "-" {
 		return Ok(LineReader::new(Box::new(BufReader::new(stdin.expect("stdin operand"))), ending));
 	}
-	if fs::metadata(resolved)?.is_dir() {
+	if fs.metadata(resolved)?.is_dir() {
 		return Err(io::Error::other("is a directory"));
 	}
-	Ok(LineReader::new(
-		Box::new(BufReader::new(brush_core::heldfiles::open_read(resolved)?)),
-		ending,
-	))
+	Ok(LineReader::new(Box::new(BufReader::new(fs.open(resolved)?)), ending))
 }
 
+/// Parsed `comm` invocation.
 pub(crate) struct Comm {
 	matches: ArgMatches,
 }
@@ -287,11 +285,9 @@ impl Utility for Comm {
 		}
 		let path1 = host.resolve(name1);
 		let path2 = host.resolve(name2);
-		for (name, path) in [(name1, &path1), (name2, &path2)] {
-			if name != OsStr::new("-") {
-				host.note_read(path);
-			}
-		}
+		// Cloned so opening files does not hold a `host` borrow alongside the
+		// `&mut host.stdin` handed to one of the readers.
+		let fs = host.fs().clone();
 		let delimiters: Vec<_> = self
 			.matches
 			.get_many::<String>(options::DELIMITER)
@@ -301,41 +297,38 @@ impl Utility for Comm {
 			host.error("multiple conflicting output delimiters specified", 1);
 			return 1;
 		}
-		let delim = if delimiters[0].is_empty() {
-			"\0"
-		} else {
-			delimiters[0]
-		};
+		let delim = if delimiters[0].is_empty() { "\0" } else { delimiters[0] };
 		let identical = if name1 == "-" || name2 == "-" {
 			false
 		} else {
-			files_identical(&path1, &path2).unwrap_or(false)
+			files_identical(&fs, &path1, &path2).unwrap_or(false)
 		};
 		let ending = LineEnding::from_zero_flag(self.matches.get_flag(options::ZERO_TERMINATED));
 		let order = LineOrder { collator: shell_collator(host), ending: ending.into() };
-
+		// Taken before the `LineReader`s below hold `&mut host.stdin`; a
+		// method borrow of `host` would otherwise conflict with them.
 		let mut stdout = host.stdout_writer();
 		let opened: Result<_, (&OsStr, io::Error)> = if name1 == "-" {
-			open_file(name2, &path2, None, ending)
+			open_file(&fs, name2, &path2, None, ending)
 				.map_err(|e| (name2.as_os_str(), e))
 				.and_then(|f2| {
-					open_file(name1, &path1, Some(&mut host.stdin), ending)
+					open_file(&fs, name1, &path1, Some(&mut host.stdin), ending)
 						.map(|f1| (f1, f2))
 						.map_err(|e| (name1.as_os_str(), e))
 				})
 		} else if name2 == "-" {
-			open_file(name1, &path1, None, ending)
+			open_file(&fs, name1, &path1, None, ending)
 				.map_err(|e| (name1.as_os_str(), e))
 				.and_then(|f1| {
-					open_file(name2, &path2, Some(&mut host.stdin), ending)
+					open_file(&fs, name2, &path2, Some(&mut host.stdin), ending)
 						.map(|f2| (f1, f2))
 						.map_err(|e| (name2.as_os_str(), e))
 				})
 		} else {
-			open_file(name1, &path1, None, ending)
+			open_file(&fs, name1, &path1, None, ending)
 				.map_err(|e| (name1.as_os_str(), e))
 				.and_then(|f1| {
-					open_file(name2, &path2, None, ending)
+					open_file(&fs, name2, &path2, None, ending)
 						.map(|f2| (f1, f2))
 						.map_err(|e| (name2.as_os_str(), e))
 				})
@@ -376,139 +369,107 @@ fn app() -> Command {
 		.override_usage(format_usage("comm [OPTION]... FILE1 FILE2"))
 		.infer_long_args(true)
 		.args_override_self(true)
-		.arg(
-			Arg::new(options::COLUMN_1)
-				.short('1')
-				.help("suppress column 1 (lines unique to FILE1)")
-				.action(ArgAction::SetTrue),
-		)
-		.arg(
-			Arg::new(options::COLUMN_2)
-				.short('2')
-				.help("suppress column 2 (lines unique to FILE2)")
-				.action(ArgAction::SetTrue),
-		)
-		.arg(
-			Arg::new(options::COLUMN_3)
-				.short('3')
-				.help("suppress column 3 (lines that appear in both files)")
-				.action(ArgAction::SetTrue),
-		)
-		.arg(
-			Arg::new(options::DELIMITER)
-				.long(options::DELIMITER)
-				.help("separate columns with STR")
-				.value_name("STR")
-				.default_value("\t")
-				.allow_hyphen_values(true)
-				.action(ArgAction::Append)
-				.hide_default_value(true),
-		)
-		.arg(
-			Arg::new(options::ZERO_TERMINATED)
-				.long(options::ZERO_TERMINATED)
-				.short('z')
-				.overrides_with(options::ZERO_TERMINATED)
-				.help("line delimiter is NUL, not newline")
-				.action(ArgAction::SetTrue),
-		)
-		.arg(
-			Arg::new(options::FILE_1)
-				.required(true)
-				.value_hint(clap::ValueHint::FilePath)
-				.value_parser(clap::value_parser!(OsString)),
-		)
-		.arg(
-			Arg::new(options::FILE_2)
-				.required(true)
-				.value_hint(clap::ValueHint::FilePath)
-				.value_parser(clap::value_parser!(OsString)),
-		)
-		.arg(
-			Arg::new(options::TOTAL)
-				.long(options::TOTAL)
-				.help("output a summary")
-				.action(ArgAction::SetTrue),
-		)
-		.arg(
-			Arg::new(options::CHECK_ORDER)
-				.long(options::CHECK_ORDER)
-				.help("check that input is correctly sorted, even if all input lines are pairable")
-				.action(ArgAction::SetTrue),
-		)
-		.arg(
-			Arg::new(options::NO_CHECK_ORDER)
-				.long(options::NO_CHECK_ORDER)
-				.help("do not check that input is correctly sorted")
-				.action(ArgAction::SetTrue)
-				.conflicts_with(options::CHECK_ORDER),
-		)
+		.arg(Arg::new(options::COLUMN_1).short('1').help("suppress column 1 (lines unique to FILE1)").action(ArgAction::SetTrue))
+		.arg(Arg::new(options::COLUMN_2).short('2').help("suppress column 2 (lines unique to FILE2)").action(ArgAction::SetTrue))
+		.arg(Arg::new(options::COLUMN_3).short('3').help("suppress column 3 (lines that appear in both files)").action(ArgAction::SetTrue))
+		.arg(Arg::new(options::DELIMITER).long(options::DELIMITER).help("separate columns with STR").value_name("STR").default_value("\t").allow_hyphen_values(true).action(ArgAction::Append).hide_default_value(true))
+		.arg(Arg::new(options::ZERO_TERMINATED).long(options::ZERO_TERMINATED).short('z').overrides_with(options::ZERO_TERMINATED).help("line delimiter is NUL, not newline").action(ArgAction::SetTrue))
+		.arg(Arg::new(options::FILE_1).required(true).value_hint(clap::ValueHint::FilePath).value_parser(clap::value_parser!(OsString)))
+		.arg(Arg::new(options::FILE_2).required(true).value_hint(clap::ValueHint::FilePath).value_parser(clap::value_parser!(OsString)))
+		.arg(Arg::new(options::TOTAL).long(options::TOTAL).help("output a summary").action(ArgAction::SetTrue))
+		.arg(Arg::new(options::CHECK_ORDER).long(options::CHECK_ORDER).help("check that input is correctly sorted, even if all input lines are pairable").action(ArgAction::SetTrue))
+		.arg(Arg::new(options::NO_CHECK_ORDER).long(options::NO_CHECK_ORDER).help("do not check that input is correctly sorted").action(ArgAction::SetTrue).conflicts_with(options::CHECK_ORDER))
 }
 
-pub(crate) fn comm_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Comm, SE>()
-}
-
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
-	use std::{ffi::OsStr, io::Cursor, sync::Arc};
+	use std::fs;
 
-	use icu_collator::{
-		CollatorBorrowed,
-		options::{AlternateHandling, CollatorOptions, Strength},
-	};
-	use icu_locale_core::Locale;
-	use uucore::line_ending::LineEnding;
+	use super::{Comm, app};
+	use crate::host::{Host, Utility, run_util};
 
-	use super::{LineOrder, LineReader, app, compare};
-
-	fn en_us_collator() -> Arc<CollatorBorrowed<'static>> {
-		let mut options = CollatorOptions::default();
-		options.alternate_handling = Some(AlternateHandling::Shifted);
-		options.strength = Some(Strength::Quaternary);
-		let locale = Locale::try_from_str("en-US").expect("locale");
-		Arc::new(CollatorBorrowed::try_new(locale.into(), options).expect("collator"))
+	#[test]
+	fn compares_three_columns_and_resolves_relative_paths() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "a\nb\nd\n").unwrap();
+		fs::write(dir.path().join("b"), "b\nc\nd\n").unwrap();
+		let (code, capture) = run_util::<Comm>(&["a", "b"], "", dir.path());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "a\n\t\tb\n\tc\n\t\td\n");
 	}
 
-	/// Failure mode: `comm` merged by bytes while `sort` ordered by the shell's
-	/// collation, so under a UTF-8 locale `comm -12` on two `sort` outputs
-	/// warned "not in sorted order" and silently dropped common lines.
+	#[test]
+	fn accepts_one_stdin_operand_and_column_suppression() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("b"), "b\nc\n").unwrap();
+		let (code, capture) = run_util::<Comm>(&["-1", "-", "b"], "a\nb\n", dir.path());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "\tb\nc\n");
+	}
+
+	#[test]
+	fn rejects_stdin_twice() {
+		let (code, capture) = run_util::<Comm>(&["-", "-"], "", "/");
+		assert_eq!(code, 1);
+		assert_eq!(capture.err(), "comm: standard input is specified twice\n");
+	}
+
+	#[test]
+	fn supports_delimiter_total_and_zero_termination() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), b"a\0b\0").unwrap();
+		fs::write(dir.path().join("b"), b"b\0c\0").unwrap();
+		let (code, capture) = run_util::<Comm>(
+			&["-z", "--output-delimiter=|", "--total", "a", "b"],
+			"",
+			dir.path(),
+		);
+		assert_eq!(code, 0);
+		assert_eq!(capture.stdout(), b"a\0||b\0|c\01|1|1|total\0");
+	}
+
+	#[test]
+	fn check_order_reports_unsorted_input() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "b\na\n").unwrap();
+		fs::write(dir.path().join("b"), "b\na\n").unwrap();
+		let (code, capture) = run_util::<Comm>(&["--check-order", "a", "b"], "", dir.path());
+		assert_eq!(code, 1);
+		assert!(capture.err().contains("file 1 is not in sorted order"));
+	}
+
+	// Failure mode: `comm` merged by bytes while `sort` ordered by the shell's
+	// collation, so under a UTF-8 locale `comm -12` on two `sort` outputs
+	// warned "not in sorted order" and dropped common lines.
+	#[cfg(unix)]
 	#[test]
 	fn merges_lines_in_the_shell_collation() {
+		if !crate::locale::locale_loadable("en_US.UTF-8", libc::LC_ALL_MASK) {
+			eprintln!("skipping: en_US.UTF-8 not installed");
+			return;
+		}
+		// en_US order, as `sort` writes it: case and punctuation sort after
+		// letters and digits, unlike byte order.
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "a\nB\nPASS3-r140\nPASS3-r14-moe\n").unwrap();
+		fs::write(dir.path().join("b"), "B\nPASS3-r14-moe\nzzz\n").unwrap();
 		let matches = app().try_get_matches_from(["comm", "-12", "a", "b"]).unwrap();
-		let merge = |order: LineOrder| {
-			let mut a = LineReader::new(
-				Box::new(Cursor::new(b"a\nB\nPASS3-r140\nPASS3-r14-moe\n")),
-				LineEnding::Newline,
-			);
-			let mut b = LineReader::new(
-				Box::new(Cursor::new(b"B\nPASS3-r14-moe\nzzz\n")),
-				LineEnding::Newline,
-			);
-			let (mut out, mut err) = (Vec::new(), Vec::new());
-			let ordered = compare(
-				&mut a,
-				&mut b,
-				OsStr::new("a"),
-				OsStr::new("b"),
-				"\t",
-				&matches,
-				&order,
-				false,
-				&mut out,
-				&mut err,
-			)
-			.expect("merge");
-			(ordered, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
-		};
+		let (mut host, capture) = Host::for_test("comm", "", dir.path());
+		host.set_test_var("LANG", "en_US.UTF-8");
 
-		// en_US order: case and punctuation sort after letters and digits.
-		let (ordered, out, err) = merge(LineOrder { collator: Some(en_us_collator()), ending: b'\n' });
-		assert!(ordered, "{err}");
-		assert_eq!(out, "B\nPASS3-r14-moe\n");
+		let code = Comm { matches }.run(&mut host);
 
-		// The same input under byte order is not sorted, which is the bug.
-		let (ordered, ..) = merge(LineOrder { collator: None, ending: b'\n' });
-		assert!(!ordered);
+		assert_eq!(capture.err(), "");
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "B\nPASS3-r14-moe\n");
+	}
+
+	#[test]
+	fn nocheck_order_accepts_unsorted_input() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "b\na\n").unwrap();
+		fs::write(dir.path().join("b"), "b\na\n").unwrap();
+		let (code, _) = run_util::<Comm>(&["--nocheck-order", "a", "b"], "", dir.path());
+		assert_eq!(code, 0);
 	}
 }

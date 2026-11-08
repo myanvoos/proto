@@ -1,17 +1,23 @@
+//! `mkdir` builtin: create directories.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	ffi::OsString,
 	fmt,
 	io::{self, Write},
-	path::Path,
+	path::{Path, PathBuf},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser, parser::ValuesRef};
-#[cfg(all(unix, target_os = "linux"))]
-use uucore::fsxattr;
-use uucore::{display::Quotable, fs, mode};
+#[cfg(target_os = "linux")]
+use pi_vfs::BlockingFs;
+use pi_vfs::{DirOptions, is_virtual_path, parent_path};
+use uucore::{display::Quotable, fs};
+#[cfg(not(windows))]
+use uucore::mode;
 
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use crate::host::{Host, Utility, format_usage, matches_parser};
 
 const DEFAULT_PERM: u32 = 0o777;
 
@@ -30,10 +36,17 @@ struct Config {
 	verbose:   bool,
 }
 
+#[cfg(windows)]
+fn get_mode(_matches: &ArgMatches, _umask: u32) -> Result<u32, String> {
+	Ok(DEFAULT_PERM)
+}
+
+#[cfg(not(windows))]
 fn get_mode(matches: &ArgMatches, umask: u32) -> Result<u32, String> {
 	if let Some(mode_arg) = matches.get_one::<String>(options::MODE) {
-		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, umask).map_err(|error| error.to_string())
+		mode::parse_chmod(DEFAULT_PERM, mode_arg, true, umask)
 	} else {
+		// If no mode argument is specified, return the mode derived from umask.
 		Ok(!umask & DEFAULT_PERM)
 	}
 }
@@ -75,9 +88,9 @@ fn normalized_io_message(error: &io::Error) -> String {
 	}
 
 	use io::ErrorKind::{
-		AddrInUse, AddrNotAvailable, AlreadyExists, BrokenPipe, ConnectionAborted, ConnectionRefused,
-		ConnectionReset, Interrupted, InvalidData, InvalidInput, NotConnected, NotFound,
-		PermissionDenied, TimedOut, UnexpectedEof, WouldBlock, WriteZero,
+		AddrInUse, AddrNotAvailable, AlreadyExists, BrokenPipe, ConnectionAborted,
+		ConnectionRefused, ConnectionReset, Interrupted, InvalidData, InvalidInput, NotConnected,
+		NotFound, PermissionDenied, TimedOut, UnexpectedEof, WouldBlock, WriteZero,
 	};
 	match error.kind() {
 		NotFound => "No such file or directory".into(),
@@ -104,6 +117,7 @@ fn normalized_io_message(error: &io::Error) -> String {
 	}
 }
 
+/// Parsed `mkdir` invocation.
 pub(crate) struct Mkdir {
 	matches: ArgMatches,
 }
@@ -146,7 +160,7 @@ fn app() -> Command {
 			Arg::new(options::MODE)
 				.short('m')
 				.long(options::MODE)
-				.help("set file mode")
+				.help("set file mode (not implemented on windows)")
 				.allow_hyphen_values(true)
 				.num_args(1),
 		)
@@ -198,32 +212,77 @@ fn exec(dirs: ValuesRef<'_, OsString>, config: &Config, host: &mut Host) {
 	}
 }
 
+/// Creates a directory at `path`, including parents when requested.
 fn mkdir(path: &Path, config: &Config, host: &mut Host) -> Result<(), MkdirError> {
-	if path.as_os_str().is_empty() {
+	if path.is_empty() {
 		return Err(MkdirError::Message(
 			"cannot create directory '': No such file or directory".into(),
 		));
 	}
-
-	let path = fs::dir_strip_dot_for_creation(path);
+	// `mkdir -p foo/.` succeeds, although `std::fs::create_dir("foo/.")` does not.
+	let path = strip_dot_for_creation(path);
 	create_dir(&path, false, config, host)
 }
 
-#[cfg(all(unix, target_os = "linux"))]
-fn chmod(fs_path: &Path, display_path: &Path, mode: u32) -> Result<(), MkdirError> {
-	use std::{
-		fs::{Permissions, set_permissions},
-		os::unix::fs::PermissionsExt,
+/// Drops trailing `/.` components so the directory itself is created.
+///
+/// URL operands keep their `scheme://` root, which component-based stripping
+/// would collapse to `scheme:/`.
+fn strip_dot_for_creation(path: &Path) -> PathBuf {
+	if !is_virtual_path(path) {
+		return fs::dir_strip_dot_for_creation(path);
+	}
+	let Some(mut spelled) = path.to_str() else {
+		return path.to_path_buf();
 	};
+	while let Some(stripped) = spelled.strip_suffix("/.").or_else(|| spelled.strip_suffix("/./")) {
+		if stripped.ends_with(":/") {
+			// `scheme://.` names the root itself.
+			break;
+		}
+		spelled = stripped;
+	}
+	PathBuf::from(spelled)
+}
 
-	set_permissions(fs_path, Permissions::from_mode(mode)).map_err(|source| {
-		MkdirError::io_with_context(
-			source,
-			format!("cannot set permissions {}", display_path.quote()),
-		)
+#[cfg(all(unix, target_os = "linux"))]
+fn chmod(
+	filesystem: &BlockingFs,
+	fs_path: &Path,
+	display_path: &Path,
+	mode: u32,
+) -> Result<(), MkdirError> {
+	filesystem
+		.set_permissions(fs_path, pi_vfs::Permissions::from_mode(mode))
+		.map_err(|source| {
+			MkdirError::io_with_context(
+				source,
+				format!("cannot set permissions {}", display_path.quote()),
+			)
+		})
+}
+
+/// Permission bits inherited from the `system.posix_acl_default` ACL on `path`,
+/// or 0 when it has none.
+///
+/// The xattr value is a 4 byte header followed by `posix_acl_entry` records
+/// (`e_tag: u16, e_perm: u16, e_id: u32`) separated by `0xFFFFFFFF`; see
+/// `include/uapi/linux/posix_acl_xattr.h`.
+#[cfg(all(unix, target_os = "linux"))]
+fn acl_default_perm_bits(filesystem: &BlockingFs, path: &Path) -> u32 {
+	let Ok(Some(value)) = filesystem.get_xattr(path, "system.posix_acl_default", false) else {
+		return 0;
+	};
+	if value.len() < 3 {
+		return 0;
+	}
+	let entries: Vec<u8> = value[3..].iter().copied().filter(|&byte| byte != 255).collect();
+	entries.as_chunks::<4>().0.iter().fold(0, |perm, &[_, _, lo, hi]| {
+		(perm << 3) | u32::from(lo) | u32::from(hi)
 	})
 }
 
+/// Creates `path`; with `-p`, also its missing ancestors.
 fn create_dir(
 	path: &Path,
 	is_parent: bool,
@@ -231,7 +290,7 @@ fn create_dir(
 	host: &mut Host,
 ) -> Result<(), MkdirError> {
 	if !config.recursive {
-		if host.resolve(path).exists() {
+		if host.fs().exists(host.resolve(path)) {
 			return Err(MkdirError::Message(format!("{}: File exists", path.maybe_quote())));
 		}
 		return create_single_dir(path, is_parent, config, host);
@@ -246,7 +305,7 @@ fn create_dir(
 	if !has_parent_dir {
 		// `mkdir -p` of a directory that exists, the common case, takes one
 		// stat; GNU prints nothing for it, even with -v.
-		if path == Path::new("") || host.resolve(path).is_dir() {
+		if path.is_empty() || host.fs().is_dir(host.resolve(path)) {
 			return Ok(());
 		}
 		// The leaf is tried first; its ancestors are looked at only when it
@@ -261,30 +320,19 @@ fn create_dir(
 	// stack.
 	let mut dirs_to_create = Vec::with_capacity(16);
 	let mut current = path;
-	while let Some(parent) = current.parent() {
-		if parent == Path::new("") {
+	while let Some(parent) = parent_path(current) {
+		if parent.is_empty() {
 			break;
 		}
 		dirs_to_create.push(parent);
 		current = parent;
 	}
 	for dir in dirs_to_create.iter().rev() {
-		if !host.resolve(dir).exists() {
+		if !host.fs().exists(host.resolve(dir)) {
 			create_single_dir(dir, true, config, host)?;
 		}
 	}
 	create_single_dir(path, is_parent, config, host)
-}
-
-#[cfg(unix)]
-fn create_dir_with_mode(path: &Path, mode: u32) -> io::Result<()> {
-	use std::os::unix::fs::DirBuilderExt;
-	std::fs::DirBuilder::new().mode(mode).create(path)
-}
-
-#[cfg(not(unix))]
-fn create_dir_with_mode(path: &Path, _mode: u32) -> io::Result<()> {
-	std::fs::create_dir(path)
 }
 
 fn create_single_dir(
@@ -293,10 +341,12 @@ fn create_single_dir(
 	config: &Config,
 	host: &mut Host,
 ) -> Result<(), MkdirError> {
+	let filesystem = host.fs().clone();
 	let fs_path = host.resolve(path);
 
 	#[cfg(unix)]
 	let create_mode = if is_parent {
+		// Parents made by `-p` use the umask-derived mode with `u+wx` restored.
 		(!host.umask() & 0o777) | 0o300
 	} else {
 		config.mode
@@ -304,35 +354,41 @@ fn create_single_dir(
 	#[cfg(not(unix))]
 	let create_mode = config.mode;
 
-	match create_dir_with_mode(&fs_path, create_mode) {
+	match filesystem.create_dir_with(&fs_path, &DirOptions::new().mode(create_mode)) {
 		Ok(()) => {
+			// The effective umask (the shell's, which the filesystem applies,
+			// or else the host's, which the kernel applies) cleared bits that
+			// `-m` and `-p` parents must keep. The host umask is shared with
+			// every thread of the host, so it is never changed; the directory
+			// is `chmod`ed instead, as GNU mkdir does for `-m`. Providers apply
+			// the mode as given.
 			#[cfg(unix)]
-			if create_mode & crate::host::process_umask() != 0 {
-				std::fs::set_permissions(
-					&fs_path,
-					std::os::unix::fs::PermissionsExt::from_mode(create_mode),
-				)
-				.map_err(|source| MkdirError::Io {
-					context: Some(format!("cannot set permissions {}", path.quote())),
-					source,
-				})?;
+			if filesystem.is_native_local(&fs_path) && create_mode & host.umask() != 0 {
+				filesystem
+					.set_permissions(&fs_path, pi_vfs::Permissions::from_mode(create_mode))
+					.map_err(|source| MkdirError::Io {
+						context: Some(format!("cannot set permissions {}", path.quote())),
+						source,
+					})?;
 			}
+
 			if config.verbose {
 				writeln!(host.stdout, "mkdir: created directory {}", path.quote())
 					.map_err(MkdirError::io)?;
 			}
-
+			// Reaching here proves the directory is new.
 			#[cfg(all(unix, target_os = "linux"))]
 			{
-				let acl_perm_bits = fsxattr::get_acl_perm_bits_from_xattr(&fs_path);
+				let acl_perm_bits = acl_default_perm_bits(&filesystem, &fs_path);
 				if acl_perm_bits != 0 {
-					chmod(&fs_path, path, create_mode | acl_perm_bits)?;
+					chmod(&filesystem, &fs_path, path, create_mode | acl_perm_bits)?;
 				}
 			}
 
 			Ok(())
 		},
-		Err(source) if source.kind() != io::ErrorKind::NotFound && fs_path.is_dir() => {
+		// A missing ancestor cannot leave `path` a directory; `-p` creates it.
+		Err(source) if source.kind() != io::ErrorKind::NotFound && filesystem.is_dir(&fs_path) => {
 			let ends_with_parent_dir =
 				matches!(path.components().next_back(), Some(std::path::Component::ParentDir));
 			if config.verbose && is_parent && config.recursive && !ends_with_parent_dir {
@@ -345,6 +401,64 @@ fn create_single_dir(
 	}
 }
 
-pub(crate) fn mkdir_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Mkdir, SE>()
+#[cfg(test)]
+mod tests {
+	use super::Mkdir;
+	use crate::host::run_util;
+
+	#[test]
+	fn creates_relative_operand_under_host_cwd() {
+		let cwd = tempfile::tempdir().unwrap();
+		let (code, capture) = run_util::<Mkdir>(&["child"], "", cwd.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		assert!(cwd.path().join("child").is_dir());
+	}
+
+	#[test]
+	fn parents_creates_the_whole_path() {
+		let cwd = tempfile::tempdir().unwrap();
+		let (code, capture) = run_util::<Mkdir>(&["-p", "a/b/c"], "", cwd.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		assert!(cwd.path().join("a/b/c").is_dir());
+	}
+
+	#[test]
+	fn verbose_uses_the_user_supplied_path() {
+		let cwd = tempfile::tempdir().unwrap();
+		let (code, capture) = run_util::<Mkdir>(&["-v", "shown"], "", cwd.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(capture.out(), "mkdir: created directory 'shown'\n");
+	}
+
+	#[test]
+	fn reports_existing_directory_and_continues() {
+		let cwd = tempfile::tempdir().unwrap();
+		std::fs::create_dir(cwd.path().join("exists")).unwrap();
+		let (code, capture) = run_util::<Mkdir>(&["exists", "created"], "", cwd.path());
+		assert_eq!(code, 1);
+		assert_eq!(capture.err(), "mkdir: exists: File exists\n");
+		assert!(cwd.path().join("created").is_dir());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn explicit_mode_applies_to_leaf_but_parents_keep_owner_write_and_search() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let cwd = tempfile::tempdir().unwrap();
+		let (code, capture) = run_util::<Mkdir>(&["-p", "-m", "000", "parent/leaf"], "", cwd.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		let leaf_mode = std::fs::metadata(cwd.path().join("parent/leaf"))
+			.unwrap()
+			.permissions()
+			.mode()
+			& 0o777;
+		assert_eq!(leaf_mode, 0o000);
+		let parent_mode = std::fs::metadata(cwd.path().join("parent"))
+			.unwrap()
+			.permissions()
+			.mode()
+			& 0o777;
+		assert_eq!(parent_mode & 0o300, 0o300);
+	}
 }

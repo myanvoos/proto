@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt::Write as _};
+//! Conservative text filters for system-style commands.
+
+use std::{
+	collections::HashMap,
+	fmt::{NumBuffer, Write as _},
+};
 
 use super::git;
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -16,7 +21,8 @@ pub fn supports(program: &str) -> bool {
 			| "diff"
 			| "format"
 			| "pipe"
-			| "ps" | "ping"
+			| "ps"
+			| "ping"
 			| "ssh"
 			| "sops"
 	)
@@ -29,9 +35,9 @@ pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerO
 	let text = match command {
 		"env" => {
 			if ctx
-				.tokens
-				.iter()
-				.any(|token| token == "-0" || token == "--null")
+				.command
+				.split_whitespace()
+				.any(|t| t == "-0" || t == "--null")
 			{
 				cleaned
 			} else {
@@ -237,20 +243,16 @@ pub(super) fn normalize_log_line(line: &str) -> String {
 }
 
 fn strip_leading_timestamp(line: &str) -> &str {
-	const DIGIT_POSITIONS: [usize; 14] = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
 	let bytes = line.as_bytes();
 	if bytes.len() >= 19
 		&& bytes.get(4) == Some(&b'-')
 		&& bytes.get(7) == Some(&b'-')
 		&& matches!(bytes.get(10).copied(), Some(b'T' | b' '))
-		&& bytes.get(13) == Some(&b':')
-		&& bytes.get(16) == Some(&b':')
-		&& DIGIT_POSITIONS
-			.iter()
-			.all(|index| bytes[*index].is_ascii_digit())
-		&& line.is_char_boundary(19)
 	{
-		return line[19..].trim_start();
+		if let Some(rest) = line.get(19..) {
+			return rest.trim_start();
+		}
+		return "";
 	}
 	line
 }
@@ -326,6 +328,9 @@ pub(super) fn compact_log_lines(
 
 	for (idx, line) in input.lines().enumerate() {
 		let key = if line.trim().is_empty() {
+			// Blank lines are section separators; do not globally deduplicate
+			// them. drop_repeated_blank_lines already collapsed consecutive
+			// blanks.
 			format!("<blank-{idx}>")
 		} else {
 			let key = key_fn(line);
@@ -370,7 +375,7 @@ fn push_counted_line(out: &mut String, line: &str, count: usize) {
 	out.push_str(line);
 	if count > 1 {
 		out.push_str(" (×");
-		out.push_str(&count.to_string());
+		out.push_str(count.format_into(&mut NumBuffer::new()));
 		out.push(')');
 	}
 	out.push('\n');
@@ -663,11 +668,16 @@ fn is_count_summary(trimmed: &str) -> bool {
 				matches!(
 					kind,
 					"failed"
-						| "passed" | "skipped"
-						| "flaky" | "pass"
-						| "fail" | "error"
-						| "errors" | "warning"
-						| "warnings" | "information"
+						| "passed"
+						| "skipped"
+						| "flaky"
+						| "pass"
+						| "fail"
+						| "error"
+						| "errors"
+						| "warning"
+						| "warnings"
+						| "information"
 						| "informations"
 				)
 			});
@@ -840,7 +850,7 @@ fn looks_like_path_listing(input: &str) -> bool {
 fn compact_ps_output(input: &str) -> String {
 	let mut out = String::new();
 	for line in input.lines() {
-		out.push_str(&truncate_chars(line, 120));
+		out.push_str(&primitives::truncate_line(line, 120));
 		out.push('\n');
 	}
 	if out.lines().count() > 30 {
@@ -848,15 +858,6 @@ fn compact_ps_output(input: &str) -> String {
 	} else {
 		out
 	}
-}
-
-fn truncate_chars(line: &str, max: usize) -> String {
-	if line.chars().count() <= max {
-		return line.to_string();
-	}
-	let mut out: String = line.chars().take(max.saturating_sub(1)).collect();
-	out.push('…');
-	out
 }
 
 fn compact_ping_output(input: &str) -> String {
@@ -933,15 +934,169 @@ fn compact_sops_output(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::normalize_log_line;
+	use super::*;
+	use crate::minimizer::MinimizerConfig;
+
+	fn ctx<'a>(program: &'a str, cfg: &'a MinimizerConfig) -> MinimizerCtx<'a> {
+		MinimizerCtx { program, subcommand: None, command: program, config: cfg }
+	}
 
 	#[test]
-	fn malformed_timestamp_prefix_cannot_collapse_utf8_log_lines() {
-		let first = normalize_log_line("2026-09-19T12:34:5€ first event");
-		let second = normalize_log_line("2026-09-19T12:34:5€ second event");
+	fn log_dedups_repeated_normalized_lines() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("log", &cfg);
+		let input = "2026-01-01 10:00:00 ERROR worker 12345 failed\n2026-01-01 10:00:01 ERROR \
+		             worker 67890 failed\nINFO ready\n";
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("3 lines, 2 unique"));
+		assert!(out.text.contains("(×2)"));
+	}
 
-		assert_ne!(first, "");
-		assert_ne!(second, "");
-		assert_ne!(first, second);
+	#[test]
+	fn log_dedups_normalized_uuid_hex_and_paths() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("log", &cfg);
+		let input = "2026-01-01T10:00:00 ERROR request 550e8400-e29b-41d4-a716-446655440000 file \
+		             /tmp/a.rs hash deadbeef failed\n2026-01-01T10:00:01 ERROR request \
+		             123e4567-e89b-12d3-a456-426614174000 file /tmp/b.rs hash cafebabe failed\n";
+		let out = filter(&ctx, input, 1);
+		assert!(out.text.contains("2 lines, 1 unique"));
+		assert!(out.text.contains("(×2)"));
+	}
+
+	#[test]
+	fn env_masks_secrets_and_compacts_long_values() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("env", &cfg);
+		let input = format!("API_TOKEN=supersecrettoken\nPATH={}\n", "a".repeat(170));
+		let out = filter(&ctx, &input, 0);
+		assert!(out.text.contains("API_TOKEN=su[redacted]en"));
+		assert!(out.text.contains("(170 chars)"));
+		assert!(!out.text.contains("supersecrettoken"));
+	}
+
+	#[test]
+	fn err_output_keeps_diagnostics_and_context() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("err", &cfg);
+		let input = "\
+Compiling app v0.1.0
+running 1 test
+test pass ... ok
+src/main.rs:10:5: error: cannot find value `foo` in this scope
+   |
+10 |     foo();
+   |     ^^^
+note: required by a bound in `bar`
+warning: unused import: `baz`
+";
+		let out = filter(&ctx, input, 1);
+		assert!(out.changed);
+		assert!(!out.text.contains("Compiling app v0.1.0"));
+		assert!(!out.text.contains("running 1 test"));
+		assert!(!out.text.contains("test pass ... ok"));
+		assert!(
+			out.text
+				.contains("src/main.rs:10:5: error: cannot find value `foo` in this scope")
+		);
+		assert!(out.text.contains("10 |     foo();"));
+		assert!(out.text.contains("note: required by a bound in `bar`"));
+		assert!(out.text.contains("warning: unused import: `baz`"));
+	}
+
+	#[test]
+	fn diff_output_reuses_unified_diff_compaction() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("diff", &cfg);
+		// `diff -r` prints a binary file's line alone, with no header before it,
+		// and names that hold ` and ` themselves.
+		let mut input = String::from(
+			"Binary files x/salt and pepper.bin and y/salt and pepper.bin differ\n--- a/a.rs\n+++ \
+			 b/a.rs\n@@ -1,140 +1,140 @@\n",
+		);
+		for idx in 0..140 {
+			input.push_str("-old ");
+			input.push_str(&idx.to_string());
+			input.push_str("\n+new ");
+			input.push_str(&idx.to_string());
+			input.push('\n');
+		}
+		// Blank lines take the patch past the size it is returned whole at.
+		input.push_str(&"\n".repeat(primitives::WHOLE_OUTPUT_BYTES));
+		let out = filter(&ctx, &input, 0);
+		assert!(out.changed);
+		assert!(out.text.starts_with("y/salt and pepper.bin | Bin\n"), "{}", out.text);
+		assert!(out.text.contains("a.rs | 280"));
+		assert!(
+			out.text
+				.contains("2 files changed, 140 insertions(+), 140 deletions(-)")
+		);
+		assert!(out.text.contains("--- Changes ---"));
+		assert!(out.text.contains("-old 0"));
+		assert!(out.text.contains("+new 0"));
+		assert_ne!(out.text, input);
+	}
+
+	#[test]
+	fn test_output_drops_pass_chatter_and_keeps_failure_summary() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("test", &cfg);
+		let input = "\
+PASS src/pass.test.ts
+✓ src/ok.test.ts (3ms)
+FAIL src/fail.test.ts
+  suite > breaks
+    Error: expected 1 to equal 2
+      at src/fail.test.ts:12:3
+
+Test Files  1 failed | 1 passed (2)
+Tests       1 failed | 3 passed (4)
+Time        0.42s
+";
+		let out = filter(&ctx, input, 1);
+		assert!(out.changed);
+		assert!(!out.text.contains("PASS src/pass.test.ts"));
+		assert!(!out.text.contains("✓ src/ok.test.ts"));
+		assert!(out.text.contains("FAIL src/fail.test.ts"));
+		assert!(out.text.contains("Error: expected 1 to equal 2"));
+		assert!(out.text.contains("Test Files  1 failed | 1 passed (2)"));
+		assert!(out.text.contains("Tests       1 failed | 3 passed (4)"));
+		assert!(out.text.contains("Time        0.42s"));
+	}
+
+	#[test]
+	fn format_compaction_preserves_errors_and_files() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("format", &cfg);
+		let mut input = String::from("error: failed to parse src/bad.py\n");
+		for idx in 0..100 {
+			input.push_str("would reformat src/file_");
+			input.push_str(&idx.to_string());
+			input.push_str(".py\n");
+		}
+		let out = filter(&ctx, &input, 1);
+		assert!(out.text.contains("errors:"));
+		assert!(out.text.contains("failed to parse src/bad.py"));
+		assert!(out.text.contains("files:"));
+		assert!(out.text.contains("[…50 files elided…]"));
+	}
+
+	#[test]
+	fn pipe_preserves_json_diff_and_errors() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("pipe", &cfg);
+		let mut json = String::new();
+		for idx in 0..150 {
+			json.push_str("{\"idx\":");
+			json.push_str(&idx.to_string());
+			json.push_str("}\n");
+		}
+		assert_eq!(filter(&ctx, &json, 0).text, json);
+
+		let diff = "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+new\n";
+		assert_eq!(filter(&ctx, diff, 0).text, diff);
+
+		let error = "error: resource-with-a-very-long-name failed validation\n";
+		assert_eq!(filter(&ctx, error, 1).text, error);
 	}
 }

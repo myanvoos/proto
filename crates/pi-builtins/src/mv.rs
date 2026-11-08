@@ -1,42 +1,37 @@
-#[cfg(unix)]
-use std::os::fd::AsRawFd;
-#[cfg(unix)]
-use std::os::unix;
-#[cfg(unix)]
-use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+//! `mv` builtin: move files and directories.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	ffi::OsString,
-	fmt, fs,
+	fmt,
 	io::{self, Write},
 	path::{Path, PathBuf},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration, openfiles::OpenFile};
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser, error::ErrorKind};
-use fs_extra::dir::get_size as dir_get_size;
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle, TermLike};
-use parking_lot::Mutex;
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-use rustc_hash::FxHashMap;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use pi_vfs::{
+	BlockingFs, CanonicalizeOptions, MissingHandling, ResolveMode, child_path, file_name,
+	is_virtual_path, parent_path,
+};
 use rustc_hash::FxHashSet;
 use thiserror::Error;
 #[cfg(unix)]
 use uucore::fs::display_permissions_unix;
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-use uucore::fsxattr;
 use uucore::{
-	backup_control::{self, BackupMode, backup_would_destroy_source},
+	backup_control::{self, BackupMode, source_is_target_backup},
 	display::Quotable,
-	fs::{
-		MissingHandling, ResolveMode, are_hardlinks_or_one_way_symlink_to_same_file,
-		are_hardlinks_to_same_file, canonicalize, path_ends_with_terminator,
-	},
+	fs::path_ends_with_terminator,
 	update_control::{self, UpdateMode},
 };
 
-#[cfg(unix)]
-use self::hardlink::{HardlinkTracker, with_optional_hardlink_context};
-use crate::host::{Host, Utility, format_usage, matches_parser, util};
+use crate::{
+	cp::{CpError, MoveCopier},
+	file_backup::{backup_display, backup_path, determine_backup_mode, determine_backup_suffix},
+	host::{Host, Utility, format_usage, matches_parser},
+	progress::stderr_draw_target,
+};
 
 #[derive(Debug, Error)]
 enum MvError {
@@ -72,116 +67,72 @@ enum MvFailure {
 
 type MvResult<T> = Result<T, MvFailure>;
 
+/// A move that failed after its diagnostics were printed: the copy between
+/// filesystems reports each entry it could not copy as it goes.
+#[derive(Debug, Error)]
+#[error("")]
+struct Reported;
+
+/// Parsed `mv` invocation.
 pub(crate) struct Mv {
 	matches: ArgMatches,
 }
 
 matches_parser!(Mv, app);
 
-struct ProgressTerminal {
-	writer: Mutex<OpenFile>,
-}
-
-impl fmt::Debug for ProgressTerminal {
-	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		f.debug_struct("ProgressTerminal").finish_non_exhaustive()
-	}
-}
-
-impl ProgressTerminal {
-	fn write_control(&self, value: impl fmt::Display) -> io::Result<()> {
-		write!(self.writer.lock(), "{value}")
-	}
-
-	fn move_cursor(&self, n: usize, direction: char) -> io::Result<()> {
-		if n == 0 {
-			Ok(())
-		} else {
-			self.write_control(format_args!("\x1b[{n}{direction}"))
-		}
-	}
-}
-
-impl TermLike for ProgressTerminal {
-	fn width(&self) -> u16 {
-		#[cfg(unix)]
-		{
-			let writer = self.writer.lock();
-			if let Ok(fd) = writer.try_borrow_as_fd() {
-				let mut size = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
-
-				if unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCGWINSZ, &mut size) } == 0
-					&& size.ws_col > 0
-				{
-					return size.ws_col;
-				}
-			}
-		}
-		80
-	}
-
-	fn move_cursor_up(&self, n: usize) -> io::Result<()> {
-		self.move_cursor(n, 'A')
-	}
-
-	fn move_cursor_down(&self, n: usize) -> io::Result<()> {
-		self.move_cursor(n, 'B')
-	}
-
-	fn move_cursor_right(&self, n: usize) -> io::Result<()> {
-		self.move_cursor(n, 'C')
-	}
-
-	fn move_cursor_left(&self, n: usize) -> io::Result<()> {
-		self.move_cursor(n, 'D')
-	}
-
-	fn write_line(&self, s: &str) -> io::Result<()> {
-		writeln!(self.writer.lock(), "{s}")
-	}
-
-	fn write_str(&self, s: &str) -> io::Result<()> {
-		self.writer.lock().write_all(s.as_bytes())
-	}
-
-	fn clear_line(&self) -> io::Result<()> {
-		self.write_control("\r\x1b[2K")
-	}
-
-	fn flush(&self) -> io::Result<()> {
-		self.writer.lock().flush()
-	}
-}
-
 fn progress_manager(host: &Host, enabled: bool) -> Option<MultiProgress> {
-	(enabled && host.stderr.is_terminal()).then(|| {
-		let terminal = ProgressTerminal { writer: Mutex::new(host.stderr_clone()) };
-		MultiProgress::with_draw_target(ProgressDrawTarget::term_like(Box::new(terminal)))
-	})
+	if !enabled {
+		return None;
+	}
+	stderr_draw_target(host).map(MultiProgress::with_draw_target)
 }
 
+/// Options contains all the possible behaviors and flags for mv.
+///
+/// All options are public so that the options can be programmatically
+/// constructed by other crates, such as nushell. That means that this struct is
+/// part of our public API. It should therefore not be changed without good
+/// reason.
+///
+/// The fields are documented with the arguments that determine their value.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Options {
+	/// specifies overwrite behavior
+	/// '-n' '--no-clobber'
+	/// '-i' '--interactive'
+	/// '-f' '--force'
 	pub overwrite: OverwriteMode,
 
+	/// `--backup[=CONTROL]`, `-b`
 	pub backup: BackupMode,
 
+	/// '-S' --suffix' backup suffix
 	pub suffix: String,
 
+	/// Available update mode "--update-mode=all|none|older"
 	pub update: UpdateMode,
 
+	/// Specifies target directory
+	/// '-t, --target-directory=DIRECTORY'
 	pub target_dir: Option<OsString>,
 
+	/// Treat destination as a normal file
+	/// '-T, --no-target-directory
 	pub no_target_dir: bool,
 
+	/// '-v, --verbose'
 	pub verbose: bool,
 
+	/// '--strip-trailing-slashes'
 	pub strip_slashes: bool,
 
+	/// '-g, --progress'
 	pub progress_bar: bool,
 
+	/// `--debug`
 	pub debug: bool,
 
+	/// `-Z, --context`
 	pub context: Option<String>,
 }
 
@@ -203,15 +154,17 @@ impl Default for Options {
 	}
 }
 
+/// specifies behavior of the overwrite flag
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 pub enum OverwriteMode {
+	/// No flag specified - prompt for unwriteable files when stdin is TTY
 	#[default]
 	Default,
-
+	/// '-n' '--no-clobber'   do not overwrite
 	NoClobber,
-
+	/// '-i' '--interactive'  prompt before overwrite
 	Interactive,
-
+	///'-f' '--force'         overwrite without prompt
 	Force,
 }
 
@@ -231,16 +184,12 @@ impl Utility for Mv {
 	const NAME: &'static str = "mv";
 
 	fn run(self, host: &mut Host) -> i32 {
-		let files_len = self
-			.matches
-			.get_many::<OsString>(ARG_FILES)
-			.map_or(0, |v| v.len());
+		let files_len = self.matches.get_many::<OsString>(ARG_FILES).map_or(0, |v| v.len());
 		if files_len == 1 && !self.matches.contains_id(OPT_TARGET_DIRECTORY) {
 			let err = app().error(
 				ErrorKind::TooFewValues,
 				format!(
-					"The argument '<{ARG_FILES}>...' requires at least 2 values, but only 1 was \
-					 provided"
+					"The argument '<{ARG_FILES}>...' requires at least 2 values, but only 1 was provided"
 				),
 			);
 			let _ = write!(host.stderr, "{err}");
@@ -261,69 +210,6 @@ fn show(host: &mut Host, err: impl fmt::Display) {
 	host.error(err, 1);
 }
 
-fn match_backup_method(method: &str, origin: &str) -> MvResult<BackupMode> {
-	let matches = backup_control::BACKUP_CONTROL_VALUES
-		.iter()
-		.filter(|value| value.starts_with(method))
-		.collect::<Vec<_>>();
-	if matches.len() == 1 {
-		match *matches[0] {
-			"simple" | "never" => Ok(BackupMode::Simple),
-			"numbered" | "t" => Ok(BackupMode::Numbered),
-			"existing" | "nil" => Ok(BackupMode::Existing),
-			"none" | "off" => Ok(BackupMode::None),
-			_ => unreachable!("matched value comes from BACKUP_CONTROL_VALUES"),
-		}
-	} else {
-		let kind = if matches.is_empty() {
-			"invalid"
-		} else {
-			"ambiguous"
-		};
-		Err(MvFailure::Message(format!(
-			"{kind} argument {} for '{origin}'\nValid arguments are:\n  - 'none', 'off'\n  - \
-			 'simple', 'never'\n  - 'existing', 'nil'\n  - 'numbered', 't'",
-			method.quote()
-		)))
-	}
-}
-
-fn determine_backup_mode(matches: &ArgMatches, host: &Host) -> MvResult<BackupMode> {
-	let cli_method = matches
-		.get_one::<String>(backup_control::arguments::OPT_BACKUP)
-		.map(String::as_str);
-	if matches.contains_id(backup_control::arguments::OPT_BACKUP) {
-		if let Some(method) = cli_method {
-			match_backup_method(method, "backup type")
-		} else if let Some(method) = host.var("VERSION_CONTROL") {
-			match_backup_method(method, "$VERSION_CONTROL")
-		} else {
-			Ok(BackupMode::Existing)
-		}
-	} else if matches.get_flag(backup_control::arguments::OPT_BACKUP_NO_ARG)
-		|| matches.contains_id(backup_control::arguments::OPT_SUFFIX)
-	{
-		host
-			.var("VERSION_CONTROL")
-			.map_or(Ok(BackupMode::Existing), |method| match_backup_method(method, "$VERSION_CONTROL"))
-	} else {
-		Ok(BackupMode::None)
-	}
-}
-
-fn determine_backup_suffix(matches: &ArgMatches, host: &Host) -> String {
-	let suffix = matches
-		.get_one::<String>(backup_control::arguments::OPT_SUFFIX)
-		.map(String::as_str)
-		.or_else(|| host.var("SIMPLE_BACKUP_SUFFIX"))
-		.unwrap_or(backup_control::DEFAULT_BACKUP_SUFFIX);
-	if suffix.contains('/') {
-		backup_control::DEFAULT_BACKUP_SUFFIX.to_string()
-	} else {
-		suffix.to_string()
-	}
-}
-
 fn run_matches(matches: &ArgMatches, host: &mut Host) -> MvResult<()> {
 	let files: Vec<OsString> = matches
 		.get_many::<OsString>(ARG_FILES)
@@ -332,7 +218,7 @@ fn run_matches(matches: &ArgMatches, host: &mut Host) -> MvResult<()> {
 		.collect();
 
 	let overwrite_mode = determine_overwrite_mode(matches);
-	let backup_mode = determine_backup_mode(matches, host)?;
+	let backup_mode = determine_backup_mode(matches, host).map_err(MvFailure::Message)?;
 	let update_mode = update_control::determine_update_mode(matches);
 
 	if backup_mode != BackupMode::None
@@ -348,7 +234,7 @@ fn run_matches(matches: &ArgMatches, host: &mut Host) -> MvResult<()> {
 	let backup_suffix = determine_backup_suffix(matches, host);
 	let target_dir = matches.get_one::<OsString>(OPT_TARGET_DIRECTORY).cloned();
 	if let Some(maybe_dir) = &target_dir
-		&& !host.resolve(Path::new(maybe_dir)).is_dir()
+		&& !host.fs().is_dir(host.resolve(Path::new(maybe_dir)))
 	{
 		return Err(MvError::TargetNotADirectory(maybe_dir.quote().to_string()).into());
 	}
@@ -503,6 +389,11 @@ fn app() -> Command {
 }
 
 fn determine_overwrite_mode(matches: &ArgMatches) -> OverwriteMode {
+	// This does not exactly match the GNU implementation:
+	// The GNU mv defaults to Force, but if more than one of the
+	// overwrite options are supplied, only the last takes effect.
+	// To default to no-clobber in that situation seems safer:
+	//
 	if matches.get_flag(OPT_NO_CLOBBER) {
 		OverwriteMode::NoClobber
 	} else if matches.get_flag(OPT_INTERACTIVE) {
@@ -519,7 +410,14 @@ fn parse_paths(files: &[OsString], opts: &Options) -> Vec<PathBuf> {
 
 	if opts.strip_slashes {
 		paths
-			.map(|p| p.components().as_path().to_owned())
+			.map(|p| {
+				// A virtual root keeps the `//` of its `scheme://` spelling.
+				if is_virtual_path(p) && parent_path(p).is_none() {
+					p.to_owned()
+				} else {
+					p.components().as_path().to_owned()
+				}
+			})
 			.collect::<Vec<PathBuf>>()
 	} else {
 		paths.map(ToOwned::to_owned).collect::<Vec<PathBuf>>()
@@ -527,7 +425,7 @@ fn parse_paths(files: &[OsString], opts: &Options) -> Vec<PathBuf> {
 }
 
 fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Options) -> MvResult<()> {
-	if backup_would_destroy_source(&host.resolve(source), &host.resolve(target), &opts.suffix, opts.backup, false) {
+	if opts.backup == BackupMode::Simple && source_is_target_backup(source, target, &opts.suffix) {
 		return Err(
 			io::Error::new(
 				io::ErrorKind::NotFound,
@@ -541,10 +439,11 @@ fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Option
 		);
 	}
 
+	let filesystem = host.fs().clone();
 	let source_fs = host.resolve(source);
 	let target_fs = host.resolve(target);
 
-	if source_fs.symlink_metadata().is_err() {
+	if filesystem.symlink_metadata(&source_fs).is_err() {
 		return Err(if path_ends_with_terminator(source) {
 			MvError::CannotStatNotADirectory(source.quote().to_string()).into()
 		} else {
@@ -552,11 +451,13 @@ fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Option
 		});
 	}
 
-	let source_is_dir = source_fs.is_dir() && !source_fs.is_symlink();
-	let target_is_dir = if target_fs.is_symlink() {
-		fs::canonicalize(&target_fs).is_ok_and(|p| p.is_dir())
+	let source_is_dir = filesystem.is_dir(&source_fs) && !filesystem.is_symlink(&source_fs);
+	let target_is_dir = if filesystem.is_symlink(&target_fs) {
+		filesystem
+			.canonicalize(&target_fs)
+			.is_ok_and(|p| filesystem.is_dir(p))
 	} else {
-		target_fs.is_dir()
+		filesystem.is_dir(&target_fs)
 	};
 
 	if path_ends_with_terminator(target)
@@ -570,29 +471,13 @@ fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Option
 	assert_not_same_file(host, source, target, target_is_dir, opts)?;
 
 	if target_is_dir {
-		if opts.no_target_dir {
-			if source_fs.is_dir() {
-				#[cfg(unix)]
-				let mut hardlink_tracker = HardlinkTracker::default();
-				#[cfg(unix)]
-				let hardlink_params = Some(&mut hardlink_tracker);
-				#[cfg(not(unix))]
-				let hardlink_params = None;
-
-				rename(host, source, target, opts, None, hardlink_params).map_err(|e| {
-					MvFailure::Message(format!(
-						"cannot move {} to {}: {e}",
-						source.quote(),
-						target.quote()
-					))
-				})
-			} else {
-				Err(MvError::DirectoryToNonDirectory(target.quote().to_string()).into())
-			}
-		} else {
-			move_files_into_dir(host, &[source.to_path_buf()], target, opts)
+		if !opts.no_target_dir {
+			return move_files_into_dir(host, &[source.to_path_buf()], target, opts);
 		}
-	} else if target_fs.exists() && source_is_dir {
+		if !filesystem.is_dir(&source_fs) {
+			return Err(MvError::DirectoryToNonDirectory(target.quote().to_string()).into());
+		}
+	} else if filesystem.exists(&target_fs) && source_is_dir {
 		match opts.overwrite {
 			OverwriteMode::NoClobber => return Ok(()),
 			OverwriteMode::Interactive => prompt_overwrite(host, target, None)?,
@@ -604,20 +489,24 @@ fn handle_two_paths(host: &mut Host, source: &Path, target: &Path, opts: &Option
 				}
 			},
 		}
-		Err(
+		return Err(
 			MvError::NonDirectoryToDirectory(source.quote().to_string(), target.quote().to_string())
 				.into(),
-		)
-	} else {
-		#[cfg(unix)]
-		let mut hardlink_tracker = HardlinkTracker::default();
-		#[cfg(unix)]
-		let hardlink_params = Some(&mut hardlink_tracker);
-		#[cfg(not(unix))]
-		let hardlink_params = None;
+		);
+	}
 
-		rename(host, source, target, opts, None, hardlink_params)
-			.map_err(|e| MvFailure::Message(format!("{e}")))
+	match rename(host, source, target, opts, None, &mut MoveCopier::new(opts.verbose)) {
+		Ok(()) => Ok(()),
+		Err(e) if e.get_ref().is_some_and(|e| e.is::<Reported>()) => {
+			host.fail(1);
+			Ok(())
+		},
+		Err(e) if target_is_dir => Err(MvFailure::Message(format!(
+			"cannot move {} to {}: {e}",
+			source.quote(),
+			target.quote()
+		))),
+		Err(e) => Err(MvFailure::Message(e.to_string())),
 	}
 }
 
@@ -628,37 +517,58 @@ fn assert_not_same_file(
 	target_is_dir: bool,
 	opts: &Options,
 ) -> MvResult<()> {
+	let filesystem = host.fs().clone();
 	let source_abs = host.resolve(source);
 	let target_abs = host.resolve(target);
+	let logical = CanonicalizeOptions::new(MissingHandling::Normal, ResolveMode::Logical);
 
-	let canonicalized_source =
-		match canonicalize(&source_abs, MissingHandling::Normal, ResolveMode::Logical) {
-			Ok(source) if source.exists() => source,
-			_ => source_abs.clone(),
-		};
+	// we'll compare canonicalized_source and canonicalized_target for same file
+	// detection
+	let canonicalized_source = match filesystem.canonicalize_with(&source_abs, &logical) {
+		Ok(source) if filesystem.exists(&source) => source,
+		_ => source_abs.clone(), /* file or symlink target doesn't exist but its absolute path
+		                          * is still used for comparison */
+	};
 
+	// special case if the target exists, is a directory, and the `-T` flag wasn't
+	// used
 	let target_is_dir = target_is_dir && !opts.no_target_dir;
 	let canonicalized_target = if target_is_dir {
-		canonicalize(&target_abs, MissingHandling::Normal, ResolveMode::Logical)?
-			.join(source.file_name().unwrap_or_default())
+		// `mv source_file target_dir` => target_dir/source_file
+		// canonicalize the path that exists (target directory) and join the source file
+		// name
+		child_path(
+			&filesystem.canonicalize_with(&target_abs, &logical)?,
+			&file_name(source).unwrap_or_default(),
+		)
 	} else {
-		match target_abs.parent() {
-			Some(parent) if parent.to_str() != Some("") => {
-				canonicalize(parent, MissingHandling::Normal, ResolveMode::Logical)?
-					.join(target.file_name().unwrap_or_default())
-			},
-
-			_ => target_abs.clone(),
+		// `mv source target_dir/target` => target_dir/target
+		// we canonicalize target_dir and join /target
+		match parent_path(&target_abs) {
+			Some(parent) if !parent.is_empty() => child_path(
+				&filesystem.canonicalize_with(parent, &logical)?,
+				&file_name(target).unwrap_or_default(),
+			),
+			// the parent is empty or missing if there's no parent
+			_ => target_abs.clone(), /* absolute paths should always have a parent, but we'll fall
+			                          * back just in case */
 		}
 	};
 
 	let same_file = (canonicalized_source.eq(&canonicalized_target)
-		|| are_hardlinks_to_same_file(&source_abs, &target_abs)
-		|| are_hardlinks_or_one_way_symlink_to_same_file(&source_abs, &target_abs))
+		|| are_hardlinks_to_same_file(&filesystem, &source_abs, &target_abs)
+		|| are_hardlinks_or_one_way_symlink_to_same_file(&filesystem, &source_abs, &target_abs))
 		&& opts.backup == BackupMode::None;
 
-	let target_display = match source.file_name() {
+	// get the expected target path to show in errors
+	// this is based on the argument and not canonicalized
+	let target_display = match file_name(source) {
+		// A virtual root keeps the `//` of its `scheme://` spelling.
+		Some(file_name) if target_is_dir && is_virtual_path(target) && parent_path(target).is_none() => {
+			child_path(target, &file_name).quote().to_string()
+		},
 		Some(file_name) if target_is_dir => {
+			// join target_dir/source_file in a platform-independent manner
 			let mut path = target
 				.display()
 				.to_string()
@@ -677,11 +587,12 @@ fn assert_not_same_file(
 		&& (canonicalized_source.eq(&canonicalized_target)
 			|| source.eq(Path::new("."))
 			|| source.ends_with("/.")
-			|| source_abs.is_file())
+			|| filesystem.is_file(&source_abs))
 	{
 		return Err(MvError::SameFile(source.quote().to_string(), target_display).into());
 	} else if (same_file || canonicalized_target.starts_with(&canonicalized_source))
-		&& !source_abs.is_symlink()
+        // don't error if we're moving a symlink of a directory into itself
+        && !filesystem.is_symlink(&source_abs)
 	{
 		return Err(
 			MvError::SelfTargetSubdirectory(source.quote().to_string(), target_display).into(),
@@ -690,12 +601,36 @@ fn assert_not_same_file(
 	Ok(())
 }
 
+/// Whether `source` and `target` are hard links to the same file, without
+/// following either.
+fn are_hardlinks_to_same_file(filesystem: &BlockingFs, source: &Path, target: &Path) -> bool {
+	let (Ok(source), Ok(target)) =
+		(filesystem.symlink_metadata(source), filesystem.symlink_metadata(target))
+	else {
+		return false;
+	};
+	source.same_file(&target)
+}
+
+/// Whether `source`, followed, is the same file as `target`, unfollowed: hard
+/// links, or a symlink `source` that resolves to `target`.
+fn are_hardlinks_or_one_way_symlink_to_same_file(
+	filesystem: &BlockingFs,
+	source: &Path,
+	target: &Path,
+) -> bool {
+	let (Ok(source), Ok(target)) =
+		(filesystem.metadata(source), filesystem.symlink_metadata(target))
+	else {
+		return false;
+	};
+	source.same_file(&target)
+}
+
 fn handle_multiple_paths(host: &mut Host, paths: &[PathBuf], opts: &Options) -> MvResult<()> {
 	if opts.no_target_dir {
-		return Err(MvFailure::Message(format!(
-			"mv: extra operand {}",
-			paths.last().unwrap().quote()
-		)));
+		return Err(MvFailure::Message(format!("mv: extra operand {}", paths.last().unwrap().quote()),
+		));
 	}
 	let target_dir = paths.last().unwrap();
 	let sources = &paths[..paths.len() - 1];
@@ -703,6 +638,9 @@ fn handle_multiple_paths(host: &mut Host, paths: &[PathBuf], opts: &Options) -> 
 	move_files_into_dir(host, sources, target_dir, opts)
 }
 
+/// Execute the mv command. This moves 'source' to 'target', where
+/// 'target' is a directory. If 'target' does not exist, and source is a single
+/// file or directory, then 'source' will be renamed to 'target'.
 fn mv(host: &mut Host, files: &[OsString], opts: &Options) -> MvResult<()> {
 	let paths = parse_paths(files, opts);
 
@@ -717,66 +655,58 @@ fn mv(host: &mut Host, files: &[OsString], opts: &Options) -> MvResult<()> {
 }
 
 #[allow(clippy::cognitive_complexity)]
-fn move_files_into_dir(
-	host: &mut Host,
-	files: &[PathBuf],
-	target_dir: &Path,
-	options: &Options,
-) -> MvResult<()> {
+fn move_files_into_dir(host: &mut Host, files: &[PathBuf], target_dir: &Path, options: &Options) -> MvResult<()> {
+	// remember the moved destinations for further usage
 	let mut moved_destinations: FxHashSet<PathBuf> =
 		FxHashSet::with_capacity_and_hasher(files.len(), rustc_hash::FxBuildHasher);
+	// Hard links among the moved files survive a move between filesystems.
+	let mut copier = MoveCopier::new(options.verbose);
 
-	#[cfg(unix)]
-	let mut hardlink_tracker = HardlinkTracker::default();
-
-	if !host.resolve(target_dir).is_dir() {
+	if !host.fs().is_dir(host.resolve(target_dir)) {
 		return Err(MvError::NotADirectory(target_dir.quote().to_string()).into());
 	}
 
 	let display_manager = progress_manager(host, options.progress_bar);
 
-	let count_progress = if let Some(display_manager) = &display_manager {
-		if files.len() > 1 {
-			Some(
-				display_manager.add(
-					ProgressBar::new(files.len().try_into().unwrap()).with_style(
-						ProgressStyle::with_template(&format!(
-							"{} {{msg}} {{wide_bar}} {{pos}}/{{len}}",
-							"moving"
-						))
-						.unwrap(),
-					),
+	let count_progress = if let Some(display_manager) = &display_manager
+		&& files.len() > 1
+	{
+		Some(
+			display_manager.add(
+				ProgressBar::new(files.len().try_into().unwrap()).with_style(
+					ProgressStyle::with_template(&format!(
+						"{} {{msg}} {{wide_bar}} {{pos}}/{{len}}",
+						"moving"
+					))
+					.unwrap(),
 				),
-			)
-		} else {
-			None
-		}
+			),
+		)
 	} else {
 		None
 	};
 
 	for sourcepath in files {
-		if host.resolve(sourcepath).symlink_metadata().is_err() {
+		if host.fs().symlink_metadata(host.resolve(sourcepath)).is_err() {
 			show(host, &MvError::NoSuchFile(sourcepath.quote().to_string()));
 			continue;
 		}
 
 		if let Some(pb) = &count_progress {
-			let msg = format!("{} (scanning hardlinks)", sourcepath.to_string_lossy());
+			let msg = format!("{} (scanning hardlinks)", sourcepath.display());
 			pb.set_message(msg);
 		}
 
-		let targetpath = if let Some(name) = sourcepath.file_name() {
-			target_dir.join(name)
+		let targetpath = if let Some(name) = file_name(sourcepath) {
+			child_path(target_dir, &name)
 		} else {
 			show(host, &MvError::NoSuchFile(sourcepath.quote().to_string()));
 			continue;
 		};
 
 		if moved_destinations.contains(&targetpath) && options.backup != BackupMode::Numbered {
-			show(
-				host,
-				format!(
+			// If the target file was already created in this mv call, do not overwrite
+			show(host, format!(
 					"will not overwrite just-created {} with {}",
 					targetpath.quote(),
 					sourcepath.quote()
@@ -785,24 +715,14 @@ fn move_files_into_dir(
 			continue;
 		}
 
+		// Check if we have mv dir1 dir2 dir2
+		// And generate an error if this is the case
 		if let Err(e) = assert_not_same_file(host, sourcepath, target_dir, true, options) {
 			show(host, e);
 			continue;
 		}
 
-		#[cfg(unix)]
-		let hardlink_params = Some(&mut hardlink_tracker);
-		#[cfg(not(unix))]
-		let hardlink_params = None;
-
-		match rename(
-			host,
-			sourcepath,
-			&targetpath,
-			options,
-			display_manager.as_ref(),
-			hardlink_params,
-		) {
+		match rename(host, sourcepath, &targetpath, options, display_manager.as_ref(), &mut copier) {
 			Err(e) if e.to_string().is_empty() => host.fail(1),
 			Err(e) => {
 				let e = format!("cannot move {} to {}: {e}", sourcepath.quote(), targetpath.quote());
@@ -828,15 +748,16 @@ fn rename(
 	to: &Path,
 	opts: &Options,
 	display_manager: Option<&MultiProgress>,
-	#[cfg(unix)] hardlink_tracker: Option<&mut HardlinkTracker>,
-	#[cfg(not(unix))] _hardlink_tracker: Option<()>,
+	copier: &mut MoveCopier,
 ) -> io::Result<()> {
-	let mut backup_path = None;
+	let mut backup = None;
 
+	// filesystem checks; keep `from`/`to` for display.
+	let filesystem = host.fs().clone();
 	let from_fs = host.resolve(from);
 	let to_fs = host.resolve(to);
 
-	if to_fs.exists() {
+	if filesystem.exists(&to_fs) {
 		if opts.update == UpdateMode::None {
 			if opts.debug {
 				let _ = writeln!(host.stdout, "skipped {}", to.quote());
@@ -845,7 +766,7 @@ fn rename(
 		}
 
 		if (opts.update == UpdateMode::IfOlder)
-			&& fs::metadata(&from_fs)?.modified()? <= fs::metadata(&to_fs)?.modified()?
+			&& filesystem.metadata(&from_fs)?.modified()? <= filesystem.metadata(&to_fs)?.modified()?
 		{
 			return Ok(());
 		}
@@ -864,6 +785,7 @@ fn rename(
 			OverwriteMode::Interactive => prompt_overwrite(host, to, None)?,
 			OverwriteMode::Force => {},
 			OverwriteMode::Default => {
+				// GNU mv prompts when stdin is a TTY and target is not writable
 				let (writable, mode) = is_writable(host, to);
 				if !writable && stdin_is_terminal(host) {
 					prompt_overwrite(host, to, mode)?;
@@ -871,40 +793,33 @@ fn rename(
 			},
 		}
 
-		backup_path = backup_control::get_backup_path(opts.backup, &to_fs, &opts.suffix);
-		if let Some(backup_path) = &backup_path {
-			rename_with_fallback(host, to, backup_path, display_manager, false, None)?;
+		// numbered-backup probing goes through the injected filesystem.
+		backup = backup_path(&filesystem, opts.backup, &to_fs, &opts.suffix);
+		if let Some(backup) = &backup {
+			// The existing file is only moved aside: its copy, if any, is
+			// neither reported nor linked to the moved files.
+			rename_with_fallback(host, to, backup, display_manager, &mut MoveCopier::new(false))?;
 		}
 	}
 
-	if to_fs.exists() && to_fs.is_dir() && !to_fs.is_symlink() {
-		if from_fs.is_dir() {
+	// "to" may no longer exist if it was backed up
+	if filesystem.exists(&to_fs) && filesystem.is_dir(&to_fs) && !filesystem.is_symlink(&to_fs) {
+		// normalize behavior between *nix and windows
+		if filesystem.is_dir(&from_fs) {
 			if is_empty_dir(host, to) {
-				fs::remove_dir(&to_fs)?;
+				filesystem.remove_dir(&to_fs)?;
 			} else {
 				return Err(io::Error::other("Directory not empty"));
 			}
 		}
 	}
 
-	#[cfg(unix)]
-	{
-		rename_with_fallback(host, from, to, display_manager, opts.verbose, hardlink_tracker)?;
-	}
-	#[cfg(not(unix))]
-	{
-		rename_with_fallback(host, from, to, display_manager, opts.verbose, None)?;
-	}
-	host.note_write(&from_fs);
-	host.note_write(&to_fs);
+	rename_with_fallback(host, from, to, display_manager, copier)?;
 
 	if opts.verbose {
-		let message = if let Some(path) = &backup_path {
-			let backup_display = match (to.parent(), path.file_name()) {
-				(Some(parent), Some(name)) if !parent.as_os_str().is_empty() => parent.join(name),
-				(_, Some(name)) => PathBuf::from(name),
-				_ => path.clone(),
-			};
+		let message = if let Some(path) = &backup {
+			// rebuild a display path from the operand for the verbose message.
+			let backup_display = backup_display(to, path);
 			format!("renamed {} -> {} (backup: {})", from.quote(), to.quote(), backup_display.quote())
 		} else {
 			format!("renamed {} -> {}", from.quote(), to.quote())
@@ -922,317 +837,59 @@ fn rename(
 	Ok(())
 }
 
-#[cfg(unix)]
-fn is_fifo(filetype: fs::FileType) -> bool {
-	filetype.is_fifo()
+/// Whether a failed rename crossed devices or filesystem providers, so the
+/// move may be completed by copying and removing.
+fn crosses_devices(error: &io::Error) -> bool {
+	error.kind() == io::ErrorKind::CrossesDevices
 }
 
-#[cfg(not(unix))]
-fn is_fifo(_filetype: fs::FileType) -> bool {
-	false
-}
-
+/// A wrapper around `rename`, so that if it fails, we try falling back on
+/// copying and removing.
 fn rename_with_fallback(
 	host: &mut Host,
 	from: &Path,
 	to: &Path,
 	display_manager: Option<&MultiProgress>,
-	verbose: bool,
-	#[cfg(unix)] hardlink_tracker: Option<&mut HardlinkTracker>,
-	#[cfg(not(unix))] _hardlink_tracker: Option<()>,
+	copier: &mut MoveCopier,
 ) -> io::Result<()> {
+	let filesystem = host.fs().clone();
 	let from_fs = host.resolve(from);
 	let to_fs = host.resolve(to);
 
-	fs::rename(&from_fs, &to_fs).or_else(|err| {
-		#[cfg(unix)]
-		const EXDEV: i32 = libc::EXDEV as _;
-		#[cfg(target_os = "wasi")]
-		const EXDEV: i32 = 18;
-
-		let should_fallback = matches!(err.raw_os_error(), Some(EXDEV))
-			|| (from_fs.is_file() && can_delete_file(host, &from_fs));
-		if !should_fallback {
-			return Err(err);
-		}
-
-		let metadata = from_fs.symlink_metadata()?;
-		let file_type = metadata.file_type();
-		if file_type.is_symlink() {
-			rename_symlink_fallback(host, from, to)
-		} else if file_type.is_dir() {
-			#[cfg(unix)]
-			{
-				with_optional_hardlink_context(hardlink_tracker, |tracker| {
-					rename_dir_fallback(host, from, to, display_manager, verbose, Some(tracker))
-				})
-			}
-			#[cfg(not(unix))]
-			{
-				rename_dir_fallback(host, from, to, display_manager, verbose)
-			}
-		} else if is_fifo(file_type) {
-			rename_fifo_fallback(host, from, to)
-		} else {
-			#[cfg(unix)]
-			{
-				with_optional_hardlink_context(hardlink_tracker, |tracker| {
-					rename_file_fallback(host, from, to, Some(tracker))
-				})
-			}
-			#[cfg(not(unix))]
-			{
-				rename_file_fallback(host, from, to)
-			}
-		}
-	})
-}
-
-#[cfg(unix)]
-fn rename_fifo_fallback(host: &mut Host, from: &Path, to: &Path) -> io::Result<()> {
-	let to_fs = host.resolve(to);
-	if to_fs.try_exists()? {
-		fs::remove_file(&to_fs)?;
-	}
-	nix::unistd::mkfifo(&to_fs, nix::sys::stat::Mode::from_bits_truncate(0o666))?;
-	fs::remove_file(host.resolve(from))
-}
-
-#[cfg(not(unix))]
-#[expect(clippy::unnecessary_wraps, reason = "fn sig must match on all platforms")]
-fn rename_fifo_fallback(_host: &mut Host, _from: &Path, _to: &Path) -> io::Result<()> {
-	Ok(())
-}
-
-#[cfg(unix)]
-fn rename_symlink_fallback(host: &mut Host, from: &Path, to: &Path) -> io::Result<()> {
-	let path_symlink_points_to = fs::read_link(host.resolve(from))?;
-	unix::fs::symlink(path_symlink_points_to, host.resolve(to))?;
-	#[cfg(not(any(target_os = "macos", target_os = "redox")))]
-	{
-		let _ = copy_xattrs_if_supported(host, from, to);
-	}
-	fs::remove_file(host.resolve(from))
-}
-
-#[cfg(target_os = "wasi")]
-fn rename_symlink_fallback(host: &mut Host, _from: &Path, _to: &Path) -> io::Result<()> {
-	Err(io::Error::other("your operating system does not support symlinks"))
-}
-
-fn rename_dir_fallback(
-	host: &mut Host,
-	from: &Path,
-	to: &Path,
-	display_manager: Option<&MultiProgress>,
-	verbose: bool,
-	#[cfg(unix)] hardlink_tracker: Option<&mut HardlinkTracker>,
-) -> io::Result<()> {
-	let to_fs = host.resolve(to);
-	if to_fs.exists() {
-		fs::remove_dir_all(&to_fs)?;
-	}
-
-	let total_size = dir_get_size(host.resolve(from)).ok();
-
-	let progress_bar = match (display_manager, total_size) {
-		(Some(display_manager), Some(total_size)) => {
-			let template = "{msg}: [{elapsed_precise}] {wide_bar} {bytes:>7}/{total_bytes:7}";
-			let style = ProgressStyle::with_template(template).unwrap();
-			let bar = ProgressBar::new(total_size).with_style(style);
-			Some(display_manager.add(bar))
-		},
-		(..) => None,
-	};
-
-	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-	let xattrs = fsxattr::retrieve_xattrs(host.resolve(from)).unwrap_or_else(|_| FxHashMap::default());
-
-	let result = copy_dir_contents(
-		host,
-		from,
-		to,
-		#[cfg(unix)]
-		hardlink_tracker,
-		#[cfg(unix)]
-		verbose,
-		progress_bar.as_ref(),
-		display_manager,
-	);
-
-	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-	fsxattr::apply_xattrs(host.resolve(to), xattrs)?;
-
-	result?;
-
-	fs::remove_dir_all(host.resolve(from))?;
-
-	Ok(())
-}
-
-fn copy_dir_contents(
-	host: &mut Host,
-	from: &Path,
-	to: &Path,
-	#[cfg(unix)] hardlink_tracker: Option<&mut HardlinkTracker>,
-	verbose: bool,
-	progress_bar: Option<&ProgressBar>,
-	display_manager: Option<&MultiProgress>,
-) -> io::Result<()> {
-	fs::create_dir_all(host.resolve(to))?;
-
-	#[cfg(unix)]
-	{
-		if let Some(tracker) = hardlink_tracker {
-			copy_dir_contents_recursive(
-				host,
-				from,
-				to,
-				tracker,
-				verbose,
-				progress_bar,
-				display_manager,
-			)?;
-		}
-	}
-	#[cfg(not(unix))]
-	{
-		copy_dir_contents_recursive(host, from, to, verbose, progress_bar, display_manager)?;
-	}
-
-	Ok(())
-}
-
-fn copy_dir_contents_recursive(
-	host: &mut Host,
-	from_dir: &Path,
-	to_dir: &Path,
-	#[cfg(unix)] hardlink_tracker: &mut HardlinkTracker,
-	verbose: bool,
-	progress_bar: Option<&ProgressBar>,
-	display_manager: Option<&MultiProgress>,
-) -> io::Result<()> {
-	let print_verbose = |host: &mut Host, from: &Path, to: &Path| {
-		if verbose {
-			let message = format!("renamed {} -> {}", from.quote(), to.quote());
-			match display_manager {
-				Some(pb) => pb.suspend(|| {
-					let _ = writeln!(host.stdout, "{message}");
-				}),
-				None => {
-					let _ = writeln!(host.stdout, "{message}");
-				},
-			}
-		}
-	};
-
-	let entries = fs::read_dir(host.resolve(from_dir))?;
-
-	for entry in entries {
-		let entry = entry?;
-		let file_name = entry.file_name();
-		let from_path = from_dir.join(&file_name);
-		let to_path = to_dir.join(&file_name);
-
-		if let Some(pb) = progress_bar {
-			pb.set_message(from_path.to_string_lossy().to_string());
-		}
-
-		if host.resolve(&from_path).is_symlink() {
-			#[cfg(unix)]
-			{
-				copy_file_with_hardlinks_helper(host, &from_path, &to_path, hardlink_tracker)?;
-			}
-			#[cfg(not(unix))]
-			{
-				rename_symlink_fallback(host, &from_path, &to_path)?;
-			}
-
-			print_verbose(host, &from_path, &to_path);
-		} else if host.resolve(&from_path).is_dir() {
-			fs::create_dir_all(host.resolve(&to_path))?;
-
-			print_verbose(host, &from_path, &to_path);
-
-			copy_dir_contents_recursive(
-				host,
-				&from_path,
-				&to_path,
-				#[cfg(unix)]
-				hardlink_tracker,
-				#[cfg(unix)]
-				verbose,
-				progress_bar,
-				display_manager,
-			)?;
-		} else {
-			#[cfg(unix)]
-			{
-				copy_file_with_hardlinks_helper(host, &from_path, &to_path, hardlink_tracker)?;
-			}
-			#[cfg(not(unix))]
-			{
-				let observation = host.prepare_write(&to_path)?;
-				let result = fs::copy(host.resolve(&from_path), host.resolve(&to_path));
-				host.commit_write(observation);
-				result?;
-			}
-
-			print_verbose(host, &from_path, &to_path);
-		}
-
-		if let Some(pb) = progress_bar
-			&& let Ok(metadata) = host.resolve(&from_path).metadata()
-		{
-			pb.inc(metadata.len());
-		}
-	}
-
-	Ok(())
-}
-
-#[cfg(unix)]
-fn copy_file_with_hardlinks_helper(
-	host: &mut Host,
-	from: &Path,
-	to: &Path,
-	hardlink_tracker: &mut HardlinkTracker,
-) -> io::Result<()> {
-	if let Some(existing_target) = hardlink_tracker.check_hardlink(host, from, to) {
-		fs::hard_link(host.resolve(&existing_target), host.resolve(to))?;
+	let Err(err) = filesystem.rename(&from_fs, &to_fs) else {
 		return Ok(());
+	};
+	// We will only copy if:
+	// 1. Files are on different devices or filesystem providers (EXDEV error)
+	// 2. On Windows, if the target file exists and source file is opened by another
+	//    process (MoveFileExW fails with "Access Denied" even if the source file
+	//    has FILE_SHARE_DELETE permission)
+	let should_fallback =
+		crosses_devices(&err) || (filesystem.is_file(&from_fs) && can_delete_file(host, &from_fs));
+	if !should_fallback {
+		return Err(err);
 	}
+	// Get metadata without following symlinks
+	let metadata = filesystem.symlink_metadata(&from_fs)?;
+	let file_type = metadata.file_type();
+	// Copy and unlink failures of a native file other than a link or a pipe
+	// keep this port's plain `Permission denied`; the rest report their own
+	// error.
+	let plain_denial = !(file_type.is_dir() || file_type.is_symlink() || file_type.is_fifo())
+		&& filesystem.is_native_local(&from_fs)
+		&& filesystem.is_native_local(&to_fs);
+	let describe = |err: io::Error| {
+		if plain_denial { io::Error::new(err.kind(), "Permission denied") } else { err }
+	};
 
-	if host.resolve(from).is_symlink() {
-		rename_symlink_fallback(host, from, to)?;
-	} else if is_fifo(host.resolve(from).symlink_metadata()?.file_type()) {
-		nix::unistd::mkfifo(&host.resolve(to), nix::sys::stat::Mode::from_bits_truncate(0o666))?;
-	} else {
-		let observation = host.prepare_write(to)?;
-		let result = fs::copy(host.resolve(from), host.resolve(to));
-		host.commit_write(observation);
-		result?;
-
-		#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-		{
-			let _ = copy_xattrs_if_supported(host, from, to);
+	// The copy replaces the destination as the rename would have: a
+	// directory is not merged into, a file is not written through.
+	if file_type.is_dir() {
+		if filesystem.exists(&to_fs) {
+			filesystem.remove_dir_all(&to_fs)?;
 		}
-	}
-
-	Ok(())
-}
-
-fn rename_file_fallback(
-	host: &mut Host,
-	from: &Path,
-	to: &Path,
-	#[cfg(unix)] hardlink_tracker: Option<&mut HardlinkTracker>,
-) -> io::Result<()> {
-	let to_fs = host.resolve(to);
-	let observation = host.prepare_write(&to_fs)?;
-
-	if to_fs.is_symlink() {
-		fs::remove_file(&to_fs).map_err(|err| {
+	} else if filesystem.is_symlink(&to_fs) {
+		filesystem.remove_file(&to_fs).map_err(|err| {
 			let inter_device_msg = format!(
 				"inter-device move failed: {} to {}; unable to remove target: {err}",
 				from.quote(),
@@ -1240,81 +897,67 @@ fn rename_file_fallback(
 			);
 			io::Error::new(err.kind(), inter_device_msg)
 		})?;
-	} else if to_fs.exists() {
-		fs::remove_file(&to_fs)?;
+	} else if filesystem.exists(&to_fs) {
+		filesystem.remove_file(&to_fs)?;
 	}
 
-	#[cfg(unix)]
-	{
-		if let Some(tracker) = hardlink_tracker {
-			if let Some(existing_target) = tracker.check_hardlink(host, from, to) {
-				fs::hard_link(host.resolve(&existing_target), &to_fs)?;
-				host.commit_write(observation);
-				fs::remove_file(host.resolve(from))?;
-				return Ok(());
-			}
-		}
+	match copier.copy(host, from, to, metadata, display_manager) {
+		Ok(()) => {},
+		Err(CpError::IoErr(error) | CpError::IoErrContext(error, _)) => return Err(describe(error)),
+		Err(CpError::Error(message) | CpError::Usage(message)) => {
+			return Err(describe(io::Error::other(message)));
+		},
+		// The source stays: some of it was not copied, as already reported.
+		Err(CpError::NotAllFilesCopied | CpError::Skipped(_)) => return Err(io::Error::other(Reported)),
 	}
 
-	let result = fs::copy(host.resolve(from), &to_fs);
-	host.commit_write(observation);
-	result.map_err(|err| io::Error::new(err.kind(), "Permission denied"))?;
-
-	#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-	{
-		let _ = copy_xattrs_if_supported(host, from, to);
-	}
-
-	fs::remove_file(host.resolve(from))
-		.map_err(|err| io::Error::new(err.kind(), "Permission denied"))?;
-	Ok(())
-}
-
-#[cfg(all(unix, not(any(target_os = "macos", target_os = "redox"))))]
-fn copy_xattrs_if_supported(host: &Host, from: &Path, to: &Path) -> io::Result<()> {
-	match fsxattr::copy_xattrs(host.resolve(from), host.resolve(to)) {
-		Ok(()) => Ok(()),
-		Err(e) if e.raw_os_error() == Some(libc::EOPNOTSUPP) => Ok(()),
-		Err(e) => Err(e),
+	if file_type.is_dir() {
+		filesystem.remove_dir_all(&from_fs)
+	} else {
+		filesystem.remove_file(&from_fs).map_err(describe)
 	}
 }
 
 fn is_empty_dir(host: &Host, path: &Path) -> bool {
-	fs::read_dir(host.resolve(path)).is_ok_and(|mut contents| contents.next().is_none())
+	host.fs()
+		.read_dir(host.resolve(path))
+		.is_ok_and(|mut contents| contents.next().is_none())
 }
 
+/// Check if file is writable, returning the mode for potential reuse.
 #[cfg(unix)]
 fn is_writable(host: &Host, path: &Path) -> (bool, Option<u32>) {
-	if let Ok(metadata) = host.resolve(path).metadata() {
+	if let Ok(metadata) = host.fs().metadata(host.resolve(path)) {
 		let mode = metadata.permissions().mode();
-
+		// Check if user write bit is set
 		((mode & 0o200) != 0, Some(mode))
 	} else {
-		(false, None)
+		(false, None) // If we can't get metadata, prompt user to be safe
 	}
 }
 
+/// Check if file is writable.
 #[cfg(not(unix))]
 fn is_writable(host: &Host, path: &Path) -> (bool, Option<u32>) {
-	if let Ok(metadata) = host.resolve(path).metadata() {
+	if let Ok(metadata) = host.fs().metadata(host.resolve(path)) {
 		(!metadata.permissions().readonly(), None)
 	} else {
-		(false, None)
+		(false, None) // If we can't get metadata, prompt user to be safe
 	}
 }
 
 #[cfg(unix)]
 fn get_interactive_prompt(host: &Host, to: &Path, cached_mode: Option<u32>) -> String {
+	// Use cached mode if available, otherwise fetch it
 	let mode = cached_mode.or_else(|| {
-		host
-			.resolve(to)
-			.metadata()
+		host.fs()
+			.metadata(host.resolve(to))
 			.ok()
 			.map(|m| m.permissions().mode())
 	});
 	if let Some(mode) = mode {
 		let file_mode = mode & 0o777;
-
+		// Check if file is not writable by user
 		if (mode & 0o200) == 0 {
 			let perms = display_permissions_unix(mode, false);
 			let mode_info = format!("{file_mode:04o} ({perms})");
@@ -1329,6 +972,9 @@ fn get_interactive_prompt(_host: &Host, to: &Path, _cached_mode: Option<u32>) ->
 	format!("overwrite {}?", to.quote())
 }
 
+/// stdin one byte at a time (no buffering) so consecutive prompts don't
+/// over-read into a later prompt's input. Returns true when the first character
+/// of the line is `y`/`Y`.
 fn read_yes(host: &mut Host) -> bool {
 	use std::io::Read as _;
 	let stdin = &mut host.stdin;
@@ -1336,7 +982,7 @@ fn read_yes(host: &mut Host) -> bool {
 	let mut first = None;
 	loop {
 		match stdin.read(&mut buf) {
-			Ok(0) => break,
+			Ok(0) => break, // EOF
 			Ok(_) => {
 				if buf[0] == b'\n' {
 					break;
@@ -1351,10 +997,14 @@ fn read_yes(host: &mut Host) -> bool {
 	matches!(first, Some(b'y' | b'Y'))
 }
 
+/// we report "not a terminal" and take GNU mv's non-interactive path (overwrite
+/// unwritable targets without prompting) instead of blocking on a read that may
+/// never receive input. Explicit `-i` still prompts (it does not consult this).
 fn stdin_is_terminal(host: &Host) -> bool {
 	host.stdin.file().is_terminal()
 }
 
+/// Prompts the user for confirmation and returns an error if declined.
 fn prompt_overwrite(host: &mut Host, to: &Path, cached_mode: Option<u32>) -> io::Result<()> {
 	let prompt = get_interactive_prompt(host, to, cached_mode);
 	{
@@ -1368,80 +1018,137 @@ fn prompt_overwrite(host: &mut Host, to: &Path, cached_mode: Option<u32>) -> io:
 	Ok(())
 }
 
+/// Checks if a file can be deleted by attempting to open it with delete
+/// permissions.
+#[cfg(windows)]
+fn can_delete_file(host: &Host, path: &Path) -> bool {
+	use std::{
+		os::windows::ffi::OsStrExt as _,
+		ptr::{null, null_mut},
+	};
+
+	use windows_sys::Win32::{
+		Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+		Storage::FileSystem::{
+			CreateFileW, DELETE, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+			FILE_SHARE_WRITE, OPEN_EXISTING,
+		},
+	};
+
+	let resolved = host.resolve(path);
+	// Only native host files have a Win32 handle to probe.
+	if !host.fs().is_native_local(&resolved) {
+		return false;
+	}
+	let wide_path = resolved
+		.as_os_str()
+		.encode_wide()
+		.chain([0])
+		.collect::<Vec<u16>>();
+
+	let handle = unsafe {
+		CreateFileW(
+			wide_path.as_ptr(),
+			DELETE,
+			FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE,
+			null(),
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			null_mut(),
+		)
+	};
+
+	if handle == INVALID_HANDLE_VALUE {
+		return false;
+	}
+
+	unsafe { CloseHandle(handle) };
+
+	true
+}
+
+#[cfg(not(windows))]
 fn can_delete_file(_host: &Host, _: &Path) -> bool {
+	// On non-Windows platforms, always return false to indicate that we don't need
+	// to try the copy+delete fallback. This is because on Unix-like systems,
+	// rename failing with errors other than EXDEV means the operation cannot
+	// succeed even with a copy+delete approach (e.g. permission errors).
 	false
 }
 
-pub(crate) fn mv_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Mv, SE>()
-}
+#[cfg(test)]
+mod tests {
+	use std::{env, fs};
 
-#[cfg(unix)]
-mod hardlink {
-	use std::{
-		fs,
-		os::unix::fs::MetadataExt,
-		path::{Path, PathBuf},
-	};
+	use clap::Parser;
 
-	use rustc_hash::FxHashMap;
+	use tempfile::tempdir;
 
-	use crate::host::Host;
+	use super::Mv;
+	use crate::host::{Host, Utility, run_util};
 
-	#[derive(Default)]
-	pub struct HardlinkTracker {
-		copies: FxHashMap<(u64, u64), PathBuf>,
-	}
-
-	impl HardlinkTracker {
-		pub fn check_hardlink(&mut self, host: &Host, source: &Path, dest: &Path) -> Option<PathBuf> {
-			let metadata = fs::symlink_metadata(host.resolve(source)).ok()?;
-			let identity = (metadata.dev(), metadata.ino());
-			if let Some(earlier) = self.copies.get(&identity) {
-				return Some(earlier.clone());
-			}
-			if metadata.nlink() > 1 {
-				self.copies.insert(identity, dest.to_path_buf());
-			}
-			None
-		}
-	}
-
-	pub fn with_optional_hardlink_context<F, R>(
-		tracker: Option<&mut HardlinkTracker>,
-		operation: F,
-	) -> R
-	where
-		F: FnOnce(&mut HardlinkTracker) -> R,
-	{
-		match tracker {
-			Some(tracker) => operation(tracker),
-			None => operation(&mut HardlinkTracker::default()),
-		}
-	}
-}
-
-#[cfg(all(test, unix))]
-mod hardlink_copy_tests {
-	use std::{fs, os::unix::fs::MetadataExt};
-
-	use super::*;
 	#[test]
-	fn copying_later_hardlink_names_keeps_the_first_copy_after_source_unlink() {
-		let dir = tempfile::tempdir().unwrap();
-		let first = dir.path().join("first");
-		let second = dir.path().join("second");
-		let first_copy = dir.path().join("first-copy");
-		let second_copy = dir.path().join("second-copy");
-		fs::write(&first, "contents").unwrap();
-		fs::hard_link(&first, &second).unwrap();
-		let (mut host, _) = crate::host::tests::test_host(brush_core::openfiles::null().unwrap());
-		let mut tracker = HardlinkTracker::default();
-		rename_file_fallback(&mut host, &first, &first_copy, Some(&mut tracker)).unwrap();
-		assert_eq!(fs::metadata(&second).unwrap().nlink(), 1);
-		rename_file_fallback(&mut host, &second, &second_copy, Some(&mut tracker)).unwrap();
-		assert_eq!(fs::read(&second_copy).unwrap(), b"contents");
-		assert_eq!(fs::metadata(first_copy).unwrap().ino(), fs::metadata(second_copy).unwrap().ino());
-		assert!(!first.exists() && !second.exists());
+	fn relative_rename_uses_host_working_directory() {
+		let fixture = tempdir().unwrap();
+		assert_ne!(env::current_dir().unwrap(), fixture.path());
+		fs::write(fixture.path().join("source"), b"payload").unwrap();
+
+		let (code, capture) = run_util::<Mv>(&["source", "target"], "", fixture.path());
+
+		assert_eq!(code, 0, "{}", capture.err());
+		assert!(!fixture.path().join("source").exists());
+		assert_eq!(fs::read(fixture.path().join("target")).unwrap(), b"payload");
+	}
+
+	#[test]
+	fn interactive_decline_preserves_destination() {
+		let fixture = tempdir().unwrap();
+		fs::write(fixture.path().join("source"), b"new").unwrap();
+		fs::write(fixture.path().join("target"), b"old").unwrap();
+
+		let (code, capture) = run_util::<Mv>(&["-i", "source", "target"], "n\n", fixture.path());
+
+		assert_eq!(code, 1);
+		assert_eq!(fs::read(fixture.path().join("source")).unwrap(), b"new");
+		assert_eq!(fs::read(fixture.path().join("target")).unwrap(), b"old");
+		assert_eq!(capture.err(), "mv: overwrite 'target'? mv: \n");
+	}
+
+	#[test]
+	fn interactive_accept_replaces_destination() {
+		let fixture = tempdir().unwrap();
+		fs::write(fixture.path().join("source"), b"new").unwrap();
+		fs::write(fixture.path().join("target"), b"old").unwrap();
+
+		let (code, capture) = run_util::<Mv>(&["-i", "source", "target"], "y\n", fixture.path());
+
+		assert_eq!(code, 0, "{}", capture.err());
+		assert!(!fixture.path().join("source").exists());
+		assert_eq!(fs::read(fixture.path().join("target")).unwrap(), b"new");
+	}
+
+	#[test]
+	fn backup_configuration_uses_host_environment() {
+		let fixture = tempdir().unwrap();
+		fs::write(fixture.path().join("source"), b"new").unwrap();
+		fs::write(fixture.path().join("target"), b"old").unwrap();
+		let (mut host, capture) = Host::for_test("mv", "", fixture.path());
+		host.set_test_var("VERSION_CONTROL", "simple");
+		host.set_test_var("SIMPLE_BACKUP_SUFFIX", ".old");
+		let parsed = Mv::try_parse_from(["mv", "-b", "source", "target"]).unwrap();
+
+		let code = parsed.run(&mut host);
+
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(fs::read(fixture.path().join("target")).unwrap(), b"new");
+		assert_eq!(fs::read(fixture.path().join("target.old")).unwrap(), b"old");
+	}
+
+	#[test]
+	fn missing_source_reports_original_operand() {
+		let fixture = tempdir().unwrap();
+		let (code, capture) = run_util::<Mv>(&["missing", "target"], "", fixture.path());
+		assert_eq!(code, 1);
+		assert_eq!(capture.err(), "mv: cannot stat 'missing': No such file or directory\n");
 	}
 }

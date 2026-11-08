@@ -29,16 +29,12 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use ast_grep_core::tree_sitter::LanguageExt;
-use tree_sitter::{InputEdit, Language, Parser, Point, Tree};
+use tree_sitter::{InputEdit, Language, Point, Tree};
 
-use crate::language::SupportLang;
-
-fn parse_native(language: &Language, code: &str, previous: Option<&Tree>) -> Result<Option<Tree>> {
-	let mut parser = Parser::new();
-	parser.set_language(language)?;
-	Ok(parser.parse(code, previous))
-}
+use crate::language::{
+	SupportLang,
+	grammar::{self, GrammarError, LanguageGrammar},
+};
 
 /// Arbitrary fixed seed (golden-ratio constant). Fixed, not random, so a key is
 /// reproducible across calls within a process; it never leaves the process, so
@@ -329,7 +325,7 @@ impl Cache {
 		self.entries.insert(key, Entry {
 			source: Arc::from(code),
 			tree: tree.clone(),
-			bindings: path.map_or_else(Vec::new, |path| {
+			bindings: path.map_or_default(|path| {
 				vec![Binding { path: Box::from(path), current: true, since: ticket }]
 			}),
 			cost,
@@ -465,14 +461,13 @@ fn advance(start: Point, text: &[u8]) -> Point {
 /// prefix and common suffix.
 fn input_edit(old: &str, new: &str) -> InputEdit {
 	let (old_bytes, new_bytes) = (old.as_bytes(), new.as_bytes());
-	let mut prefix = old_bytes
-		.iter()
-		.zip(new_bytes)
-		.take_while(|(a, b)| a == b)
-		.count();
-	while !old.is_char_boundary(prefix) {
-		prefix -= 1;
-	}
+	let prefix = old.floor_char_boundary(
+		old_bytes
+			.iter()
+			.zip(new_bytes)
+			.take_while(|(a, b)| a == b)
+			.count(),
+	);
 	let mut suffix = old_bytes[prefix..]
 		.iter()
 		.rev()
@@ -509,14 +504,14 @@ fn parse_from(language: &Language, code: &str, base: Option<Base>) -> Result<Opt
 		let edit = input_edit(&source, code);
 		if 2 * (edit.old_end_byte.max(edit.new_end_byte) - edit.start_byte) <= code.len() {
 			tree.edit(&edit);
-			if let Some(tree) = parse_native(language, code, Some(&tree))?
+			if let Some(tree) = grammar::parse(language, code, Some(&tree))?
 				&& !tree.root_node().has_error()
 			{
 				return Ok(Some(tree));
 			}
 		}
 	}
-	parse_native(language, code, None)
+	grammar::parse(language, code, None)
 }
 
 /// Parse `code` as `lang`, reusing a cached [`Tree`] when the exact same bytes
@@ -528,7 +523,7 @@ fn parse_from(language: &Language, code: &str, base: Option<Base>) -> Result<Opt
 ///
 /// Semantics match a bare `Parser::new()` / `set_language` / `parse` sequence
 /// exactly: `Err` when the grammar fails to load, `Ok(None)` when `parse`
-/// yields nothing (callers treat it
+/// yields nothing or `lang`'s wasm grammar is not installed (callers treat it
 /// like an unsupported language), `Ok(Some(tree))` otherwise. Trees carrying
 /// syntax errors are
 /// cached like any other — `has_error()` is a property of the tree, so callers
@@ -547,7 +542,11 @@ pub fn parse_cached(code: &str, lang: SupportLang, path: Option<&str>) -> Result
 		Lookup::Hit(tree) => return Ok(Some(tree)),
 		Lookup::Miss(base) => base,
 	};
-	let language = lang.get_ts_language();
+	let language = match lang.grammar().load() {
+		Ok(language) => language,
+		Err(GrammarError::NotInstalled { .. }) => return Ok(None),
+		Err(err) => return Err(err.into()),
+	};
 	let Some(tree) = parse_from(&language, code, base)
 		.map_err(|err| anyhow!("Failed to load tree-sitter language: {err}"))?
 	else {
@@ -602,8 +601,8 @@ mod tests {
 	}
 
 	fn tree_of(code: &str, lang: SupportLang) -> Tree {
-		let language = lang.get_ts_language();
-		parse_native(&language, code, None)
+		let language = lang.grammar().load().expect("grammar loads");
+		grammar::parse(&language, code, None)
 			.expect("grammar loads")
 			.expect("parse produces a tree")
 	}
@@ -1091,7 +1090,7 @@ mod tests {
 
 	#[test]
 	fn incremental_reparse_matches_a_fresh_parse_and_reuses_unchanged_subtrees() {
-		let language = TS.get_ts_language();
+		let language = TS.grammar().load().expect("grammar loads");
 		let old = "function a() {\n  return 1;\n}\n\nfunction b() {\n  return 'é';\n}\n";
 		let edits = [
 			// In place, one line.
@@ -1130,7 +1129,7 @@ mod tests {
 
 	#[test]
 	fn an_edit_spanning_most_of_the_file_parses_fresh() {
-		let language = TS.get_ts_language();
+		let language = TS.grammar().load().expect("grammar loads");
 		let old = "function a() {}\nfunction b() {}\nfunction c() {}\nfunction d() {}\nfunction \
 		           t1() {}\nfunction t2() {}\n";
 		// Rewrites a..d and keeps t1, t2. The node right after an edit is always
@@ -1152,7 +1151,7 @@ mod tests {
 
 	#[test]
 	fn a_broken_result_is_always_a_fresh_parse() {
-		let language = TS.get_ts_language();
+		let language = TS.grammar().load().expect("grammar loads");
 		let old = "function a() {\n  return 1;\n}\n\nfunction b() {\n  return 2;\n}\n";
 		// The error sits in `b`, so an incremental parse would reuse `a` whole.
 		let broken = "function a() {\n  return 1;\n}\n\nfunction b() {\n  return 2 +;\n}\n";

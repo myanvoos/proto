@@ -1,3 +1,5 @@
+//! `CMake`, `Ninja`, `CTest`, and `GoogleTest` output filters.
+
 use std::path::Path;
 
 use crate::minimizer::{MinimizerCtx, MinimizerOutput, primitives};
@@ -36,9 +38,6 @@ pub fn is_gtest_binary_name(program: &str) -> bool {
 pub fn filter(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32) -> MinimizerOutput {
 	let cleaned = primitives::strip_ansi(input);
 	let tool = direct_tool(ctx.program).or_else(|| invocation_tool(ctx.command));
-	if matches!(tool, Some(CppTool::GTest)) && !has_gtest_signature(&cleaned) {
-		return super::generic::filter(ctx, input, exit_code);
-	}
 	let text = match tool {
 		Some(CppTool::CMake) => filter_cmake(&cleaned, exit_code),
 		Some(CppTool::CTest) => filter_ctest(&cleaned, exit_code),
@@ -83,19 +82,14 @@ fn command_tokens(command: &str) -> impl Iterator<Item = &str> {
 
 fn filter_cmake(input: &str, exit_code: i32) -> String {
 	let mut out = String::new();
-	let mut recognized = false;
 	for line in input.lines() {
 		let trimmed = line.trim();
-		if trimmed.is_empty() {
+		if trimmed.is_empty() || is_cmake_noise(trimmed, exit_code) {
 			continue;
 		}
-		if is_cmake_noise(trimmed, exit_code) {
-			recognized = true;
-			continue;
-		}
-		push_line(&mut out, line.trim_end());
+		primitives::push_line(&mut out, line.trim_end());
 	}
-	finish_filtered(input, out, recognized, exit_code, "cmake: ok")
+	finish_filtered(input, out, exit_code, "cmake: ok")
 }
 
 fn is_cmake_noise(line: &str, exit_code: i32) -> bool {
@@ -118,19 +112,14 @@ fn is_cmake_noise(line: &str, exit_code: i32) -> bool {
 
 fn filter_ctest(input: &str, exit_code: i32) -> String {
 	let mut out = String::new();
-	let mut recognized = false;
 	for line in input.lines() {
 		let trimmed = line.trim();
-		if trimmed.is_empty() {
+		if trimmed.is_empty() || is_ctest_noise(trimmed, exit_code) {
 			continue;
 		}
-		if is_ctest_noise(trimmed, exit_code) {
-			recognized = true;
-			continue;
-		}
-		push_line(&mut out, line.trim_end());
+		primitives::push_line(&mut out, line.trim_end());
 	}
-	finish_filtered(input, out, recognized, exit_code, "ctest: ok")
+	finish_filtered(input, out, exit_code, "ctest: ok")
 }
 
 fn is_ctest_noise(line: &str, exit_code: i32) -> bool {
@@ -146,19 +135,14 @@ fn is_ctest_noise(line: &str, exit_code: i32) -> bool {
 
 fn filter_ninja(input: &str, exit_code: i32) -> String {
 	let mut out = String::new();
-	let mut recognized = false;
 	for line in input.lines() {
 		let trimmed = line.trim();
-		if trimmed.is_empty() {
+		if trimmed.is_empty() || is_ninja_noise(trimmed, exit_code) {
 			continue;
 		}
-		if is_ninja_noise(trimmed, exit_code) {
-			recognized = true;
-			continue;
-		}
-		push_line(&mut out, line.trim_end());
+		primitives::push_line(&mut out, line.trim_end());
 	}
-	finish_filtered(input, out, recognized, exit_code, "ninja: ok")
+	finish_filtered(input, out, exit_code, "ninja: ok")
 }
 
 fn is_ninja_noise(line: &str, exit_code: i32) -> bool {
@@ -179,43 +163,35 @@ fn is_ninja_noise(line: &str, exit_code: i32) -> bool {
 fn filter_gtest(input: &str, exit_code: i32) -> String {
 	let mut out = String::new();
 	let mut keeping_failure = false;
-	let mut recognized = false;
 
 	for line in input.lines() {
 		let trimmed = line.trim_start();
 		if trimmed.trim().is_empty() {
 			if keeping_failure {
-				push_line(&mut out, "");
+				primitives::push_line(&mut out, "");
 			}
 			continue;
 		}
 		if is_gtest_pass_noise(trimmed) {
-			recognized = true;
 			keeping_failure = false;
 			continue;
 		}
 		if is_gtest_summary(trimmed) {
-			recognized = true;
 			keeping_failure = false;
-			push_line(&mut out, line.trim_end());
+			primitives::push_line(&mut out, line.trim_end());
 			continue;
 		}
 		if is_gtest_failure_start(trimmed) || is_important(trimmed) {
-			recognized |= is_gtest_failure_start(trimmed);
 			keeping_failure = true;
-			push_line(&mut out, line.trim_end());
+			primitives::push_line(&mut out, line.trim_end());
 			continue;
 		}
 		if keeping_failure || (exit_code != 0 && looks_like_source_location(trimmed)) {
-			push_line(&mut out, line.trim_end());
+			primitives::push_line(&mut out, line.trim_end());
 		}
 	}
 
-	finish_filtered(input, out, recognized, exit_code, "gtest: ok")
-}
-
-fn has_gtest_signature(input: &str) -> bool {
-	input.contains("[==========] Running") || input.contains("[  RUN     ]")
+	finish_filtered(input, out, exit_code, "gtest: ok")
 }
 
 fn is_gtest_pass_noise(line: &str) -> bool {
@@ -247,16 +223,10 @@ fn looks_like_source_location(line: &str) -> bool {
 	rest.chars().next().is_some_and(|ch| ch.is_ascii_digit())
 }
 
-fn finish_filtered(
-	input: &str,
-	out: String,
-	recognized: bool,
-	exit_code: i32,
-	success_message: &str,
-) -> String {
+fn finish_filtered(input: &str, out: String, exit_code: i32, success_message: &str) -> String {
 	let deduped = primitives::dedup_consecutive_lines(&out);
 	if deduped.trim().is_empty() {
-		if exit_code == 0 && (input.is_empty() || recognized) {
+		if exit_code == 0 {
 			return success_message.to_string();
 		}
 		return primitives::head_tail_lines(input, 120, 80);
@@ -275,30 +245,99 @@ fn is_important(line: &str) -> bool {
 		|| lower.contains("fatal")
 }
 
-fn push_line(out: &mut String, line: &str) {
-	out.push_str(line);
-	out.push('\n');
-}
-
 #[cfg(test)]
 mod tests {
-	use std::fmt::Write as _;
+	use super::*;
+	use crate::minimizer::MinimizerConfig;
 
-	use crate::minimizer::{MinimizerConfig, apply};
+	fn ctx<'a>(
+		program: &'a str,
+		subcommand: Option<&'a str>,
+		command: &'a str,
+		config: &'a MinimizerConfig,
+	) -> MinimizerCtx<'a> {
+		MinimizerCtx { program, subcommand, command, config }
+	}
 
 	#[test]
-	fn non_gtest_binary_suffix_preserves_unrecognized_output() {
-		let mut input = String::new();
-		for index in 0..80 {
-			let _ =
-				writeln!(input, "application output line {index}: payload that must remain visible");
+	fn supports_direct_cpp_tools_and_gtest_binaries() {
+		for program in ["cmake", "ctest", "ninja", "gtest", "foo_test", "unit_tests"] {
+			assert!(supports(program, None), "{program} should be supported");
 		}
+		assert!(!supports("contest", None));
+	}
 
-		let config = MinimizerConfig { enabled: true, ..MinimizerConfig::default() };
+	#[test]
+	fn supports_bun_wrapped_cpp_invocations() {
+		assert!(supports_invocation("bun run ctest --output-on-failure"));
+		assert!(supports_invocation("bun run ./build/foo_test --gtest_filter=Foo.*"));
+		assert!(!supports_invocation("bun run test"));
+	}
 
-		let output = apply("./smoke_test", &input, 0, &config);
+	#[test]
+	fn cmake_filter_strips_configure_noise_but_keeps_errors() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("cmake", None, "cmake -S . -B build", &cfg);
+		let out = filter(
+			&ctx,
+			"-- Detecting CXX compiler ABI info\n-- Configuring done\nCMake Error at \
+			 CMakeLists.txt:12 (add_executable):\n  Cannot find source file\n",
+			1,
+		);
+		assert!(!out.text.contains("Detecting CXX compiler"));
+		assert!(out.text.contains("CMake Error"));
+		assert!(out.text.contains("Cannot find source file"));
+	}
 
-		assert_eq!(output.text, input);
-		assert_ne!(output.text, "gtest: ok");
+	#[test]
+	fn ctest_filter_drops_passed_tests_and_keeps_failures() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("ctest", None, "ctest --output-on-failure", &cfg);
+		let out = filter(
+			&ctx,
+			"Test project /tmp/build\n    Start 1: ok\n1/2 Test #1: ok ........   Passed    0.01 \
+			 sec\n    Start 2: bad\n2/2 Test #2: bad .......***Failed    0.02 sec\nThe following \
+			 tests FAILED:\n\t  2 - bad (Failed)\nErrors while running CTest\n",
+			8,
+		);
+		assert!(!out.text.contains("Test project"));
+		assert!(!out.text.contains("Test #1"));
+		assert!(out.text.contains("Test #2: bad"));
+		assert!(out.text.contains("The following tests FAILED"));
+	}
+
+	#[test]
+	fn gtest_filter_keeps_failure_context_and_summary() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("foo_test", None, "./build/foo_test", &cfg);
+		let out = filter(
+			&ctx,
+			"[==========] Running 2 tests from 1 test suite.\n[ RUN      ] Foo.Pass\n[       OK ] \
+			 Foo.Pass (0 ms)\n[ RUN      ] Foo.Fails\nfoo_test.cc:42: Failure\nExpected equality of \
+			 these values:\n  actual\n  expected\n[  FAILED  ] Foo.Fails (0 ms)\n[  PASSED  ] 1 \
+			 test.\n[  FAILED  ] 1 test, listed below:\n[  FAILED  ] Foo.Fails\n",
+			1,
+		);
+		assert!(!out.text.contains("Foo.Pass"));
+		assert!(out.text.contains("foo_test.cc:42: Failure"));
+		assert!(out.text.contains("Expected equality"));
+		assert!(out.text.contains("[  FAILED  ] Foo.Fails"));
+	}
+
+	#[test]
+	fn ninja_filter_keeps_failed_edges_and_compiler_errors() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let ctx = ctx("ninja", None, "ninja -C build", &cfg);
+		let out = filter(
+			&ctx,
+			"[1/3] Building CXX object ok.cc.o\nFAILED: bad.cc.o\n/usr/bin/c++ -c \
+			 bad.cc\nbad.cc:3:10: fatal error: missing.h: No such file or directory\nninja: build \
+			 stopped: subcommand failed.\n",
+			1,
+		);
+		assert!(!out.text.contains("ok.cc.o"));
+		assert!(out.text.contains("FAILED: bad.cc.o"));
+		assert!(out.text.contains("fatal error"));
+		assert!(out.text.contains("build stopped"));
 	}
 }

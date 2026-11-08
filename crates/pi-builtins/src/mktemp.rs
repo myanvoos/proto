@@ -1,29 +1,29 @@
-#[cfg(unix)]
-use std::fs;
-#[cfg(unix)]
-use std::os::unix::prelude::PermissionsExt;
+//! `mktemp` builtin: create and display a temporary file or directory from a
+//! template.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	env,
 	ffi::{OsStr, OsString},
 	io::{self, ErrorKind, Write},
 	iter,
-	path::{MAIN_SEPARATOR, Path, PathBuf},
+	path::{Path, PathBuf, is_separator},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{
 	Arg, ArgAction, ArgMatches, Command,
 	builder::{TypedValueParser, ValueParserFactory},
 };
+use pi_vfs::{BlockingFs, TempOptions};
 use rand::{
 	RngExt as _, SeedableRng as _,
 	rngs::{self, SmallRng},
 };
-use tempfile::Builder;
 use thiserror::Error;
 use uucore::display::Quotable;
 
-use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
+use crate::host::{Host, Utility, forward_slash_display, format_usage, matches_parser, os_bytes};
 
 static DEFAULT_TEMPLATE: &str = "tmp.XXXXXXXXXX";
 
@@ -37,15 +37,18 @@ static OPT_T: &str = "t";
 
 static ARG_TEMPLATE: &str = "template";
 
-const TMPDIR_ENV_VAR: &str = "TMPDIR";
+/// Variables naming the temporary directory, in precedence order. The shell
+/// emulates bash, so `TMPDIR` comes first on every platform; Windows sessions
+/// usually carry only `TMP`/`TEMP`.
+#[cfg(not(windows))]
+const TMPDIR_ENV_VARS: &[&str] = &["TMPDIR"];
+#[cfg(windows)]
+const TMPDIR_ENV_VARS: &[&str] = &["TMPDIR", "TMP", "TEMP"];
 
 const FALLBACK_TMPDIR: &str = "/tmp";
 
 #[derive(Error, Debug)]
 enum MkTempError {
-	#[error("could not persist file {}", .0.quote())]
-	Persist(PathBuf),
-
 	#[error("with --suffix, template {} must end in X", .0.quote())]
 	MustEndInX(String),
 
@@ -71,20 +74,25 @@ enum MkTempError {
 	Io(#[from] io::Error),
 }
 
+/// Options parsed from the command line.
+///
+/// This provides a layer of indirection between the application logic and
+/// `clap`, allowing each to vary independently.
 #[derive(Clone)]
 struct Options {
+	/// Whether to create a temporary directory instead of a file.
 	directory: bool,
-
+	/// Whether to just print the name of a file that would have been created.
 	dry_run: bool,
-
+	/// Whether to suppress file creation error messages.
 	quiet: bool,
-
+	/// The directory in which to create the temporary file.
 	tmpdir: Option<PathBuf>,
-
+	/// The suffix to append to the temporary file, if any.
 	suffix: Option<OsString>,
-
+	/// Whether to treat the template argument as a single file path component.
 	treat_as_template: bool,
-
+	/// The template to use for the name of the temporary file.
 	template: OsString,
 }
 
@@ -94,17 +102,19 @@ impl Options {
 			.get_one::<Option<PathBuf>>(OPT_TMPDIR)
 			.or_else(|| matches.get_one::<Option<PathBuf>>(OPT_P))
 			.map(|dir| match dir {
+				// If the argument of -p/--tmpdir is non-empty, use it as the tmpdir.
 				Some(dir) => dir.clone(),
-
+				// Otherwise use $TMPDIR if set, else the system default.
 				None => get_tmpdir_env_or_default(host),
 			});
 		let (tmpdir, template) = match matches.get_one::<OsString>(ARG_TEMPLATE) {
+			// If no template argument is given, `--tmpdir` is implied.
 			None => (
 				Some(tmpdir.unwrap_or_else(|| get_tmpdir_env_or_default(host))),
 				OsString::from(DEFAULT_TEMPLATE),
 			),
 			Some(template) => {
-				let tmpdir = if let Some(tmpdir) = host.var(TMPDIR_ENV_VAR)
+				let tmpdir = if let Some(tmpdir) = tmpdir_var(host)
 					&& matches.get_flag(OPT_T)
 				{
 					Some(PathBuf::from(tmpdir))
@@ -130,16 +140,19 @@ impl Options {
 	}
 }
 
+/// Parameters controlling the path and name of the temporary entry.
 struct Params {
+	/// The directory that will contain the temporary entry.
 	directory: PathBuf,
-
+	/// The non-random prefix of the temporary entry.
 	prefix: String,
-
+	/// The number of random characters in the name.
 	num_rand_chars: usize,
-
+	/// The non-random suffix of the temporary entry.
 	suffix: String,
 }
 
+/// Finds the last contiguous block of at least three `X` characters.
 fn find_last_contiguous_block_of_xs(s: &str) -> Option<(usize, usize)> {
 	let bytes = s.as_bytes();
 	let end = bytes.iter().rposition(|&b| b == b'X')?;
@@ -152,13 +165,17 @@ fn find_last_contiguous_block_of_xs(s: &str) -> Option<(usize, usize)> {
 
 impl Params {
 	fn from(options: Options) -> Result<Self, MkTempError> {
+		// `-t` follows GNU's permissive treatment of invalid UTF-8. Regular
+		// templates retain the upstream strict validation.
 		let mut template_str = if options.treat_as_template {
 			options.template.to_string_lossy().into_owned()
 		} else {
 			options
 				.template
 				.to_str()
-				.ok_or_else(|| MkTempError::InvalidTemplate("template contains invalid UTF-8".into()))?
+				.ok_or_else(|| {
+					MkTempError::InvalidTemplate("template contains invalid UTF-8".into())
+				})?
 				.to_string()
 		};
 
@@ -168,7 +185,7 @@ impl Params {
 
 		let (i, j) = match find_last_contiguous_block_of_xs(&template_str) {
 			Some(indices) => indices,
-
+			// BSD `mktemp -t PREFIX` treats PREFIX as a name prefix.
 			None if options.treat_as_template => {
 				template_str.push('.');
 				template_str.push_str("XXXXXXXXXX");
@@ -178,38 +195,38 @@ impl Params {
 			None => return Err(MkTempError::TooFewXs(template_str)),
 		};
 
+		// Split the template prefix into its directory part (through the last
+		// separator) and the file-name prefix, then place the directory part
+		// under the option directory. Splitting the template itself keeps an
+		// empty file-name prefix distinct from the option directory's last
+		// component, which matters for URL directories.
 		let tmpdir = options.tmpdir;
-		let prefix_from_option = tmpdir.clone().unwrap_or_default();
 		let prefix_from_template = &template_str[..i];
-		let prefix_path = Path::new(&prefix_from_option).join(prefix_from_template);
-		if options.treat_as_template && prefix_from_template.contains(MAIN_SEPARATOR) {
+		if options.treat_as_template && prefix_from_template.contains(is_separator) {
 			return Err(MkTempError::PrefixContainsDirSeparator(template_str));
 		}
 		if tmpdir.is_some() && Path::new(prefix_from_template).is_absolute() {
 			return Err(MkTempError::InvalidTemplate(template_str.into()));
 		}
-		let (directory, prefix) = {
-			let prefix_str = prefix_path.to_string_lossy();
-			if prefix_str.ends_with(MAIN_SEPARATOR) {
-				(prefix_path, String::new())
-			} else {
-				let directory = prefix_path
-					.parent()
-					.map_or_else(PathBuf::new, Path::to_path_buf);
-				let prefix = prefix_path
-					.file_name()
-					.map_or_else(String::new, |f| f.to_string_lossy().into_owned());
-				(directory, prefix)
-			}
+		// Every separator is one byte: `/`, plus `\` on Windows.
+		let (template_dir, prefix) = match prefix_from_template.rfind(is_separator) {
+			Some(pos) => prefix_from_template.split_at(pos + 1),
+			None => ("", prefix_from_template),
+		};
+		let prefix = prefix.to_owned();
+		let directory = match tmpdir {
+			Some(tmpdir) if template_dir.is_empty() => tmpdir,
+			Some(tmpdir) => pi_vfs::join_path(&tmpdir, Path::new(template_dir)),
+			None => PathBuf::from(template_dir),
 		};
 
+		// Combine a suffix embedded in the template with `--suffix`.
 		let suffix_from_option = options
 			.suffix
-			.map(|s| s.to_string_lossy().into_owned())
-			.unwrap_or_default();
+			.map_or_default(|s| s.to_string_lossy().into_owned());
 		let suffix_from_template = &template_str[j..];
 		let suffix = format!("{suffix_from_template}{suffix_from_option}");
-		if suffix.contains(MAIN_SEPARATOR) {
+		if suffix.contains(is_separator) {
 			return Err(MkTempError::SuffixContainsDirSeparator(suffix));
 		}
 
@@ -217,6 +234,7 @@ impl Params {
 	}
 }
 
+/// Parses an empty directory option as `None` and a non-empty one as a path.
 #[derive(Clone, Debug)]
 struct OptionalPathBufParser;
 
@@ -245,6 +263,7 @@ impl ValueParserFactory for OptionalPathBufParser {
 	}
 }
 
+/// Parsed `mktemp` invocation.
 pub(crate) struct Mktemp {
 	matches: ArgMatches,
 }
@@ -255,12 +274,15 @@ impl Utility for Mktemp {
 	const NAME: &'static str = "mktemp";
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
+		// Upstream replaces clap's generic positional overflow diagnostic with
+		// GNU mktemp's concise message.
 		if let Err(err) = app().try_get_matches_from(&argv)
 			&& err.kind() == clap::error::ErrorKind::TooManyValues
 			&& err.context().any(|(kind, value)| {
 				kind == clap::error::ContextKind::InvalidArg
 					&& value == &clap::error::ContextValue::String("[template]".into())
-			}) {
+			})
+		{
 			return Err(MkTempError::TooManyTemplates.to_string());
 		}
 		Ok(argv)
@@ -269,6 +291,8 @@ impl Utility for Mktemp {
 	fn run(self, host: &mut Host) -> i32 {
 		let options = Options::from(&self.matches, host);
 
+		// Under POSIXLY_CORRECT the template must be the last argument. Clap's
+		// occurrence indices preserve that ordering after short-option expansion.
 		if host.var("POSIXLY_CORRECT").is_some()
 			&& self.matches.contains_id(ARG_TEMPLATE)
 			&& !template_is_last(&self.matches)
@@ -316,16 +340,26 @@ impl Utility for Mktemp {
 	}
 }
 
+/// Returns whether the template occurred after every option and option value.
 fn template_is_last(matches: &ArgMatches) -> bool {
 	let Some(template_index) = matches.index_of(ARG_TEMPLATE) else {
 		return true;
 	};
-	[OPT_DIRECTORY, OPT_DRY_RUN, OPT_QUIET, OPT_SUFFIX, OPT_TMPDIR, OPT_P, OPT_T]
-		.into_iter()
-		.filter_map(|id| matches.index_of(id))
-		.all(|index| index < template_index)
+	[
+		OPT_DIRECTORY,
+		OPT_DRY_RUN,
+		OPT_QUIET,
+		OPT_SUFFIX,
+		OPT_TMPDIR,
+		OPT_P,
+		OPT_T,
+	]
+	.into_iter()
+	.filter_map(|id| matches.index_of(id))
+	.all(|index| index < template_index)
 }
 
+/// Builds the `mktemp` command-line model.
 fn app() -> Command {
 	Command::new(Mktemp::NAME)
 		.version("0.8.0")
@@ -376,9 +410,10 @@ fn app() -> Command {
 			Arg::new(OPT_TMPDIR)
 				.long(OPT_TMPDIR)
 				.help(
-					"interpret TEMPLATE relative to DIR; if DIR is not specified, use $TMPDIR if set, \
-					 else /tmp. With this option, TEMPLATE must not be an absolute name; unlike with \
-					 -t, TEMPLATE may contain slashes, but mktemp creates only the final component",
+					"interpret TEMPLATE relative to DIR; if DIR is not specified, use $TMPDIR ($TMP or \
+					 $TEMP on windows) if set, else /tmp. With this option, TEMPLATE must not be an absolute \
+					 name; unlike with -t, TEMPLATE may contain slashes, but mktemp creates only the \
+					 final component",
 				)
 				.value_name("DIR")
 				.num_args(0..=1)
@@ -391,8 +426,8 @@ fn app() -> Command {
 			Arg::new(OPT_T)
 				.short('t')
 				.help(
-					"Generate a template (using the supplied prefix and TMPDIR if set) to create a \
-					 filename template [deprecated]",
+					"Generate a template (using the supplied prefix and TMPDIR (TMP or TEMP on windows) \
+					 if set) to create a filename template [deprecated]",
 				)
 				.action(ArgAction::SetTrue),
 		)
@@ -412,7 +447,7 @@ fn dry_exec(tmpdir: &Path, prefix: &str, rand: usize, suffix: &str) -> PathBuf {
 
 	let bytes = &mut buf[prefix.len()..prefix.len() + rand];
 	SmallRng::try_from_rng(&mut rngs::SysRng)
-		.unwrap_or_else(|_| SmallRng::seed_from_u64(bytes.as_ptr() as usize as u64))
+		.unwrap_or_else(|_| SmallRng::seed_from_u64(bytes.as_ptr().addr() as u64))
 		.fill(bytes);
 	for byte in bytes {
 		*byte = match *byte % 62 {
@@ -422,55 +457,47 @@ fn dry_exec(tmpdir: &Path, prefix: &str, rand: usize, suffix: &str) -> PathBuf {
 			_ => unreachable!(),
 		};
 	}
-
+	// Every byte was mapped into the ASCII alphanumeric range.
 	let buf = String::from_utf8(buf).unwrap();
-	tmpdir.join(buf)
+	display_join(tmpdir, &buf)
 }
 
-fn make_temp_dir(
+/// Creates a temporary file (owner-only, `0o600`) or directory (`0o700`)
+/// with `create_new` semantics in `dir` on the shell's filesystem.
+fn make_temp(
+	fs: &BlockingFs,
 	dir: &Path,
 	display_dir: &Path,
 	prefix: &str,
 	rand: usize,
 	suffix: &str,
+	make_dir: bool,
 ) -> Result<PathBuf, MkTempError> {
-	let mut builder = Builder::new();
-	builder.prefix(prefix).rand_bytes(rand).suffix(suffix);
-	builder.permissions(fs::Permissions::from_mode(0o700));
-
-	match builder.tempdir_in(dir) {
-		Ok(directory) => Ok(directory.keep()),
-		Err(err) if err.kind() == ErrorKind::NotFound => {
+	let options = TempOptions::new().prefix(prefix).random_len(rand).suffix(suffix);
+	let created = if make_dir {
+		fs.create_temp_dir(dir, &options)
+	} else {
+		fs.create_temp(dir, &options).and_then(|(path, file)| match file.close() {
+			Ok(()) => Ok(path),
+			Err(error) => {
+				// The name is never printed, so nobody else could remove it.
+				let _ = fs.for_cleanup().remove_file(&path);
+				Err(error)
+			},
+		})
+	};
+	created.map_err(|err| {
+		if err.kind() == ErrorKind::NotFound {
+			let kind = if make_dir { "directory" } else { "file" };
 			let filename = format!("{prefix}{}{suffix}", "X".repeat(rand));
-			Err(MkTempError::NotFound("directory".to_string(), display_dir.join(filename)))
-		},
-		Err(err) => Err(err.into()),
-	}
-}
-
-fn make_temp_file(
-	dir: &Path,
-	display_dir: &Path,
-	prefix: &str,
-	rand: usize,
-	suffix: &str,
-) -> Result<PathBuf, MkTempError> {
-	let mut builder = Builder::new();
-	builder.prefix(prefix).rand_bytes(rand).suffix(suffix);
-	match builder.tempfile_in(dir) {
-		Ok(file) => file.keep().map(|(_, path)| path).map_err(|err| {
-			let path = err.file.path();
-			let display_path = path
-				.file_name()
-				.map_or_else(|| display_dir.to_path_buf(), |name| display_dir.join(name));
-			MkTempError::Persist(display_path)
-		}),
-		Err(err) if err.kind() == ErrorKind::NotFound => {
-			let filename = format!("{prefix}{}{suffix}", "X".repeat(rand));
-			Err(MkTempError::NotFound("file".to_string(), display_dir.join(filename)))
-		},
-		Err(err) => Err(err.into()),
-	}
+			MkTempError::NotFound(
+				kind.to_string(),
+				display_join(display_dir, &filename),
+			)
+		} else {
+			err.into()
+		}
+	})
 }
 
 fn exec(
@@ -481,24 +508,281 @@ fn exec(
 	suffix: &str,
 	make_dir: bool,
 ) -> Result<PathBuf, MkTempError> {
+	// Only the filesystem-facing form is resolved. The returned path retains
+	// the spelling implied by the user's operands, which scripts consume.
 	let resolved_dir = host.resolve(dir);
-	let created = if make_dir {
-		make_temp_dir(&resolved_dir, dir, prefix, rand, suffix)?
-	} else {
-		make_temp_file(&resolved_dir, dir, prefix, rand, suffix)?
-	};
-	let filename = created.file_name().expect("tempfile path has a file name");
-	Ok(dir.join(filename))
+	let created = make_temp(host.fs(), &resolved_dir, dir, prefix, rand, suffix, make_dir)?;
+	let filename = pi_vfs::file_name(&created).expect("temporary path has a file name");
+	Ok(display_join(dir, &filename.to_string_lossy()))
 }
 
+/// Path of `name` inside `dir` as printed: separators `/`, as GNU mktemp
+/// concatenates them, except where Windows requires native spelling.
+fn display_join(dir: &Path, name: &str) -> PathBuf {
+	let joined = pi_vfs::join_path(dir, Path::new(name));
+	forward_slash_display(&joined).unwrap_or(joined)
+}
+
+/// The shell's temporary-directory variable, if any is set.
+fn tmpdir_var(host: &Host) -> Option<&str> {
+	TMPDIR_ENV_VARS.iter().find_map(|name| host.var(name))
+}
+
+/// Reads the shell's temporary-directory variable, falling back to the platform
+/// default. An explicitly empty variable uses `/tmp`, matching GNU mktemp.
 fn get_tmpdir_env_or_default(host: &Host) -> PathBuf {
-	match host.var(TMPDIR_ENV_VAR) {
-		Some(value) if value.is_empty() => PathBuf::from(FALLBACK_TMPDIR),
+	match tmpdir_var(host) {
+		Some("") => PathBuf::from(FALLBACK_TMPDIR),
 		Some(value) => PathBuf::from(value),
 		None => env::temp_dir(),
 	}
 }
 
-pub(crate) fn mktemp_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Mktemp, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{
+		env,
+		ffi::OsString,
+		io::Write,
+		path::{Path, PathBuf},
+	};
+
+	use clap::Parser;
+
+	use super::Mktemp;
+	use crate::host::{Host, Utility};
+
+	fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+		let dir = tempfile::tempdir().unwrap();
+		let canonical = std::fs::canonicalize(dir.path()).unwrap();
+		(dir, canonical)
+	}
+
+	fn run_in(cwd: PathBuf, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
+		let (mut host, capture) = Host::for_test(Mktemp::NAME, "", cwd);
+		for (key, value) in env {
+			host.set_test_var(key, value);
+		}
+		let argv: Vec<OsString> = std::iter::once(OsString::from(Mktemp::NAME))
+			.chain(args.iter().map(OsString::from))
+			.collect();
+		let argv = match Mktemp::rewrite_argv(argv) {
+			Ok(argv) => argv,
+			Err(message) => {
+				host.error(message, i32::from(Mktemp::USAGE_ERROR));
+				return (i32::from(Mktemp::USAGE_ERROR), capture.out(), capture.err());
+			},
+		};
+		let code = match Mktemp::try_parse_from(argv) {
+			Ok(parsed) => parsed.run(&mut host),
+			Err(err) => {
+				let rendered = err.to_string();
+				if err.use_stderr() {
+					let _ = host.stderr.write_all(rendered.as_bytes());
+					i32::from(Mktemp::USAGE_ERROR)
+				} else {
+					let _ = host.stdout.write_all(rendered.as_bytes());
+					0
+				}
+			},
+		};
+		(code, capture.out(), capture.err())
+	}
+
+	fn tmpdir_env(dir: &Path) -> [(&str, &str); 1] {
+		[("TMPDIR", dir.to_str().unwrap())]
+	}
+
+	#[test]
+	fn default_invocation_creates_file_at_printed_path() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root.clone(), &tmpdir_env(&root), &[]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert!(printed.is_file());
+		assert_eq!(printed.parent(), Some(root.as_path()));
+		assert!(printed.file_name().unwrap().to_str().unwrap().starts_with("tmp."));
+	}
+
+	#[test]
+	fn directory_flag_creates_directory() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root.clone(), &tmpdir_env(&root), &["-d"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert!(printed.is_dir());
+		assert_eq!(printed.parent(), Some(root.as_path()));
+	}
+
+	#[test]
+	fn relative_tmpdir_resolves_against_host_cwd_but_prints_relative() {
+		let (_dir, root) = canonical_tempdir();
+		std::fs::create_dir(root.join("sub")).unwrap();
+		let (code, stdout, stderr) = run_in(root.clone(), &[], &["-p", "sub", "foo.XXXX"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert_eq!(printed.parent(), Some(Path::new("sub")));
+		assert!(root.join(&printed).is_file());
+	}
+
+	#[test]
+	fn relative_template_directory_resolves_against_host_cwd() {
+		let (_dir, root) = canonical_tempdir();
+		std::fs::create_dir(root.join("nested")).unwrap();
+		let (code, stdout, stderr) = run_in(root.clone(), &[], &["nested/foo.XXXX"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert_eq!(printed.parent(), Some(Path::new("nested")));
+		assert!(root.join(printed).is_file());
+	}
+
+	#[test]
+	fn host_tmpdir_wins_over_process_environment() {
+		let (_dir, root) = canonical_tempdir();
+		assert_ne!(env::temp_dir(), root);
+		let (code, stdout, stderr) = run_in(root.clone(), &tmpdir_env(&root), &[]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert_eq!(printed.parent(), Some(root.as_path()));
+		assert!(printed.is_file());
+	}
+
+	#[test]
+	fn too_few_xs_is_an_error() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root, &[], &["foo.XX"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "mktemp: too few X's in template 'foo.XX'\n");
+	}
+
+	#[test]
+	fn bsd_t_prefix_creates_file_in_tmpdir() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root.clone(), &tmpdir_env(&root), &["-t", "omp"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert!(printed.is_file());
+		assert_eq!(printed.parent(), Some(root.as_path()));
+		let name = printed.file_name().unwrap().to_str().unwrap();
+		assert!(name.starts_with("omp."));
+		assert_eq!(name.len(), "omp.".len() + 10);
+	}
+
+	#[test]
+	fn bsd_t_prefix_creates_directory_with_d_flag() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) =
+			run_in(root.clone(), &tmpdir_env(&root), &["-d", "-t", "pfx"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert!(printed.is_dir());
+		assert_eq!(printed.parent(), Some(root.as_path()));
+	}
+
+	#[test]
+	fn gnu_t_template_keeps_template_behavior() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) =
+			run_in(root.clone(), &tmpdir_env(&root), &["-t", "fooXXXX"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert!(printed.is_file());
+		assert_eq!(printed.parent(), Some(root.as_path()));
+		let name = printed.file_name().unwrap().to_str().unwrap();
+		assert!(name.starts_with("foo"));
+		assert_eq!(name.len(), "foo".len() + 4);
+	}
+
+	#[test]
+	fn template_without_xs_without_t_remains_an_error() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root, &[], &["prefix"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "mktemp: too few X's in template 'prefix'\n");
+	}
+
+	#[test]
+	fn dry_run_prints_nonexistent_path() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root.clone(), &tmpdir_env(&root), &["-u"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert_eq!(printed.parent(), Some(root.as_path()));
+		assert!(!printed.exists());
+	}
+
+	#[test]
+	fn suffix_is_appended_after_random_block() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) =
+			run_in(root.clone(), &[], &["--suffix=.txt", "-p", ".", "fooXXXX"]);
+		assert_eq!(code, 0);
+		assert_eq!(stderr, "");
+		let printed = PathBuf::from(stdout.trim_end_matches('\n'));
+		assert!(root.join(&printed).is_file());
+		let name = printed.file_name().unwrap().to_str().unwrap();
+		assert!(name.starts_with("foo") && name.ends_with(".txt"));
+	}
+
+	#[test]
+	fn quiet_suppresses_creation_error_message_but_not_exit_code() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) =
+			run_in(root, &[], &["-q", "-p", "missing-dir", "foo.XXXX"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "");
+	}
+
+	#[test]
+	fn creation_error_keeps_relative_template_in_diagnostic() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) =
+			run_in(root, &[], &["-p", "missing-dir", "foo.XXXX"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(
+			stderr,
+			"mktemp: failed to create file via template 'missing-dir/foo.XXXX': No such file or directory\n"
+		);
+	}
+
+	#[test]
+	fn too_many_templates_uses_gnu_diagnostic() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) = run_in(root, &[], &["one.XXXX", "two.XXXX"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "mktemp: too many templates\n");
+	}
+
+	#[test]
+	fn posixly_correct_requires_template_last() {
+		let (_dir, root) = canonical_tempdir();
+		let (code, stdout, stderr) =
+			run_in(root, &[("POSIXLY_CORRECT", "1")], &["foo.XXXX", "-d"]);
+		assert_eq!(code, 1);
+		assert_eq!(stdout, "");
+		assert_eq!(stderr, "mktemp: too many templates\n");
+	}
+
+	#[test]
+	fn help_renders_to_host_stdout() {
+		let (code, stdout, stderr) = run_in(PathBuf::from("."), &[], &["--help"]);
+		assert_eq!(code, 0);
+		assert!(stdout.contains("Usage:"));
+		assert!(stdout.contains("temporary file or directory"));
+		assert_eq!(stderr, "");
+	}
 }

@@ -1,18 +1,21 @@
+//! `paste` builtin: merge corresponding or successive lines of files.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	cell::RefCell,
 	ffi::OsString,
-	fs::File,
 	io::{self, BufRead, BufReader, Read, Write},
 	iter::Cycle,
 	rc::Rc,
 	slice::Iter,
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use pi_vfs::File;
 use uucore::{display::Quotable, i18n::charmap::mb_char_len};
 
-use crate::host::{Host, Stdin, Utility, format_usage, matches_parser, os_bytes, util};
+use crate::host::{Host, Stdin, Utility, format_usage, matches_parser, os_bytes, strip_errno};
 
 mod options {
 	pub const DELIMITER: &str = "delimiters";
@@ -21,6 +24,7 @@ mod options {
 	pub const ZERO_TERMINATED: &str = "zero-terminated";
 }
 
+/// Parsed `paste` invocation.
 pub(crate) struct Paste {
 	matches: ArgMatches,
 }
@@ -59,6 +63,7 @@ impl Utility for Paste {
 	}
 }
 
+/// The `paste` argument model.
 fn app() -> Command {
 	Command::new(Paste::NAME)
 		.version("0.8.0")
@@ -112,13 +117,15 @@ fn paste(
 		if filename == "-" {
 			prepared.push(PreparedSource::StandardInput);
 		} else {
-			let file = host
-				.open_read(&filename)
-				.map_err(|err| format!("{}: {}", filename.to_string_lossy(), strip_errno(&err)))?;
+			let file = host.fs().open(host.resolve(&filename)).map_err(|err| {
+				format!("{}: {}", filename.display(), strip_errno(&err))
+			})?;
 			prepared.push(PreparedSource::File(BufReader::new(file)));
 		}
 	}
 
+	// Writer first: `stdout_writer` method-borrows `host`, which must not
+	// overlap the `&mut host.stdin` held by the readers.
 	let mut stdout = host.stdout_writer();
 	let stdin = Rc::new(RefCell::new(BufReader::new(&mut host.stdin)));
 	let mut sources = prepared
@@ -142,9 +149,7 @@ fn paste(
 		for source in &mut sources {
 			output.clear();
 			loop {
-				if source
-					.read_until(line_ending, &mut output)
-					.map_err(|err| strip_errno(&err))?
+				if source.read_until(line_ending, &mut output).map_err(|err| strip_errno(&err))?
 					== 0
 				{
 					break;
@@ -214,8 +219,7 @@ fn write_single_input_source(
 fn parse_delimiters(delimiters: &OsString) -> Result<Box<[Box<[u8]>]>, String> {
 	let bytes = os_bytes(delimiters).ok_or_else(|| {
 		format!(
-			"invalid UTF-8 input {} encountered when converting to bytes on a platform that doesn't \
-			 expose byte arguments",
+			"invalid UTF-8 input {} encountered when converting to bytes on a platform that doesn't expose byte arguments",
 			delimiters.quote()
 		)
 	})?;
@@ -227,7 +231,7 @@ fn parse_delimiters(delimiters: &OsString) -> Result<Box<[Box<[u8]>]>, String> {
 			if i >= bytes.len() {
 				return Err(format!(
 					"delimiter list ends with an unescaped backslash: {}",
-					delimiters.to_string_lossy()
+					delimiters.display()
 				));
 			}
 			match bytes[i] {
@@ -257,9 +261,7 @@ fn parse_delimiters(delimiters: &OsString) -> Result<Box<[Box<[u8]>]>, String> {
 }
 
 fn remove_trailing_line_ending(line_ending: u8, output: &mut Vec<u8>) {
-	if output.last() == Some(&line_ending) {
-		output.pop();
-	}
+	output.pop_if(|byte| *byte == line_ending);
 }
 
 enum DelimiterState<'a> {
@@ -339,9 +341,9 @@ impl BufRead for InputSource<'_> {
 	fn fill_buf(&mut self) -> io::Result<&[u8]> {
 		match self {
 			Self::File(reader) => reader.fill_buf(),
-			Self::StandardInput(_) => {
-				Err(io::Error::other("standard input does not support direct buffer access"))
-			},
+			Self::StandardInput(_) => Err(io::Error::other(
+				"standard input does not support direct buffer access",
+			)),
 		}
 	}
 
@@ -359,14 +361,79 @@ impl BufRead for InputSource<'_> {
 	}
 }
 
-fn strip_errno(error: &io::Error) -> String {
-	let mut message = error.to_string();
-	if let Some(position) = message.find(" (os error ") {
-		message.truncate(position);
-	}
-	message
-}
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::Path};
 
-pub(crate) fn paste_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Paste, SE>()
+	use super::Paste;
+	use crate::host::run_util;
+
+	fn paste(argv: &[&str], stdin: &str, cwd: &Path) -> (i32, Vec<u8>, String) {
+		let (code, capture) = run_util::<Paste>(argv, stdin, cwd);
+		(code, capture.stdout(), capture.err())
+	}
+
+	#[test]
+	fn merges_files_in_parallel_and_cycles_delimiters() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "a1\na2\n").unwrap();
+		fs::write(dir.path().join("b"), "b1\nb2\n").unwrap();
+		fs::write(dir.path().join("c"), "c1\nc2\n").unwrap();
+		assert_eq!(
+			paste(&["-d", ",:", "a", "b", "c"], "", dir.path()),
+			(0, b"a1,b1:c1\na2,b2:c2\n".to_vec(), String::new())
+		);
+	}
+
+	#[test]
+	fn serial_mode_pastes_each_file_separately() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("a"), "a1\na2\n").unwrap();
+		fs::write(dir.path().join("b"), "b1\nb2\n").unwrap();
+		assert_eq!(
+			paste(&["-s", "-d", ",", "a", "b"], "", dir.path()),
+			(0, b"a1,a2\nb1,b2\n".to_vec(), String::new())
+		);
+	}
+
+	#[test]
+	fn repeated_stdin_operands_consume_successive_lines() {
+		assert_eq!(
+			paste(&["-", "-"], "first\nsecond\n", Path::new("/")),
+			(0, b"first\tsecond\n".to_vec(), String::new())
+		);
+	}
+
+	#[test]
+	fn zero_terminated_mode_uses_nul_for_input_and_output() {
+		assert_eq!(
+			paste(&["-z", "-d", ","], "a\0b", Path::new("/")),
+			(0, b"a\0b\0".to_vec(), String::new())
+		);
+	}
+
+	#[test]
+	fn zero_delimiter_escape_joins_without_separator() {
+		assert_eq!(
+			paste(&["-s", "-d", "\\0"], "a\nb\n", Path::new("/")),
+			(0, b"ab\n".to_vec(), String::new())
+		);
+	}
+
+	#[test]
+	fn reports_trailing_backslash_in_delimiter_list() {
+		let (code, _, err) = paste(&["-d", "\\"], "", Path::new("/"));
+		assert_eq!(code, 1);
+		assert_eq!(err, "paste: delimiter list ends with an unescaped backslash: \\\n");
+	}
+
+	#[test]
+	fn resolves_relative_file_operands_against_shell_cwd() {
+		let dir = tempfile::tempdir().unwrap();
+		fs::write(dir.path().join("input"), "line").unwrap();
+		assert_eq!(
+			paste(&["input"], "", dir.path()),
+			(0, b"line\n".to_vec(), String::new())
+		);
+	}
 }

@@ -7,11 +7,10 @@ use std::{
 	io::{self, Read, Write},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use uucore::display::Quotable;
 
-use crate::host::{Host, Utility, format_usage, matches_parser, strip_errno, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, strip_errno};
 
 mod options {
 	pub static BYTES: &str = "bytes";
@@ -45,25 +44,19 @@ impl Utility for Fold {
 		// Unlike uutils, the value of a separate `-w`/`--width` word is not
 		// mistaken for `-NUM`, so `-w -3` reports the invalid width like GNU.
 		let mut value_next = false;
-		let obsolete = argv
-			.iter()
-			.skip(1)
-			.take_while(|arg| *arg != "--")
-			.position(|arg| {
-				let bytes = arg.as_encoded_bytes();
-				let is_value = std::mem::replace(
-					&mut value_next,
-					bytes == b"-w" || (bytes.len() > 2 && b"--width".starts_with(bytes)),
-				);
-				!is_value && bytes.len() > 1 && bytes[0] == b'-' && bytes[1].is_ascii_digit()
-			});
+		let obsolete = argv.iter().skip(1).take_while(|arg| *arg != "--").position(|arg| {
+			let bytes = arg.as_encoded_bytes();
+			let is_value = std::mem::replace(
+				&mut value_next,
+				bytes == b"-w" || (bytes.len() > 2 && b"--width".starts_with(bytes)),
+			);
+			!is_value && bytes.len() > 1 && bytes[0] == b'-' && bytes[1].is_ascii_digit()
+		});
 		if let Some(index) = obsolete {
 			let number = argv.remove(index + 1);
 			let mut width = OsString::from("-w");
 			// SAFETY: dropping the leading ASCII `-` keeps a valid OS string.
-			width.push(unsafe {
-				OsString::from_encoded_bytes_unchecked(number.as_encoded_bytes()[1..].to_vec())
-			});
+			width.push(unsafe { OsString::from_encoded_bytes_unchecked(number.as_encoded_bytes()[1..].to_vec()) });
 			argv.insert(1, width);
 		}
 		Ok(argv)
@@ -71,8 +64,7 @@ impl Utility for Fold {
 
 	fn run(self, host: &mut Host) -> i32 {
 		let mode = if self.matches.get_flag(options::BYTES)
-			&& last_index(&self.matches, options::BYTES)
-				> last_index(&self.matches, options::CHARACTERS)
+			&& last_index(&self.matches, options::BYTES) > last_index(&self.matches, options::CHARACTERS)
 		{
 			Mode::Bytes
 		} else if self.matches.get_flag(options::CHARACTERS) {
@@ -114,7 +106,7 @@ impl Utility for Fold {
 			let result = if name == "-" {
 				folder.fold(&mut host.stdin, &mut out, cancelled)
 			} else {
-				match host.open_read(&name) {
+				match host.fs().open(host.resolve(&name)) {
 					Ok(mut file) => folder.fold(&mut file, &mut out, cancelled),
 					Err(error) => Err(FoldError::Read(error)),
 				}
@@ -123,8 +115,7 @@ impl Utility for Fold {
 				Ok(()) => {},
 				Err(FoldError::Write(error)) => return write_failure(host, &error),
 				Err(FoldError::Read(error)) => {
-					let _ =
-						writeln!(host.stderr, "fold: {}: {}", name.maybe_quote(), strip_errno(&error));
+					let _ = writeln!(host.stderr, "fold: {}: {}", name.maybe_quote(), strip_errno(&error));
 					failed = true;
 				},
 			}
@@ -203,15 +194,12 @@ fn scan(bytes: &[u8], utf8: bool) -> Mcel {
 		return Mcel { ch: None, len: 1 };
 	}
 	let len = match lead {
-		0xc2..=0xdf => 2,
-		0xe0..=0xef => 3,
-		0xf0..=0xf4 => 4,
+		0xC2..=0xDF => 2,
+		0xE0..=0xEF => 3,
+		0xF0..=0xF4 => 4,
 		_ => return Mcel { ch: None, len: 1 },
 	};
-	match bytes
-		.get(..len)
-		.and_then(|seq| std::str::from_utf8(seq).ok())
-	{
+	match bytes.get(..len).and_then(|seq| std::str::from_utf8(seq).ok()) {
 		Some(text) => Mcel { ch: text.chars().next(), len },
 		None => Mcel { ch: None, len: 1 },
 	}
@@ -262,11 +250,7 @@ impl Folder {
 			Some('\r') => 0,
 			Some('\t') => column.wrapping_add(TAB_WIDTH - column % TAB_WIDTH),
 			ch => {
-				self.last_width = if self.mode == Mode::Characters {
-					1
-				} else {
-					char_width(ch)
-				};
+				self.last_width = if self.mode == Mode::Characters { 1 } else { char_width(ch) };
 				column.wrapping_add(self.last_width)
 			},
 		}
@@ -318,11 +302,8 @@ impl Folder {
 				if column <= self.width {
 					break;
 				}
-				if self.spaces
-					&& let Some(split) = self.last_sep_end()
-				{
-					out.write_all(&self.line[..split])
-						.map_err(FoldError::Write)?;
+				if self.spaces && let Some(split) = self.last_sep_end() {
+					out.write_all(&self.line[..split]).map_err(FoldError::Write)?;
 					out.write_all(b"\n").map_err(FoldError::Write)?;
 					self.line.drain(..split);
 					column = 0;
@@ -422,7 +403,116 @@ fn app() -> Command {
 		)
 }
 
-/// Creates the `fold` builtin registration.
-pub(crate) fn fold_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Fold, SE>()
+#[cfg(test)]
+mod tests {
+	use std::{fs, path::PathBuf};
+
+	use super::Fold;
+	use crate::host::{Host, Utility, run_util};
+
+	fn run(stdin: &[u8], args: &[&str], locale: &str) -> (i32, Vec<u8>, String) {
+		run_in(PathBuf::from("."), stdin, args, locale)
+	}
+
+	fn run_in(cwd: PathBuf, stdin: &[u8], args: &[&str], locale: &str) -> (i32, Vec<u8>, String) {
+		let (mut host, capture) = Host::for_test("fold", stdin.to_vec(), cwd);
+		host.set_test_var("LC_ALL", locale);
+		let argv: Vec<std::ffi::OsString> = std::iter::once("fold")
+			.chain(args.iter().copied())
+			.map(Into::into)
+			.collect();
+		let argv = Fold::rewrite_argv(argv).unwrap();
+		let parsed = <Fold as clap::Parser>::try_parse_from(argv).expect("arguments parse");
+		let code = parsed.run(&mut host);
+		(code, capture.stdout(), capture.err())
+	}
+
+	fn ok(stdin: &[u8], args: &[&str], locale: &str) -> Vec<u8> {
+		let (code, out, err) = run(stdin, args, locale);
+		assert_eq!((code, err.as_str()), (0, ""), "{args:?}");
+		out
+	}
+
+	#[test]
+	fn wraps_long_ascii_line_and_keeps_missing_final_newline() {
+		assert_eq!(ok(b"abcdefghijklmnopqrstuvwxyz", &["-w", "10"], "C"), b"abcdefghij\nklmnopqrst\nuvwxyz");
+		assert_eq!(ok(b"", &["-w", "3"], "C"), b"");
+		assert_eq!(ok(&[b'x'; 85], &[], "C").len(), 86);
+	}
+
+	#[test]
+	fn spaces_break_after_last_blank_or_mid_word() {
+		assert_eq!(ok(b"the quick brown fox\n", &["-s", "-w", "10"], "C"), b"the quick \nbrown fox\n");
+		assert_eq!(ok(b"abcdefghij kl\n", &["-s", "-w", "4"], "C"), b"abcd\nefgh\nij \nkl\n");
+	}
+
+	#[test]
+	fn obsolete_number_options_set_width() {
+		assert_eq!(ok(b"abcdefghij\n", &["-5"], "C"), b"abcde\nfghij\n");
+		assert_eq!(ok(b"abcdefghij\n", &["-s", "-3"], "C"), b"abc\ndef\nghi\nj\n");
+		// An explicit -w wins over the obsolete form, as in uutils.
+		assert_eq!(ok(b"abcdefghij\n", &["-12", "-w3"], "C"), b"abc\ndef\nghi\nj\n");
+		let (code, out, err) = run(b"x", &["-3s"], "C");
+		assert_eq!((code, out.as_slice(), err.as_str()), (1, &b""[..], "fold: invalid number of columns: '3s'\n"));
+	}
+
+	#[test]
+	fn invalid_widths_match_gnu_diagnostics() {
+		for (arg, msg) in [
+			("0", "'0': Result too large"),
+			("abc", "'abc'"),
+			("-3", "'-3'"),
+			("18446744073709551607", "'18446744073709551607': Result too large"),
+		] {
+			let (code, out, err) = run(b"x", &["-w", arg], "C");
+			assert_eq!((code, out.len()), (1, 0));
+			assert_eq!(err, format!("fold: invalid number of columns: {msg}\n"));
+		}
+		assert_eq!(ok(b"abcd\n", &["-w", "+03"], "C"), b"abc\nd\n");
+	}
+
+	#[test]
+	fn control_characters_move_the_column() {
+		assert_eq!(ok(b"ab\x08\x08cdefgh\n", &["-w", "3"], "C"), b"ab\x08\x08cde\nfgh\n");
+		assert_eq!(ok(b"ab\x08\x08cdefgh\n", &["-b", "-w", "3"], "C"), b"ab\x08\n\x08cd\nefg\nh\n");
+		assert_eq!(ok(b"a\tbc\n", &["-w", "9"], "C"), b"a\tb\nc\n");
+		assert_eq!(ok(b"abc\rdefg\n", &["-w", "4"], "C"), b"abc\rdefg\n");
+		assert_eq!(ok(b"a\0bc\n", &["-w", "2"], "C"), b"a\0b\nc\n");
+	}
+
+	#[test]
+	fn utf8_locale_counts_display_columns_and_never_splits_characters() {
+		let cjk = "你你你\n".as_bytes();
+		assert_eq!(ok(cjk, &["-w", "3"], "en_US.UTF-8"), "你\n你\n你\n".as_bytes());
+		assert_eq!(ok(cjk, &["-c", "-w", "2"], "en_US.UTF-8"), "你你\n你\n".as_bytes());
+		assert_eq!(ok(cjk, &["-b", "-w", "4"], "en_US.UTF-8"), "你\n你\n你\n".as_bytes());
+		// The C locale counts bytes as columns and may split characters.
+		assert_eq!(ok("你\n".as_bytes(), &["-w", "2"], "C"), b"\xe4\xbd\n\xa0\n");
+		// Combining marks are zero width; invalid bytes pass through as width 1.
+		assert_eq!(ok("ab\u{e9}\u{301}cd\n".as_bytes(), &["-w", "3"], "en_US.UTF-8"), "ab\u{e9}\u{301}\ncd\n".as_bytes());
+		assert_eq!(ok(b"\xe4\xbda\n", &["-w", "1"], "en_US.UTF-8"), b"\xe4\n\xbd\na\n");
+		// Backspace after a wide character wraps the unsigned column like GNU.
+		assert_eq!(ok("a你\x08\x08xyz\n".as_bytes(), &["-w", "10"], "en_US.UTF-8"), "a你\x08\n\x08xyz\n".as_bytes());
+		// No-break space is not a break point; ideographic space is.
+		assert_eq!(ok("a\u{a0}b c\n".as_bytes(), &["-s", "-w", "3"], "en_US.UTF-8"), "a\u{a0}b\n c\n".as_bytes());
+		assert_eq!(ok("a\u{3000}bcd\n".as_bytes(), &["-s", "-w", "3"], "en_US.UTF-8"), "a\u{3000}\nbcd\n".as_bytes());
+	}
+
+	#[test]
+	fn missing_file_is_reported_and_later_files_still_fold() {
+		let dir = tempfile::tempdir().unwrap();
+		let root = fs::canonicalize(dir.path()).unwrap();
+		fs::write(root.join("in"), "abcdef").unwrap();
+		let (code, out, err) = run_in(root, b"xyz\n", &["-w4", "missing", "in", "-"], "C");
+		assert_eq!(code, 1);
+		assert_eq!(out, b"abcd\nefxyz\n");
+		assert_eq!(err, "fold: missing: No such file or directory\n");
+	}
+
+	#[test]
+	fn help_mentions_name() {
+		let (code, capture) = run_util::<Fold>(&["--help"], "", ".");
+		assert_eq!(code, 0);
+		assert!(capture.out().contains("fold"));
+	}
 }

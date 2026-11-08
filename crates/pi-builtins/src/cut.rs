@@ -1,15 +1,19 @@
+//! `cut` builtin: print selected byte, character, or field columns.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{
 	ffi::OsString,
 	io::{self, BufRead, BufReader, Read, Write},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use bstr::io::BufReadExt;
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser};
 use uucore::{display::Quotable, line_ending::LineEnding, ranges::Range};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes};
 
+/// Parsed `cut` invocation.
 pub(crate) struct Cut {
 	matches: ArgMatches,
 }
@@ -20,106 +24,303 @@ impl Utility for Cut {
 	const NAME: &'static str = "cut";
 
 	fn rewrite_argv(argv: Vec<OsString>) -> Result<Vec<OsString>, String> {
+		// GNU cut accepts `-d=` as a delimiter spelling. Clap otherwise parses it
+		// as an empty value assigned to `-d`.
 		Ok(argv
 			.into_iter()
-			.map(|arg| {
-				if arg == "-d=" {
-					OsString::from("--delimiter==")
-				} else {
-					arg
-				}
-			})
+			.map(|arg| if arg == "-d=" { OsString::from("--delimiter==") } else { arg })
 			.collect())
 	}
 
 	fn run(self, host: &mut Host) -> i32 {
-		if let Err(error) = cut_main(&self.matches, host) {
-			host.error(error, 1);
-			return 1;
+		match cut_main(&self.matches, host) {
+			Ok(code) => code,
+			Err(error) => {
+				host.error(error, 1);
+				1
+			},
 		}
-		host.exit_code()
 	}
 }
 
 mod matcher {
-	use memchr::{memchr, memchr2};
+use memchr::{memchr, memchr2};
 
-	pub trait Matcher {
-		fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)>;
+// Find the next matching byte sequence positions
+// Return (first, last) where haystack[first..last] corresponds to the matched
+// pattern
+pub trait Matcher {
+	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)>;
+}
+
+// Matches for the exact byte sequence pattern
+pub struct ExactMatcher<'a> {
+	needle: &'a [u8],
+}
+
+impl<'a> ExactMatcher<'a> {
+	pub fn new(needle: &'a [u8]) -> Self {
+		assert!(!needle.is_empty());
+		Self { needle }
 	}
+}
 
-	pub struct ExactMatcher<'a> {
-		needle: &'a [u8],
-	}
+impl Matcher for ExactMatcher<'_> {
+	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
+		let mut pos = 0usize;
+		loop {
+			let match_idx = memchr(self.needle[0], &haystack[pos..])?;
+			let match_idx = match_idx + pos; // account for starting from pos
 
-	impl<'a> ExactMatcher<'a> {
-		pub fn new(needle: &'a [u8]) -> Self {
-			assert!(!needle.is_empty());
-			Self { needle }
-		}
-	}
-
-	impl Matcher for ExactMatcher<'_> {
-		fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
-			let mut pos = 0usize;
-			loop {
-				let match_idx = memchr(self.needle[0], &haystack[pos..])?;
-				let match_idx = match_idx + pos;
-
-				if self.needle.len() == 1 || haystack[match_idx + 1..].starts_with(&self.needle[1..]) {
-					return Some((match_idx, match_idx + self.needle.len()));
-				}
-
-				pos = match_idx + 1;
-			}
-		}
-	}
-
-	pub struct WhitespaceMatcher {}
-
-	impl Matcher for WhitespaceMatcher {
-		fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
-			let match_idx = memchr2(b' ', b'\t', haystack)?;
-			let mut skip = match_idx + 1;
-
-			while skip < haystack.len() {
-				match haystack[skip] {
-					b' ' | b'\t' => skip += 1,
-					_ => break,
-				}
+			if self.needle.len() == 1 || haystack[match_idx + 1..].starts_with(&self.needle[1..]) {
+				return Some((match_idx, match_idx + self.needle.len()));
 			}
 
-			Some((match_idx, skip))
+			pos = match_idx + 1;
 		}
 	}
 }
 
+// Matches for any number of SPACE or TAB
+pub struct WhitespaceMatcher {}
+
+impl Matcher for WhitespaceMatcher {
+	fn next_match(&self, haystack: &[u8]) -> Option<(usize, usize)> {
+		let match_idx = memchr2(b' ', b'\t', haystack)?;
+		let mut skip = match_idx + 1;
+
+		while skip < haystack.len() {
+			match haystack[skip] {
+				b' ' | b'\t' => skip += 1,
+				_ => break,
+			}
+		}
+
+		Some((match_idx, skip))
+	}
+}
+
+#[cfg(test)]
+mod matcher_tests {
+
+	use super::*;
+
+	#[test]
+	fn test_exact_matcher_single_byte() {
+		let matcher = ExactMatcher::new(":".as_bytes());
+				assert_eq!(matcher.next_match("".as_bytes()), None);
+		assert_eq!(matcher.next_match(":".as_bytes()), Some((0, 1)));
+		assert_eq!(matcher.next_match(":abcxyz".as_bytes()), Some((0, 1)));
+		assert_eq!(matcher.next_match("abc:xyz".as_bytes()), Some((3, 4)));
+		assert_eq!(matcher.next_match("abcxyz:".as_bytes()), Some((6, 7)));
+		assert_eq!(matcher.next_match("abcxyz".as_bytes()), None);
+			}
+
+	#[test]
+	fn test_exact_matcher_multi_bytes() {
+		let matcher = ExactMatcher::new("<>".as_bytes());
+				assert_eq!(matcher.next_match("".as_bytes()), None);
+		assert_eq!(matcher.next_match("<>".as_bytes()), Some((0, 2)));
+		assert_eq!(matcher.next_match("<>abcxyz".as_bytes()), Some((0, 2)));
+		assert_eq!(matcher.next_match("abc<>xyz".as_bytes()), Some((3, 5)));
+		assert_eq!(matcher.next_match("abcxyz<>".as_bytes()), Some((6, 8)));
+		assert_eq!(matcher.next_match("abcxyz".as_bytes()), None);
+			}
+
+	#[test]
+	fn test_whitespace_matcher_single_space() {
+		let matcher = WhitespaceMatcher {};
+				assert_eq!(matcher.next_match("".as_bytes()), None);
+		assert_eq!(matcher.next_match(" ".as_bytes()), Some((0, 1)));
+		assert_eq!(matcher.next_match("\tabcxyz".as_bytes()), Some((0, 1)));
+		assert_eq!(matcher.next_match("abc\txyz".as_bytes()), Some((3, 4)));
+		assert_eq!(matcher.next_match("abcxyz ".as_bytes()), Some((6, 7)));
+		assert_eq!(matcher.next_match("abcxyz".as_bytes()), None);
+			}
+
+	#[test]
+	fn test_whitespace_matcher_multi_spaces() {
+		let matcher = WhitespaceMatcher {};
+				assert_eq!(matcher.next_match("".as_bytes()), None);
+		assert_eq!(matcher.next_match(" \t ".as_bytes()), Some((0, 3)));
+		assert_eq!(matcher.next_match("\t\tabcxyz".as_bytes()), Some((0, 2)));
+		assert_eq!(matcher.next_match("abc \txyz".as_bytes()), Some((3, 5)));
+		assert_eq!(matcher.next_match("abcxyz  ".as_bytes()), Some((6, 8)));
+		assert_eq!(matcher.next_match("abcxyz".as_bytes()), None);
+			}
+}
+}
+
 mod searcher {
-	use super::matcher::Matcher;
+use super::matcher::Matcher;
 
-	pub struct Searcher<'a, 'b, M: Matcher> {
-		matcher:  &'a M,
-		haystack: &'b [u8],
-		position: usize,
+// Generic searcher that relies on a specific matcher
+pub struct Searcher<'a, 'b, M: Matcher> {
+	matcher:  &'a M,
+	haystack: &'b [u8],
+	position: usize,
+}
+
+impl<'a, 'b, M: Matcher> Searcher<'a, 'b, M> {
+	pub fn new(matcher: &'a M, haystack: &'b [u8]) -> Self {
+		Self { matcher, haystack, position: 0 }
+	}
+}
+
+// Iterate over field delimiters
+// Returns (first, last) positions of each sequence, where
+// `haystack[first..last]` corresponds to the delimiter.
+impl<M: Matcher> Iterator for Searcher<'_, '_, M> {
+	type Item = (usize, usize);
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let (first, last) = self.matcher.next_match(&self.haystack[self.position..])?;
+		let result = (first + self.position, last + self.position);
+		self.position += last;
+
+		Some(result)
+	}
+}
+
+#[cfg(test)]
+mod exact_searcher_tests {
+
+	use super::{super::matcher::ExactMatcher, *};
+
+	#[test]
+	fn test_normal() {
+		let matcher = ExactMatcher::new("a".as_bytes());
+		let iter = Searcher::new(&matcher, "a.a.a".as_bytes());
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert_eq!(vec![(0, 1), (2, 3), (4, 5)], items);
 	}
 
-	impl<'a, 'b, M: Matcher> Searcher<'a, 'b, M> {
-		pub fn new(matcher: &'a M, haystack: &'b [u8]) -> Self {
-			Self { matcher, haystack, position: 0 }
-		}
+	#[test]
+	fn test_empty() {
+		let matcher = ExactMatcher::new("a".as_bytes());
+		let iter = Searcher::new(&matcher, "".as_bytes());
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert!(items.is_empty());
 	}
 
-	impl<M: Matcher> Iterator for Searcher<'_, '_, M> {
-		type Item = (usize, usize);
-
-		fn next(&mut self) -> Option<Self::Item> {
-			let (first, last) = self.matcher.next_match(&self.haystack[self.position..])?;
-			let result = (first + self.position, last + self.position);
-			self.position += last;
-
-			Some(result)
-		}
+	fn test_multibyte(line: &[u8], expected: &[(usize, usize)]) {
+		let matcher = ExactMatcher::new("ab".as_bytes());
+		let iter = Searcher::new(&matcher, line);
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert_eq!(expected, items);
 	}
+
+	#[test]
+	fn test_multibyte_normal() {
+		test_multibyte("...ab...ab...".as_bytes(), &[(3, 5), (8, 10)]);
+	}
+
+	#[test]
+	fn test_multibyte_needle_head_at_end() {
+		test_multibyte("a".as_bytes(), &[]);
+	}
+
+	#[test]
+	fn test_multibyte_starting_needle() {
+		test_multibyte("ab...ab...".as_bytes(), &[(0, 2), (5, 7)]);
+	}
+
+	#[test]
+	fn test_multibyte_trailing_needle() {
+		test_multibyte("...ab...ab".as_bytes(), &[(3, 5), (8, 10)]);
+	}
+
+	#[test]
+	fn test_multibyte_first_byte_false_match() {
+		test_multibyte("aA..aCaC..ab..aD".as_bytes(), &[(10, 12)]);
+	}
+
+	#[test]
+	fn test_searcher_with_exact_matcher() {
+		let matcher = ExactMatcher::new("<>".as_bytes());
+		let haystack = "<><>a<>b<><>cd<><>".as_bytes();
+		let mut searcher = Searcher::new(&matcher, haystack);
+		assert_eq!(searcher.next(), Some((0, 2)));
+		assert_eq!(searcher.next(), Some((2, 4)));
+		assert_eq!(searcher.next(), Some((5, 7)));
+		assert_eq!(searcher.next(), Some((8, 10)));
+		assert_eq!(searcher.next(), Some((10, 12)));
+		assert_eq!(searcher.next(), Some((14, 16)));
+		assert_eq!(searcher.next(), Some((16, 18)));
+		assert_eq!(searcher.next(), None);
+		assert_eq!(searcher.next(), None);
+	}
+}
+
+#[cfg(test)]
+mod whitespace_searcher_tests {
+
+	use super::{super::matcher::WhitespaceMatcher, *};
+
+	#[test]
+	fn test_space() {
+		let matcher = WhitespaceMatcher {};
+		let iter = Searcher::new(&matcher, " . . ".as_bytes());
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert_eq!(vec![(0, 1), (2, 3), (4, 5)], items);
+	}
+
+	#[test]
+	fn test_tab() {
+		let matcher = WhitespaceMatcher {};
+		let iter = Searcher::new(&matcher, "\t.\t.\t".as_bytes());
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert_eq!(vec![(0, 1), (2, 3), (4, 5)], items);
+	}
+
+	#[test]
+	fn test_empty() {
+		let matcher = WhitespaceMatcher {};
+		let iter = Searcher::new(&matcher, "".as_bytes());
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert!(items.is_empty());
+	}
+
+	fn test_multispace(line: &[u8], expected: &[(usize, usize)]) {
+		let matcher = WhitespaceMatcher {};
+		let iter = Searcher::new(&matcher, line);
+		let items: Vec<(usize, usize)> = iter.collect();
+		assert_eq!(expected, items);
+	}
+
+	#[test]
+	fn test_multispace_normal() {
+		test_multispace("...  ... \t...\t ... \t ...".as_bytes(), &[
+			(3, 5),
+			(8, 10),
+			(13, 15),
+			(18, 21),
+		]);
+	}
+
+	#[test]
+	fn test_multispace_begin() {
+		test_multispace(" \t\t...".as_bytes(), &[(0, 3)]);
+	}
+
+	#[test]
+	fn test_multispace_end() {
+		test_multispace("...\t  ".as_bytes(), &[(3, 6)]);
+	}
+
+	#[test]
+	fn test_searcher_with_whitespace_matcher() {
+		let matcher = WhitespaceMatcher {};
+		let haystack = "\t a b \t cd\t\t".as_bytes();
+		let mut searcher = Searcher::new(&matcher, haystack);
+		assert_eq!(searcher.next(), Some((0, 2)));
+		assert_eq!(searcher.next(), Some((3, 4)));
+		assert_eq!(searcher.next(), Some((5, 8)));
+		assert_eq!(searcher.next(), Some((10, 12)));
+		assert_eq!(searcher.next(), None);
+		assert_eq!(searcher.next(), None);
+	}
+}
 }
 
 use matcher::{ExactMatcher, Matcher, WhitespaceMatcher};
@@ -155,9 +356,9 @@ impl Default for Delimiter<'_> {
 
 fn list_to_ranges(list: &str, complement: bool) -> Result<Vec<Range>, String> {
 	if complement {
-		Range::from_list(list).map(|r| uucore::ranges::complement(&r)).map_err(|error| error.to_string())
+		Range::from_list(list).map(|r| uucore::ranges::complement(&r))
 	} else {
-		Range::from_list(list).map_err(|error| error.to_string())
+		Range::from_list(list)
 	}
 }
 
@@ -182,7 +383,7 @@ fn cut_bytes<R: Read, W: Write>(
 			} else if opts.out_delimiter.is_some() {
 				print_delim = true;
 			}
-
+			// change `low` from 1-indexed value to 0-index value
 			let low = low - 1;
 			let high = high.min(line.len());
 			out.write_all(&line[low..high])?;
@@ -194,6 +395,7 @@ fn cut_bytes<R: Read, W: Write>(
 	result.map(|_| ())
 }
 
+/// Output delimiter is explicitly specified
 fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 	reader: R,
 	out: &mut W,
@@ -213,6 +415,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		if delim_search.peek().is_none() {
 			if !only_delimited {
+				// Always write the entire line, even if it doesn't end with `newline_char`
 				out.write_all(line)?;
 				if line.is_empty() || line[line.len() - 1] != newline_char {
 					out.write_all(&[newline_char])?;
@@ -224,13 +427,17 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		for &Range { low, high } in ranges {
 			if low - fields_pos > 0 {
+				// current field is not in the range, so jump to the field corresponding to the
+				// beginning of the range if any
 				low_idx = match delim_search.nth(low - fields_pos - 1) {
 					Some((_, last)) => last,
 					None => break,
 				};
 			}
 
+			// at this point, current field is the first in the range
 			for _ in 0..=high - low {
+				// skip printing delimiter if this is the first matching field for this line
 				if print_delim {
 					out.write_all(out_delim)?;
 				} else {
@@ -238,6 +445,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 				}
 
 				if let Some((first, last)) = delim_search.next() {
+					// print the current field up to the next field delim
 					let segment = &line[low_idx..first];
 
 					out.write_all(segment)?;
@@ -245,6 +453,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 					low_idx = last;
 					fields_pos = high + 1;
 				} else {
+					// this is the last field in the line, so print the rest
 					let segment = &line[low_idx..];
 
 					out.write_all(segment)?;
@@ -264,6 +473,7 @@ fn cut_fields_explicit_out_delim<R: Read, W: Write, M: Matcher>(
 	result.map(|_| ())
 }
 
+/// Output delimiter is the same as input delimiter
 fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 	reader: R,
 	out: &mut W,
@@ -282,6 +492,7 @@ fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 
 		if delim_search.peek().is_none() {
 			if !only_delimited {
+				// Always write the entire line, even if it doesn't end with `newline_char`
 				out.write_all(line)?;
 				if line.is_empty() || line[line.len() - 1] != newline_char {
 					out.write_all(&[newline_char])?;
@@ -326,6 +537,8 @@ fn cut_fields_implicit_out_delim<R: Read, W: Write, M: Matcher>(
 	result.map(|_| ())
 }
 
+/// Streams and filters fields where the record terminator and
+/// field delimiter are the same character (specified by `newline_char`)
 fn cut_fields_newline_char_delim<R: Read, W: Write>(
 	reader: R,
 	out: &mut W,
@@ -337,6 +550,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 	let mut reader = BufReader::new(reader);
 	let mut line = Vec::new();
 
+	// We start at 1 because 'cut' field indexing is 1-based
 	let mut current_field_idx = 1;
 	let mut first_field_printed = false;
 	let mut has_data = false;
@@ -353,6 +567,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		let mut has_processed_data = false;
 
 		if needs_data {
+			// Standard read: copies bytes into `line`
 			loop {
 				let buf = reader.fill_buf()?;
 				if buf.is_empty() {
@@ -373,10 +588,12 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 				reader.consume(len);
 			}
 		} else {
+			// Zero-allocation skip: scans the buffer and advances the cursor without
+			// copying
 			loop {
 				let buf = reader.fill_buf()?;
 				if buf.is_empty() {
-					break;
+					break; // EOF
 				}
 
 				has_processed_data = true;
@@ -397,6 +614,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		}
 		has_data = true;
 
+		// To comply with -s when the stream consists of only a single field.
 		if current_field_idx == 1 {
 			let is_eof_next = reader.fill_buf()?.is_empty();
 
@@ -404,6 +622,7 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 				if only_delimited {
 					suppressed = true;
 				} else {
+					// GNU cut prints the whole line if no delimiter is found.
 					out.write_all(&line)?;
 				}
 				break;
@@ -413,11 +632,13 @@ fn cut_fields_newline_char_delim<R: Read, W: Write>(
 		if range_idx < ranges.len() && current_field_idx > ranges[range_idx].high {
 			range_idx += 1;
 
+			// EARLY EXIT: If we've exhausted all ranges, stop reading the stream entirely.
 			if range_idx == ranges.len() {
 				break;
 			}
 		}
 
+		// Check if the current field falls inside the current active range
 		let is_selected = range_idx < ranges.len() && current_field_idx >= ranges[range_idx].low;
 
 		if is_selected {
@@ -453,7 +674,7 @@ fn cut_fields<R: Read, W: Write>(
 	opts: &Options,
 ) -> io::Result<()> {
 	let newline_char = opts.line_ending.into();
-	let field_opts = opts.field_opts.as_ref().unwrap();
+	let field_opts = opts.field_opts.as_ref().unwrap(); // it is safe to unwrap() here - field_opts will always be Some() for cut_fields() call
 	match field_opts.delimiter {
 		Delimiter::Slice(delim) if delim == [newline_char] => {
 			let out_delim = opts.out_delimiter.unwrap_or(delim);
@@ -503,18 +724,16 @@ fn cut_fields<R: Read, W: Write>(
 	}
 }
 
-fn cut_files<'a, I>(host: &mut Host, filenames: I, mode: &Mode)
+/// Cuts every operand in order. A broken stdout pipe aborts the remaining
+/// operands; [`crate::host::Sigpipe`] supplies the process-level semantics.
+fn cut_files<'a, I>(host: &mut Host, filenames: I, mode: &Mode) -> i32
 where
 	I: IntoIterator<Item = &'a OsString>,
 {
 	let inputs = filenames
 		.into_iter()
 		.map(|name| {
-			let path = if name == "-" {
-				None
-			} else {
-				Some(host.resolve(name))
-			};
+			let path = if name == "-" { None } else { Some(host.resolve(name)) };
 			(name, path)
 		})
 		.collect::<Vec<_>>();
@@ -523,12 +742,14 @@ where
 	let mut out = host.stdout_writer();
 
 	for (filename, path) in inputs {
+		if host.is_cancelled() {
+			break;
+		}
 		let result = if let Some(path) = path {
 			host
-				.open_read(path)
-				.map_err(|error| {
-					io::Error::new(error.kind(), format!("{}: {error}", filename.maybe_quote()))
-				})
+				.fs()
+				.open(path)
+				.map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", filename.maybe_quote())))
 				.and_then(|file| match mode {
 					Mode::Bytes(ranges, opts) | Mode::Characters(ranges, opts) => {
 						cut_bytes(file, &mut out, ranges, opts)
@@ -546,22 +767,36 @@ where
 				Mode::Fields(ranges, opts) => cut_fields(&mut host.stdin, &mut out, ranges, opts),
 			}
 		};
-		if let Err(error) = result {
-			let _ = writeln!(host.stderr, "cut: {error}");
-			failed = true;
+		match result {
+			Ok(()) => {},
+			Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+				return crate::host::SIGPIPE_EXIT_CODE;
+			},
+			Err(error) => {
+				let _ = writeln!(host.stderr, "cut: {error}");
+				failed = true;
+			},
 		}
 	}
 
-	if let Err(error) = out.flush() {
-		let _ = writeln!(host.stderr, "cut: write error: {error}");
-		failed = true;
+	match out.flush() {
+		Ok(()) => {},
+		Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+			return crate::host::SIGPIPE_EXIT_CODE;
+		},
+		Err(error) => {
+			let _ = writeln!(host.stderr, "cut: write error: {error}");
+			failed = true;
+		},
 	}
 	drop(out);
 	if failed {
 		host.fail(1);
 	}
+	host.exit_code()
 }
 
+/// Gets input and output delimiters, accepting non-UTF-8 bytes like GNU `cut`.
 fn get_delimiters(matches: &ArgMatches) -> Result<(Delimiter<'_>, Option<&[u8]>), String> {
 	let whitespace_delimited = matches.get_flag(options::WHITESPACE_DELIMITED);
 	let delim_opt = matches.get_one::<OsString>(options::DELIMITER);
@@ -594,7 +829,8 @@ fn get_delimiters(matches: &ArgMatches) -> Result<(Delimiter<'_>, Option<&[u8]>)
 			if value.is_empty() {
 				Ok(&b"\0"[..])
 			} else {
-				os_bytes(value).ok_or_else(|| format!("invalid argument {}", value.maybe_quote()))
+				os_bytes(value)
+					.ok_or_else(|| format!("invalid argument {}", value.maybe_quote()))
 			}
 		})
 		.transpose()?;
@@ -612,16 +848,18 @@ mod options {
 	pub const WHITESPACE_DELIMITED: &str = "whitespace-delimited";
 	pub const COMPLEMENT: &str = "complement";
 	pub const FILE: &str = "file";
-
+	// ignored option
 	pub const NOTHING: &str = "nothing";
 }
 
-fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<(), String> {
+fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<i32, String> {
 	let complement = matches.get_flag(options::COMPLEMENT);
 	let only_delimited = matches.get_flag(options::ONLY_DELIMITED);
 	let (delimiter, out_delimiter) = get_delimiters(matches)?;
 	let line_ending = LineEnding::from_zero_flag(matches.get_flag(options::ZERO_TERMINATED));
 
+	// Only one, and only one of cutting mode arguments, i.e. `-b`, `-c`, `-f`,
+	// is expected. Count occurrences because repeated modes are an error.
 	let mode_args_count = [
 		matches.indices_of(options::BYTES),
 		matches.indices_of(options::CHARACTERS),
@@ -654,29 +892,28 @@ fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<(), String> {
 			"invalid usage: expects no more than one of --fields (-f), --chars (-c) or --bytes (-b)"
 				.to_owned(),
 		),
-		_ => {
-			Err("invalid usage: expects one of --fields (-f), --chars (-c) or --bytes (-b)".to_owned())
-		},
+		_ => Err(
+			"invalid usage: expects one of --fields (-f), --chars (-c) or --bytes (-b)".to_owned(),
+		),
 	};
 
 	let mode = match mode_parse? {
 		Mode::Bytes(..) | Mode::Characters(..) if matches.contains_id(options::DELIMITER) => {
 			return Err(
-				"invalid input: The '--delimiter' ('-d') option can only be used when printing a \
-				 sequence of fields"
+				"invalid input: The '--delimiter' ('-d') option can only be used when printing a sequence of fields"
 					.into(),
 			);
 		},
-		Mode::Bytes(..) | Mode::Characters(..) if matches.get_flag(options::WHITESPACE_DELIMITED) => {
+		Mode::Bytes(..) | Mode::Characters(..)
+			if matches.get_flag(options::WHITESPACE_DELIMITED) =>
+		{
 			return Err(
-				"invalid input: The '-w' option can only be used when printing a sequence of fields"
-					.into(),
+				"invalid input: The '-w' option can only be used when printing a sequence of fields".into(),
 			);
 		},
 		Mode::Bytes(..) | Mode::Characters(..) if matches.get_flag(options::ONLY_DELIMITED) => {
 			return Err(
-				"invalid input: The '--only-delimited' ('-s') option can only be used when printing a \
-				 sequence of fields"
+				"invalid input: The '--only-delimited' ('-s') option can only be used when printing a sequence of fields"
 					.into(),
 			);
 		},
@@ -685,8 +922,7 @@ fn cut_main(matches: &ArgMatches, host: &mut Host) -> Result<(), String> {
 	let files = matches
 		.get_many::<OsString>(options::FILE)
 		.expect("clap provides '-' by default");
-	cut_files(host, files, &mode);
-	Ok(())
+	Ok(cut_files(host, files, &mode))
 }
 
 fn app() -> Command {
@@ -699,6 +935,13 @@ fn app() -> Command {
 			 as a file operand to read standard input.",
 		)
 		.infer_long_args(true)
+		// While `args_override_self(true)` for some arguments, such as `-d`
+		// and `--output-delimiter`, is consistent to the behavior of GNU cut,
+		// arguments related to cutting mode, i.e. `-b`, `-c`, `-f`, should
+		// cause an error when there is more than one of them, as described in
+		// the manual of GNU cut: "Use one, and only one of -b, -c or -f".
+		// `ArgAction::Append` is used on `-b`, `-c`, `-f` arguments, so that
+		// the occurrences of those could be counted and be handled accordingly.
 		.args_override_self(true)
 		.arg(
 			Arg::new(options::BYTES)
@@ -790,6 +1033,36 @@ fn app() -> Command {
 		)
 }
 
-pub(crate) fn cut_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Cut, SE>()
+#[cfg(test)]
+mod integration_tests {
+	use super::Cut;
+	use crate::host::run_util;
+
+	#[test]
+	fn reads_default_operand_from_stdin() {
+		let (code, capture) = run_util::<Cut>(&["-f", "2", "-d", ":"], "left:right\n", "/");
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "right\n");
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn resolves_file_operands_against_shell_cwd() {
+		let dir = tempfile::tempdir().unwrap();
+		std::fs::write(dir.path().join("input"), b"abcdef\n").unwrap();
+		let (code, capture) = run_util::<Cut>(&["-b", "2-4", "input"], "", dir.path());
+		assert_eq!(code, 0);
+		assert_eq!(capture.out(), "bcd\n");
+		assert_eq!(capture.err(), "");
+	}
+
+	#[test]
+	fn missing_mode_is_an_error() {
+		let (code, capture) = run_util::<Cut>(&[], "", "/");
+		assert_eq!(code, 1);
+		assert_eq!(
+			capture.err(),
+			"cut: invalid usage: expects one of --fields (-f), --chars (-c) or --bytes (-b)\n"
+		);
+	}
 }

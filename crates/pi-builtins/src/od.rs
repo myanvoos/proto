@@ -9,12 +9,11 @@
 
 use std::{
 	ffi::OsString,
-	fs::File,
-	io::{self, Read, Seek, SeekFrom, Write},
+	io::{self, Read, Seek, Write},
 };
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser, parser::ValueSource};
+use pi_vfs::File;
 use uucore::{
 	display::Quotable,
 	parser::{
@@ -23,7 +22,7 @@ use uucore::{
 	},
 };
 
-use crate::host::{Host, Utility, format_usage, matches_parser, strip_errno, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, strip_errno};
 
 mod options {
 	pub const HELP: &str = "help";
@@ -77,10 +76,9 @@ const MODERN_OPTIONS: [&str; 7] = [
 
 /// Size suffixes GNU `od` accepts for BYTES (`xstrtol` with `bEGKkMmPQRTYZ0`).
 const BYTE_SUFFIXES: &[&str] = &[
-	"b", "K", "KB", "KD", "KiB", "k", "kB", "kD", "kiB", "M", "MB", "MD", "MiB", "m", "mB", "mD",
-	"miB", "G", "GB", "GD", "GiB", "T", "TB", "TD", "TiB", "P", "PB", "PD", "PiB", "E", "EB", "ED",
-	"EiB", "Z", "ZB", "ZD", "ZiB", "Y", "YB", "YD", "YiB", "R", "RB", "RD", "RiB", "Q", "QB", "QD",
-	"QiB",
+	"b", "K", "KB", "KD", "KiB", "k", "kB", "kD", "kiB", "M", "MB", "MD", "MiB", "m", "mB", "mD", "miB", "G", "GB",
+	"GD", "GiB", "T", "TB", "TD", "TiB", "P", "PB", "PD", "PiB", "E", "EB", "ED", "EiB", "Z", "ZB", "ZD", "ZiB", "Y",
+	"YB", "YD", "YiB", "R", "RB", "RD", "RiB", "Q", "QB", "QD", "QiB",
 ];
 
 const AFTER_HELP: &str = "\
@@ -124,35 +122,27 @@ fn uu_app() -> Command {
 	let mut app = Command::new("od")
 		.version("0.8.0")
 		.about(
-			"Write an unambiguous representation, octal bytes by default, of FILE to standard \
-			 output.  With more than one FILE argument, concatenate them in the listed order to form \
-			 the input.\n\nWith no FILE, or when FILE is -, read standard input.",
+			"Write an unambiguous representation, octal bytes by default, of FILE to standard output.  With more \
+			 than one FILE argument, concatenate them in the listed order to form the input.\n\nWith no FILE, or \
+			 when FILE is -, read standard input.",
 		)
 		.override_usage(format_usage(
-			"od [OPTION]... [FILE]...\nod [-abcdfilosx]... [FILE] [[+]OFFSET[.][b]]\nod \
-			 --traditional [OPTION]... [FILE] [[+]OFFSET[.][b] [+][LABEL][.][b]]",
+			"od [OPTION]... [FILE]...\nod [-abcdfilosx]... [FILE] [[+]OFFSET[.][b]]\nod --traditional [OPTION]... \
+			 [FILE] [[+]OFFSET[.][b] [+][LABEL][.][b]]",
 		))
 		.after_help(AFTER_HELP)
 		.infer_long_args(true)
 		.args_override_self(true)
 		// `-h` is a legacy format flag.
 		.disable_help_flag(true)
-		.arg(
-			Arg::new(options::HELP)
-				.long(options::HELP)
-				.help("display this help and exit")
-				.action(ArgAction::Help),
-		)
+		.arg(Arg::new(options::HELP).long(options::HELP).help("display this help and exit").action(ArgAction::Help))
 		.arg(
 			Arg::new(options::ADDRESS_RADIX)
 				.short('A')
 				.long(options::ADDRESS_RADIX)
 				.allow_hyphen_values(true)
 				.value_name("RADIX")
-				.help(
-					"output format for file offsets; RADIX is one of [doxn], for Decimal, Octal, Hex \
-					 or None",
-				),
+				.help("output format for file offsets; RADIX is one of [doxn], for Decimal, Octal, Hex or None"),
 		)
 		.arg(
 			Arg::new(options::ENDIAN)
@@ -184,10 +174,7 @@ fn uu_app() -> Command {
 				.value_name("BYTES")
 				.num_args(0..=1)
 				.default_missing_value("3")
-				.help(
-					"show only NUL terminated strings of at least BYTES (default 3) printable \
-					 characters",
-				),
+				.help("show only NUL terminated strings of at least BYTES (default 3) printable characters"),
 		)
 		.arg(
 			Arg::new(options::FORMAT)
@@ -231,11 +218,7 @@ fn uu_app() -> Command {
 	// in command-line order alongside `-t`.
 	for (id, spec, help) in LEGACY_FORMATS {
 		let short = id.chars().next().unwrap_or_default();
-		let arg = Arg::new(id)
-			.short(short)
-			.action(ArgAction::Append)
-			.num_args(0)
-			.default_missing_value(spec);
+		let arg = Arg::new(id).short(short).action(ArgAction::Append).num_args(0).default_missing_value(spec);
 		app = app.arg(match help {
 			Some(help) => arg.help(help),
 			None => arg.hide(true),
@@ -270,11 +253,6 @@ impl Utility for Od {
 	}
 }
 
-/// Creates the `od` builtin registration.
-pub(crate) fn od_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Od, SE>()
-}
-
 // ── Numbers ────────────────────────────────────────────────────────────────
 
 /// Parses a BYTES argument of `option` (`-j`, `-N`, `-S`): decimal, `0`
@@ -290,17 +268,11 @@ fn parse_bytes(value: &str, option: &str) -> Result<i64, String> {
 	};
 	let parsed = Parser::default().with_allow_list(BYTE_SUFFIXES).parse(text);
 	match parsed {
-		Ok(n) => {
-			i64::try_from(n).map_err(|_| format!("{option} argument {} too large", value.quote()))
-		},
-		Err(ParseSizeError::SizeTooBig(_)) => {
-			Err(format!("{option} argument {} too large", value.quote()))
-		},
+		Ok(n) => i64::try_from(n).map_err(|_| format!("{option} argument {} too large", value.quote())),
+		Err(ParseSizeError::SizeTooBig(_)) => Err(format!("{option} argument {} too large", value.quote())),
 		// A leading digit always parses as a number in GNU, so what follows
 		// it (`08`, `0x`) is a bad suffix.
-		Err(ParseSizeError::InvalidSuffix(_)) => {
-			Err(format!("invalid suffix in {option} argument {}", value.quote()))
-		},
+		Err(ParseSizeError::InvalidSuffix(_)) => Err(format!("invalid suffix in {option} argument {}", value.quote())),
 		Err(_) if value.starts_with(|c: char| c.is_ascii_digit()) => {
 			Err(format!("invalid suffix in {option} argument {}", value.quote()))
 		},
@@ -334,9 +306,7 @@ fn parse_offset_operand(arg: &str) -> Result<Option<i64>, ()> {
 	if !s.starts_with(|c: char| c.is_ascii_digit()) {
 		return Ok(None);
 	}
-	let decimal = s
-		.find('.')
-		.filter(|&dot| matches!(&s[dot + 1..], "" | "b" | "B"));
+	let decimal = s.find('.').filter(|&dot| matches!(&s[dot + 1..], "" | "b" | "B"));
 	let text = match decimal {
 		Some(dot) => format!("{}{}", &s[..dot], &s[dot + 1..]),
 		None => s.to_owned(),
@@ -345,9 +315,7 @@ fn parse_offset_operand(arg: &str) -> Result<Option<i64>, ()> {
 		Some(hex) if decimal.is_none() => (hex, 16),
 		_ => (text.as_str(), if decimal.is_some() { 10 } else { 8 }),
 	};
-	let len = digits
-		.find(|c: char| !c.is_digit(radix))
-		.unwrap_or(digits.len());
+	let len = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
 	let multiplier: u64 = match &digits[len..] {
 		"" => 1,
 		"b" => 512,
@@ -399,8 +367,7 @@ struct Spec {
 fn decode_format(arg: &str, specs: &mut Vec<Spec>) -> Result<(), String> {
 	let quoted = arg.quote();
 	let mut s = arg.as_bytes();
-	while let Some(&c) = s.first() {
-		s = &s[1..];
+	while let Some(&c) = s.split_off_first() {
 		let (kind, size, width) = match c {
 			b'd' | b'o' | b'u' | b'x' => {
 				let size = match s.first() {
@@ -420,8 +387,7 @@ fn decode_format(arg: &str, specs: &mut Vec<Spec>) -> Result<(), String> {
 						Some((n, len)) => {
 							if !matches!(n, 1 | 2 | 4 | 8) {
 								return Err(format!(
-									"invalid type string {};\nthis system doesn't provide a {n}-byte \
-									 integral type",
+									"invalid type string {};\nthis system doesn't provide a {n}-byte integral type",
 									quoted
 								));
 							}
@@ -462,8 +428,7 @@ fn decode_format(arg: &str, specs: &mut Vec<Spec>) -> Result<(), String> {
 								8 => Kind::Double,
 								_ => {
 									return Err(format!(
-										"invalid type string {};\nthis system doesn't provide a {n}-byte \
-										 floating point type",
+										"invalid type string {};\nthis system doesn't provide a {n}-byte floating point type",
 										quoted
 									));
 								},
@@ -521,9 +486,8 @@ const fn is_print(c: u8) -> bool {
 }
 
 const CHARNAME: [&str; 33] = [
-	"nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel", "bs", "ht", "nl", "vt", "ff", "cr",
-	"so", "si", "dle", "dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb", "can", "em", "sub", "esc",
-	"fs", "gs", "rs", "us", "sp",
+	"nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel", "bs", "ht", "nl", "vt", "ff", "cr", "so", "si", "dle",
+	"dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb", "can", "em", "sub", "esc", "fs", "gs", "rs", "us", "sp",
 ];
 
 /// C `%.{prec}g` without `#`.
@@ -535,21 +499,13 @@ const CHARNAME: [&str; 33] = [
 fn format_g(x: f64, prec: usize) -> String {
 	if x.is_nan() {
 		// glibc spells a negative NaN `-nan`; other C libraries drop the sign.
-		return if x.is_sign_negative() && cfg!(target_os = "linux") {
-			"-nan".into()
-		} else {
-			"nan".into()
-		};
+		return if x.is_sign_negative() && cfg!(target_os = "linux") { "-nan".into() } else { "nan".into() };
 	}
 	if x.is_infinite() {
 		return if x < 0.0 { "-inf".into() } else { "inf".into() };
 	}
 	if x == 0.0 {
-		return if x.is_sign_negative() {
-			"-0".into()
-		} else {
-			"0".into()
-		};
+		return if x.is_sign_negative() { "-0".into() } else { "0".into() };
 	}
 	let prec = prec.max(1);
 	let sci = format!("{:.*e}", prec - 1, x);
@@ -573,11 +529,7 @@ fn format_g(x: f64, prec: usize) -> String {
 /// gnulib `ftoastr`/`dtoastr`: the shortest `%g` that reads back exactly.
 /// uutils pads fixed precisions instead, so its float columns differ from GNU.
 fn float_to_str(x: f64, single: bool) -> String {
-	let (min, dig, bound) = if single {
-		(f64::from(f32::MIN_POSITIVE), 6, 9)
-	} else {
-		(f64::MIN_POSITIVE, 15, 17)
-	};
+	let (min, dig, bound) = if single { (f64::from(f32::MIN_POSITIVE), 6, 9) } else { (f64::MIN_POSITIVE, 15, 17) };
 	let mut prec = if x.abs() < min { 1 } else { dig };
 	loop {
 		let text = format_g(x, prec);
@@ -600,38 +552,31 @@ fn half_to_f32(bits: u16) -> f32 {
 	match exp {
 		0 => sign * mant * 2f32.powi(-24),
 		31 if mant == 0.0 => sign * f32::INFINITY,
-		31 => f32::from_bits(
-			u32::from(bits & 0x8000) << 16 | 0x7fc0_0000 | (u32::from(bits & 0x3ff) << 13),
-		),
+		31 => f32::from_bits(u32::from(bits & 0x8000) << 16 | 0x7fc0_0000 | (u32::from(bits & 0x3ff) << 13)),
 		_ => sign * (1.0 + mant / 1024.0) * 2f32.powi(exp - 15),
 	}
 }
 
 /// Renders one datum of `spec` starting at `bytes`.
 fn render(spec: &Spec, bytes: &[u8], big_endian: bool, text: &mut String) {
-	use std::fmt::Write as _;
+	use std::fmt::{NumBuffer, Write as _};
 	let raw = if big_endian {
 		bytes.iter().fold(0u64, |acc, &b| acc << 8 | u64::from(b))
 	} else {
-		bytes
-			.iter()
-			.rev()
-			.fold(0u64, |acc, &b| acc << 8 | u64::from(b))
+		bytes.iter().rev().fold(0u64, |acc, &b| acc << 8 | u64::from(b))
 	};
 	let width = spec.width as usize;
 	text.clear();
 	let _ = match spec.kind {
 		Kind::Signed => {
 			let shift = 64 - 8 * spec.size;
-			write!(text, "{}", ((raw << shift) as i64) >> shift)
+			text.write_str((((raw << shift) as i64) >> shift).format_into(&mut NumBuffer::new()))
 		},
-		Kind::Unsigned => write!(text, "{raw}"),
+		Kind::Unsigned => text.write_str(raw.format_into(&mut NumBuffer::new())),
 		Kind::Octal => write!(text, "{raw:0width$o}"),
 		Kind::Hex => write!(text, "{raw:0width$x}"),
 		Kind::Half => write!(text, "{}", float_to_str(f64::from(half_to_f32(raw as u16)), true)),
-		Kind::Brain => {
-			write!(text, "{}", float_to_str(f64::from(f32::from_bits((raw as u32) << 16)), true))
-		},
+		Kind::Brain => write!(text, "{}", float_to_str(f64::from(f32::from_bits((raw as u32) << 16)), true)),
 		Kind::Float => write!(text, "{}", float_to_str(f64::from(f32::from_bits(raw as u32)), true)),
 		Kind::Double => write!(text, "{}", float_to_str(f64::from_bits(raw), false)),
 		Kind::Named => {
@@ -738,20 +683,14 @@ struct Inputs {
 
 impl Inputs {
 	fn display(&self) -> String {
-		if self.name == "-" {
-			"standard input".to_owned()
-		} else {
-			self.name.maybe_quote().to_string()
-		}
+		if self.name == "-" { "standard input".to_owned() } else { self.name.maybe_quote().to_string() }
 	}
 
 	/// GNU `open_next_file`.
 	fn open_next(&mut self, host: &mut Host) -> bool {
 		let mut ok = true;
 		while self.current.is_none() {
-			let Some(name) = self.names.get(self.next).cloned() else {
-				return ok;
-			};
+			let Some(name) = self.names.get(self.next).cloned() else { return ok };
 			self.next += 1;
 			self.name = name;
 			self.pos = 0;
@@ -761,11 +700,11 @@ impl Inputs {
 				continue;
 			}
 			let path = host.resolve(&self.name);
-			if path.is_dir() {
+			if host.fs().is_dir(&path) {
 				self.current = Some(Source::Dir);
 				continue;
 			}
-			match host.open_read(&path) {
+			match host.fs().open(&path) {
 				Ok(file) => self.current = Some(Source::File(file)),
 				Err(err) => {
 					host.error(format!("{}: {}", self.display(), strip_errno(&err)), 1);
@@ -883,7 +822,7 @@ impl Inputs {
 				if size < n {
 					n -= size;
 				} else {
-					if let Err(err) = file.seek(SeekFrom::Current(n)) {
+					if let Err(err) = file.seek_relative(n) {
 						self.error = Some(err);
 					}
 					n = 0;
@@ -941,13 +880,8 @@ enum CommandLineInputs {
 /// Overflowing offset operand; GNU reports it with `ERANGE` text.
 fn offset_operand(arg: &OsString) -> Result<Option<i64>, String> {
 	match arg.to_str() {
-		Some(text) => parse_offset_operand(text).map_err(|()| {
-			format!(
-				"{}: {}",
-				arg.maybe_quote(),
-				strip_errno(&io::Error::from_raw_os_error(libc::ERANGE))
-			)
-		}),
+		Some(text) => parse_offset_operand(text)
+			.map_err(|()| format!("{}: {}", arg.maybe_quote(), strip_errno(&io::Error::from_raw_os_error(libc::ERANGE)))),
 		None => Ok(None),
 	}
 }
@@ -955,44 +889,32 @@ fn offset_operand(arg: &OsString) -> Result<Option<i64>, String> {
 /// Interprets the operands (uutils `parse_inputs`, with GNU's selection
 /// rules): without modern options, a last operand starting with `+` (or, of
 /// two, a digit) is an offset; `--traditional` also takes a label.
-fn parse_inputs(
-	matches: &ArgMatches,
-	mut inputs: Vec<OsString>,
-) -> Result<CommandLineInputs, String> {
+fn parse_inputs(matches: &ArgMatches, mut inputs: Vec<OsString>) -> Result<CommandLineInputs, String> {
 	let traditional = matches.get_flag(options::TRADITIONAL);
-	let modern = MODERN_OPTIONS
-		.iter()
-		.any(|id| matches.value_source(id) == Some(ValueSource::CommandLine));
+	let modern = MODERN_OPTIONS.iter().any(|id| matches.value_source(id) == Some(ValueSource::CommandLine));
 	if modern && !traditional {
 		return Ok(CommandLineInputs::FileNames(inputs));
 	}
 	let leads = |arg: &OsString, digit: bool| {
-		arg.to_str()
-			.and_then(|s| s.bytes().next())
-			.is_some_and(|c| c == b'+' || (digit && c.is_ascii_digit()))
+		arg.to_str().and_then(|s| s.bytes().next()).is_some_and(|c| c == b'+' || (digit && c.is_ascii_digit()))
 	};
 	match inputs.len() {
-		1 if traditional || leads(&inputs[0], false) => {
-			if let Some(offset) = offset_operand(&inputs[0])? {
-				return Ok(CommandLineInputs::FileAndOffset(None, offset, None));
-			}
+		1 if (traditional || leads(&inputs[0], false)) && let Some(offset) = offset_operand(&inputs[0])? => {
+			return Ok(CommandLineInputs::FileAndOffset(None, offset, None));
 		},
-		2 if traditional || leads(&inputs[1], true) => {
-			if let Some(offset) = offset_operand(&inputs[1])? {
-				if traditional && let Some(start) = offset_operand(&inputs[0])? {
-					return Ok(CommandLineInputs::FileAndOffset(None, start, Some(offset)));
-				}
-				inputs.truncate(1);
-				return Ok(CommandLineInputs::FileAndOffset(inputs.pop(), offset, None));
+		2 if (traditional || leads(&inputs[1], true)) && let Some(offset) = offset_operand(&inputs[1])? => {
+			if traditional && let Some(start) = offset_operand(&inputs[0])? {
+				return Ok(CommandLineInputs::FileAndOffset(None, start, Some(offset)));
 			}
+			inputs.truncate(1);
+			return Ok(CommandLineInputs::FileAndOffset(inputs.pop(), offset, None));
 		},
-		3 if traditional => {
-			if let Some(offset) = offset_operand(&inputs[1])?
-				&& let Some(label) = offset_operand(&inputs[2])?
-			{
-				inputs.truncate(1);
-				return Ok(CommandLineInputs::FileAndOffset(inputs.pop(), offset, Some(label)));
-			}
+		3 if traditional
+			&& let Some(offset) = offset_operand(&inputs[1])?
+			&& let Some(label) = offset_operand(&inputs[2])? =>
+		{
+			inputs.truncate(1);
+			return Ok(CommandLineInputs::FileAndOffset(inputs.pop(), offset, Some(label)));
 		},
 		_ => {},
 	}
@@ -1006,12 +928,7 @@ fn run_od(host: &mut Host, out: &mut impl Write, matches: &ArgMatches) -> Result
 	};
 	let mut cfg = Config {
 		specs:        Vec::new(),
-		addr:         Addr {
-			style:         AddrStyle::Std,
-			base:          8,
-			pad:           7,
-			pseudo_offset: 0,
-		},
+		addr:         Addr { style: AddrStyle::Std, base: 8, pad: 7, pseudo_offset: 0 },
 		skip:         0,
 		end_offset:   -1,
 		abbreviate:   !matches.get_flag(options::OUTPUT_DUPLICATES),
@@ -1025,9 +942,7 @@ fn run_od(host: &mut Host, out: &mut impl Write, matches: &ArgMatches) -> Result
 	// `-t` values and legacy flags accumulate in command-line order.
 	let mut formats: Vec<(usize, &String)> = Vec::new();
 	for id in std::iter::once(options::FORMAT).chain(LEGACY_FORMATS.iter().map(|(id, ..)| *id)) {
-		if let (Some(indices), Some(values)) =
-			(matches.indices_of(id), matches.get_many::<String>(id))
-		{
+		if let (Some(indices), Some(values)) = (matches.indices_of(id), matches.get_many::<String>(id)) {
 			formats.extend(indices.zip(values));
 		}
 	}
@@ -1053,9 +968,7 @@ fn run_od(host: &mut Host, out: &mut impl Write, matches: &ArgMatches) -> Result
 			_ => {
 				return Err(fail(
 					host,
-					format!(
-						"invalid output address radix '{first}'; it must be one character from [doxn]"
-					),
+					format!("invalid output address radix '{first}'; it must be one character from [doxn]"),
 				));
 			},
 		};
@@ -1086,12 +999,7 @@ fn run_od(host: &mut Host, out: &mut impl Write, matches: &ArgMatches) -> Result
 		return Err(fail(host, "no type may be specified when dumping strings".to_owned()));
 	}
 
-	let operands = matches
-		.get_many::<OsString>(options::FILENAME)
-		.into_iter()
-		.flatten()
-		.cloned()
-		.collect();
+	let operands = matches.get_many::<OsString>(options::FILENAME).into_iter().flatten().cloned().collect();
 	match parse_inputs(matches, operands).map_err(|message| fail(host, message))? {
 		CommandLineInputs::FileNames(files) => {
 			if matches.get_flag(options::TRADITIONAL) && files.len() > 1 {
@@ -1112,12 +1020,7 @@ fn run_od(host: &mut Host, out: &mut impl Write, matches: &ArgMatches) -> Result
 
 	if cfg.pseudo_start.is_some() {
 		if cfg.addr.style == AddrStyle::None {
-			cfg.addr = Addr {
-				style:         AddrStyle::Paren,
-				base:          8,
-				pad:           7,
-				pseudo_offset: 0,
-			};
+			cfg.addr = Addr { style: AddrStyle::Paren, base: 8, pad: 7, pseudo_offset: 0 };
 		} else {
 			cfg.addr.style = AddrStyle::Label;
 		}
@@ -1252,11 +1155,7 @@ impl BlockWriter {
 					let fill = blank * spec.width + pad_at(fields, blank, spec.pad);
 					line.resize(line.len() + fill as usize, b' ');
 					line.extend_from_slice(b"  >");
-					line.extend(
-						curr[..n_bytes]
-							.iter()
-							.map(|&c| if is_print(c) { c } else { b'.' }),
-					);
+					line.extend(curr[..n_bytes].iter().map(|&c| if is_print(c) { c } else { b'.' }));
 					line.push(b'<');
 				}
 				line.push(b'\n');
@@ -1268,22 +1167,13 @@ impl BlockWriter {
 }
 
 /// GNU `dump`.
-fn dump(
-	host: &mut Host,
-	out: &mut impl Write,
-	inputs: &mut Inputs,
-	cfg: &mut Config,
-) -> Result<bool, i32> {
+fn dump(host: &mut Host, out: &mut impl Write, inputs: &mut Inputs, cfg: &mut Config) -> Result<bool, i32> {
 	let l_c_m = lcm_of(&cfg.specs);
 	let bytes_per_block = if cfg.desired != 0 {
 		if cfg.desired % l_c_m == 0 {
 			cfg.desired
 		} else {
-			let _ = writeln!(
-				host.stderr,
-				"od: warning: invalid width {}; using {l_c_m} instead",
-				cfg.desired
-			);
+			let _ = writeln!(host.stderr, "od: warning: invalid width {}; using {l_c_m} instead", cfg.desired);
 			l_c_m
 		}
 	} else if l_c_m < DEFAULT_BYTES_PER_BLOCK {
@@ -1310,10 +1200,7 @@ fn dump(
 		1
 	})?;
 	let mut storage: Vec<u8> = Vec::new();
-	if bpb
-		.checked_mul(2)
-		.is_none_or(|total| storage.try_reserve_exact(total).is_err())
-	{
+	if bpb.checked_mul(2).is_none_or(|total| storage.try_reserve_exact(total).is_err()) {
 		host.error("memory exhausted", 1);
 		return Err(1);
 	}
@@ -1332,11 +1219,7 @@ fn dump(
 	let mut offset = cfg.skip;
 	let mut n_read;
 	loop {
-		let bound = if cfg.end_offset < 0 {
-			i64::MAX
-		} else {
-			cfg.end_offset - offset
-		};
+		let bound = if cfg.end_offset < 0 { i64::MAX } else { cfg.end_offset - offset };
 		if bound <= 0 || host.is_cancelled() {
 			n_read = 0;
 			break;
@@ -1348,9 +1231,7 @@ fn dump(
 		if n_read < bpb {
 			break;
 		}
-		writer
-			.write(cfg, &mut line, offset, n_read, a, b)
-			.map_err(|()| pseudo_overflow(host))?;
+		writer.write(cfg, &mut line, offset, n_read, a, b).map_err(|()| pseudo_overflow(host))?;
 		emit(host, out, &mut line)?;
 		offset += n_read as i64;
 		std::mem::swap(&mut a, &mut b);
@@ -1362,15 +1243,11 @@ fn dump(
 		let l_c_m = l_c_m as usize;
 		let to_write = (n_read + l_c_m - 1) / l_c_m * l_c_m;
 		b[n_read..to_write].fill(0);
-		writer
-			.write(cfg, &mut line, offset, n_read, a, b)
-			.map_err(|()| pseudo_overflow(host))?;
+		writer.write(cfg, &mut line, offset, n_read, a, b).map_err(|()| pseudo_overflow(host))?;
 		offset += n_read as i64;
 	}
 	if ok || offset != 0 {
-		cfg.addr
-			.write(&mut line, offset, b'\n')
-			.map_err(|()| pseudo_overflow(host))?;
+		cfg.addr.write(&mut line, offset, b'\n').map_err(|()| pseudo_overflow(host))?;
 	}
 	emit(host, out, &mut line)?;
 	if cfg.end_offset >= 0 && cfg.end_offset <= offset {
@@ -1380,13 +1257,7 @@ fn dump(
 }
 
 /// GNU `dump_strings`.
-fn dump_strings(
-	host: &mut Host,
-	out: &mut impl Write,
-	inputs: &mut Inputs,
-	cfg: &Config,
-	min: i64,
-) -> Result<bool, i32> {
+fn dump_strings(host: &mut Host, out: &mut impl Write, inputs: &mut Inputs, cfg: &Config, min: i64) -> Result<bool, i32> {
 	let end = cfg.end_offset;
 	let mut address = cfg.skip;
 	let mut ok = true;
@@ -1422,9 +1293,7 @@ fn dump_strings(
 		}
 		let Some(nul) = state else { continue };
 		if (buf.len() - usize::from(nul)) as i64 >= min {
-			cfg.addr
-				.write(&mut line, address - buf.len() as i64, b' ')
-				.map_err(|()| pseudo_overflow(host))?;
+			cfg.addr.write(&mut line, address - buf.len() as i64, b' ').map_err(|()| pseudo_overflow(host))?;
 			line.extend(buf.iter().take_while(|&&c| c != 0));
 			line.push(b'\n');
 			emit(host, out, &mut line)?;
@@ -1433,4 +1302,103 @@ fn dump_strings(
 	emit(host, out, &mut line)?;
 	ok &= inputs.close(host);
 	Ok(ok)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::host::run_util;
+
+	fn od(args: &[&str], stdin: &str) -> (i32, String, String) {
+		let (code, capture) = run_util::<Od>(args, stdin, std::env::temp_dir());
+		(code, capture.out(), capture.err())
+	}
+
+	#[test]
+	fn char_escapes_and_squash() {
+		let (code, out, _) = od(&["-c"], "a\tb\n\0\u{7f}");
+		assert_eq!(code, 0);
+		assert_eq!(out, "0000000   a  \\t   b  \\n  \\0 177\n0000006\n");
+		let (_, out, _) = od(&["-An", "-tx1"], &"a".repeat(40));
+		assert_eq!(out, format!(" {}\n*\n {}\n", ["61"; 16].join(" "), ["61"; 8].join(" ")));
+	}
+
+	#[test]
+	fn floats_named_and_trailer() {
+		let (_, out, _) = od(&["-An", "-tfF", "-w4"], "\0\0\u{40}\u{3f}");
+		assert_eq!(out, "            0.75\n");
+		// C `%g` rounds exact ties to even.
+		let (_, out, _) = od(&["-An", "-tfH", "-w2"], "\u{4}\u{3c}");
+		assert_eq!(out, "       1.0039062\n");
+		let (_, out, _) = od(&["-ta"], "\u{1}A ");
+		assert_eq!(out, "0000000 soh   A  sp\n0000003\n");
+		let (_, out, _) = od(&["-w2", "-tx1z"], "abc");
+		assert_eq!(out, "0000000 61 62  >ab<\n0000002 63     >c<\n0000003\n");
+	}
+
+	#[test]
+	fn skip_limit_endian_strings() {
+		let (_, out, _) = od(&["-j", "3", "-N", "5", "-to1"], "abcdefghij");
+		assert_eq!(out, "0000003 144 145 146 147 150\n0000010\n");
+		let (_, out, _) = od(&["-Ax", "-td2", "--endian=big"], "\u{1}\u{2}");
+		assert_eq!(out, "000000    258\n000002\n");
+		let (_, out, _) = od(&["-S", "4"], "hi\0hello\0x");
+		assert_eq!(out, "0000003 hello\n");
+		let (_, out, _) = od(&["+1"], "abc");
+		assert_eq!(out, "0000001 061542\n0000003\n");
+	}
+
+	#[test]
+	fn errors() {
+		let (code, _, err) = od(&["-td3"], "");
+		assert_eq!(code, 1);
+		assert_eq!(err, "od: invalid type string 'd3';\nthis system doesn't provide a 3-byte integral type\n");
+		let (code, _, err) = od(&["-q"], "");
+		assert_eq!(code, 1);
+		assert!(err.contains("'-q'"), "{err}");
+		let (code, _, err) = od(&["--traditional", "a", "b", "c", "d"], "");
+		assert_eq!(code, 1);
+		assert_eq!(
+			err,
+			"od: extra operand 'b'\nod: compatibility mode supports at most one file\nTry 'od --help' for more \
+			 information.\n"
+		);
+		let (code, _, err) = od(&["-j", "08"], "");
+		assert_eq!((code, err.as_str()), (1, "od: invalid suffix in -j argument '08'\n"));
+		let (code, _, err) = od(&["-j", "9"], "abc");
+		assert_eq!((code, err.as_str()), (1, "od: cannot skip past end of combined input\n"));
+		let (code, out, _) = od(&[], "");
+		assert_eq!((code, out.as_str()), (0, "0000000\n"));
+		let (code, out, _) = od(&["--help"], "");
+		assert!(code == 0 && out.contains("Usage: od [OPTION]... [FILE]..."), "{out}");
+	}
+
+	#[test]
+	fn number_suffixes() {
+		assert_eq!(parse_bytes("0x10", "-j"), Ok(16));
+		assert_eq!(parse_bytes("0X10", "-j"), Ok(16));
+		assert_eq!(parse_bytes("010", "-j"), Ok(8));
+		assert_eq!(parse_bytes("1KB", "-j"), Ok(1000));
+		assert_eq!(parse_bytes("1KiB", "-j"), Ok(1024));
+		assert_eq!(parse_bytes("2b", "-j"), Ok(1024));
+		assert_eq!(parse_bytes("-1", "-N"), Err("invalid -N argument '-1'".to_owned()));
+		assert_eq!(parse_bytes("1g", "-N"), Err("invalid suffix in -N argument '1g'".to_owned()));
+		assert_eq!(parse_bytes("9E", "-N"), Err("-N argument '9E' too large".to_owned()));
+		assert_eq!(parse_width("010"), Ok(10));
+		assert_eq!(parse_width("1K"), Err("invalid suffix in -w argument '1K'".to_owned()));
+		assert_eq!(parse_offset_operand("+10."), Ok(Some(10)));
+		assert_eq!(parse_offset_operand("10b"), Ok(Some(8 * 512)));
+		assert_eq!(parse_offset_operand("0x1b"), Ok(Some(27)));
+		assert_eq!(parse_offset_operand("08"), Ok(None));
+		assert_eq!(parse_offset_operand("99"), Ok(None));
+		assert_eq!(parse_offset_operand("+7777777777777777777777"), Err(()));
+	}
+
+	#[test]
+	fn legacy_flags_and_types_keep_command_line_order() {
+		let (_, out, _) = od(&["-c", "-tx1", "-b"], "A");
+		assert_eq!(out, "0000000   A\n         41\n        101\n0000001\n");
+		let (_, out, _) = od(&["-bc"], "A");
+		assert_eq!(out, "0000000 101\n          A\n0000001\n");
+	}
 }

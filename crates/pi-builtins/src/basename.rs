@@ -1,10 +1,14 @@
+//! `basename` builtin: print a path with leading directory components (and
+//! optionally a trailing suffix) removed.
+//!
+//! Ported from uutils coreutils 0.8.0.
+
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
-use brush_core::{ShellExtensions, builtins::Registration};
 use clap::{Arg, ArgAction, ArgMatches, Command, builder::ValueParser};
 use uucore::{display::Quotable, line_ending::LineEnding};
 
-use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes, util};
+use crate::host::{Host, Utility, format_usage, matches_parser, os_bytes};
 
 mod options {
 	pub static MULTIPLE: &str = "multiple";
@@ -13,6 +17,7 @@ mod options {
 	pub static ZERO: &str = "zero";
 }
 
+/// Parsed `basename` invocation.
 pub(crate) struct Basename {
 	matches: ArgMatches,
 }
@@ -35,6 +40,8 @@ impl Utility for Basename {
 			return 1;
 		}
 
+		// A suffix operand (or -a) switches from the two-operand "simple format"
+		// (`basename PATH SUFFIX`) to "strip this suffix from every operand".
 		let explicit_suffix = self.matches.get_one::<OsString>(options::SUFFIX);
 		let suffix = if explicit_suffix.is_some() || self.matches.get_flag(options::MULTIPLE) {
 			explicit_suffix.cloned().unwrap_or_default()
@@ -54,8 +61,7 @@ impl Utility for Basename {
 				host.error(format!("invalid argument {}", name.quote()), 1);
 				return 1;
 			};
-			if host.stdout.write_all(&stripped).is_err()
-				|| write!(host.stdout, "{line_ending}").is_err()
+			if host.stdout.write_all(&stripped).is_err() || write!(host.stdout, "{line_ending}").is_err()
 			{
 				return 1;
 			}
@@ -67,9 +73,15 @@ impl Utility for Basename {
 	}
 }
 
+/// The final path component of `fullname`, minus `suffix`.
+///
+/// Returns bytes rather than an `OsString` because the result is written
+/// straight out, and `None` when the operand has no byte representation on this
+/// platform.
 fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 	let fullname_bytes = os_bytes(fullname)?;
 
+	// `a/.` names the directory `a`, whose basename is `.`.
 	if fullname_bytes.ends_with(b"/.") {
 		return Some(b".".into());
 	}
@@ -81,19 +93,15 @@ fn basename(fullname: &OsString, suffix: &OsString) -> Option<Vec<u8>> {
 
 	let name = last.as_os_str();
 	let name_bytes = os_bytes(name)?;
-
+	// Stripping the whole component would leave nothing, so GNU keeps it.
 	if name == suffix.as_os_str() {
 		return Some(name_bytes.into());
 	}
 	let suffix_bytes = os_bytes(suffix)?;
-	Some(
-		name_bytes
-			.strip_suffix(suffix_bytes)
-			.unwrap_or(name_bytes)
-			.into(),
-	)
+	Some(name_bytes.strip_suffix(suffix_bytes).unwrap_or(name_bytes).into())
 }
 
+/// The `basename` argument model.
 fn app() -> Command {
 	Command::new(Basename::NAME)
 		.version("0.8.0")
@@ -138,6 +146,57 @@ fn app() -> Command {
 		)
 }
 
-pub(crate) fn basename_builtin<SE: ShellExtensions>() -> Registration<SE> {
-	util::<Basename, SE>()
+#[cfg(test)]
+mod tests {
+	use super::Basename;
+	use crate::host::run_util;
+
+	fn basename(argv: &[&str]) -> (i32, String) {
+		let (code, capture) = run_util::<Basename>(argv, "", "/");
+		(code, capture.out())
+	}
+
+	#[test]
+	fn strips_directory_components() {
+		assert_eq!(basename(&["/usr/local/bin/omp"]), (0, "omp\n".to_string()));
+	}
+
+	#[test]
+	fn simple_format_takes_the_second_operand_as_a_suffix() {
+		assert_eq!(basename(&["src/host.rs", ".rs"]), (0, "host\n".to_string()));
+	}
+
+	#[test]
+	fn suffix_option_applies_to_every_operand() {
+		assert_eq!(basename(&["-s", ".rs", "a.rs", "b.rs"]), (0, "a\nb\n".to_string()));
+	}
+
+	#[test]
+	fn suffix_is_kept_when_it_is_the_whole_component() {
+		assert_eq!(basename(&["-s", ".rs", ".rs"]), (0, ".rs\n".to_string()));
+	}
+
+	#[test]
+	fn trailing_dot_component_names_the_parent() {
+		assert_eq!(basename(&["a/."]), (0, ".\n".to_string()));
+	}
+
+	#[test]
+	fn zero_flag_switches_the_terminator() {
+		assert_eq!(basename(&["-z", "/a/b"]), (0, "b\0".to_string()));
+	}
+
+	#[test]
+	fn missing_operand_is_a_usage_error() {
+		let (code, capture) = run_util::<Basename>(&[], "", "/");
+		assert_eq!(code, 1);
+		assert_eq!(capture.err(), "basename: missing operand\n");
+	}
+
+	#[test]
+	fn third_operand_without_multiple_is_a_usage_error() {
+		let (code, capture) = run_util::<Basename>(&["a", "b", "c"], "", "/");
+		assert_eq!(code, 1);
+		assert_eq!(capture.err(), "basename: extra operand 'c'\n");
+	}
 }

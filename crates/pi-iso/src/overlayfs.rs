@@ -1,3 +1,19 @@
+//! Linux overlayfs-based isolation.
+//!
+//! Tries to stack a kernel `overlay` filesystem at `merged` over the
+//! read-only `lower` tree. The mount uses sibling `upper` and `work`
+//! directories derived from `merged.parent()` so a single caller-owned base
+//! directory cleans up with one `rm -rf`.
+//!
+//! When the kernel rejects the mount (typically `EPERM` outside a user
+//! namespace, or `ENODEV` if the module is absent) we fall back to
+//! `fuse-overlayfs(1)` because that is what the project shipped before and
+//! existing user environments rely on it.
+//!
+//! Backend selection is remembered per-mount so
+//! [`stop`](IsolationBackend::stop) dispatches to the correct teardown path
+//! (`umount2` vs `fusermount[3] -u`).
+
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -71,7 +87,7 @@ mod imp {
 
 	use parking_lot::Mutex;
 
-	use crate::{IsoError, IsoResult, ProbeResult, command_failed};
+	use crate::{IsoError, IsoResult, ProbeResult, command_failed, tree};
 
 	#[derive(Clone, Copy)]
 	enum MountFlavor {
@@ -109,8 +125,8 @@ mod imp {
 	}
 
 	pub fn start(lower: &Path, merged: &Path) -> IsoResult<()> {
-		let lower = canonical_existing_dir(lower)?;
-		let merged = absolutize(merged);
+		let lower = tree::canonical_existing_dir(lower, "overlay lower", IsoError::other)?;
+		let merged = std::path::absolute(merged).unwrap_or_else(|_| merged.to_path_buf());
 		let base = merged.parent().ok_or_else(|| {
 			IsoError::other(format!("merged path has no parent: {}", merged.display()))
 		})?;
@@ -151,18 +167,24 @@ mod imp {
 	}
 
 	pub fn stop(merged: &Path) -> IsoResult<()> {
-		let merged = absolutize(merged);
+		let merged = std::path::absolute(merged).unwrap_or_else(|_| merged.to_path_buf());
 		let result = {
 			let flavor = ACTIVE_MOUNTS.lock().remove(&merged);
 			match flavor {
 				Some(MountFlavor::Fuse) => fuse_umount(&merged),
-				Some(MountFlavor::Kernel) | None => kernel_umount(&merged).or_else(|err| {
-					if err.is_unavailable() {
-						fuse_umount(&merged)
-					} else {
-						Err(err)
-					}
-				}),
+				Some(MountFlavor::Kernel) | None => {
+					// `None` covers callers that skipped `start` (probe-style flow)
+					// or processes that re-attached after a crash; try a kernel
+					// umount first, fall back to fusermount so we don't silently
+					// leak a mount.
+					kernel_umount(&merged).or_else(|err| {
+						if err.is_unavailable() {
+							fuse_umount(&merged)
+						} else {
+							Err(err)
+						}
+					})
+				},
 			}
 		};
 		result?;
@@ -176,15 +198,15 @@ mod imp {
 
 	fn kernel_mount(merged: &Path, opts: &str) -> IsoResult<()> {
 		let target = to_cstring(merged.as_os_str().as_bytes(), "merged")?;
-		let source = CString::new("overlay").expect("static source");
-		let fstype = CString::new("overlay").expect("static fstype");
 		let opts_c = to_cstring(opts.as_bytes(), "overlay options")?;
 
+		// SAFETY: all pointers are NUL-terminated (CString-backed or `c"…"`
+		// literals) and outlive the call.
 		let rc = unsafe {
 			libc::mount(
-				source.as_ptr(),
+				c"overlay".as_ptr(),
 				target.as_ptr(),
-				fstype.as_ptr(),
+				c"overlay".as_ptr(),
 				0,
 				opts_c.as_ptr().cast::<libc::c_void>(),
 			)
@@ -207,14 +229,17 @@ mod imp {
 
 	fn kernel_umount(merged: &Path) -> IsoResult<()> {
 		let target = to_cstring(merged.as_os_str().as_bytes(), "merged")?;
-
+		// SAFETY: `target` lives until after the syscall returns.
 		let rc = unsafe { libc::umount2(target.as_ptr(), libc::MNT_DETACH) };
 		if rc == 0 {
 			return Ok(());
 		}
 		let err = std::io::Error::last_os_error();
 		match err.raw_os_error() {
-			Some(libc::EINVAL | libc::ENOENT) => Ok(()),
+			Some(libc::EINVAL | libc::ENOENT) => {
+				// Nothing mounted there — already torn down.
+				Ok(())
+			},
 			Some(libc::EPERM | libc::EACCES) => {
 				Err(IsoError::unavailable(format!("kernel umount denied: {err}")))
 			},
@@ -311,28 +336,6 @@ mod imp {
 			.any(|line| line.split_whitespace().any(|word| word == "overlay"))
 	}
 
-	fn canonical_existing_dir(path: &Path) -> IsoResult<PathBuf> {
-		let resolved = absolutize(path);
-		let meta = fs::metadata(&resolved).map_err(|err| {
-			IsoError::other(format!("invalid overlay lower {}: {err}", resolved.display()))
-		})?;
-		if !meta.is_dir() {
-			return Err(IsoError::other(format!(
-				"overlay lower {} is not a directory",
-				resolved.display()
-			)));
-		}
-		Ok(fs::canonicalize(&resolved).unwrap_or(resolved))
-	}
-
-	fn absolutize(path: &Path) -> PathBuf {
-		if path.is_absolute() {
-			path.to_path_buf()
-		} else {
-			std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
-		}
-	}
-
 	fn remove_dir_if_exists(path: &Path, label: &str) -> IsoResult<()> {
 		match fs::remove_dir_all(path) {
 			Ok(()) => Ok(()),
@@ -344,5 +347,64 @@ mod imp {
 	fn to_cstring(bytes: &[u8], label: &str) -> IsoResult<CString> {
 		CString::new(bytes)
 			.map_err(|err| IsoError::other(format!("{label} path contains NUL byte: {err}")))
+	}
+
+	#[cfg(test)]
+	mod tests {
+		use std::os::unix::fs::PermissionsExt as _;
+
+		use super::*;
+
+		/// Write an executable `fusermount` stand-in under `dir` that logs its
+		/// argv to `dir/calls` and then runs `body`.
+		fn shim(dir: &Path, name: &str, body: &str) -> String {
+			let path = dir.join(name);
+			let script = format!("#!/bin/sh\necho \"$*\" >> '{}/calls'\n{body}\n", dir.display());
+			fs::write(&path, script).expect("write shim");
+			fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod shim");
+			path.to_str().expect("utf-8 temp path").to_owned()
+		}
+
+		/// A transiently busy mount (plain `-u` fails, `-z` succeeds) must be
+		/// detached by the lazy retry instead of leaking; when every attempt
+		/// fails, the fusermount stderr is surfaced rather than the generic
+		/// kernel `EPERM`.
+		#[test]
+		fn fuse_umount_falls_back_to_lazy_and_reports_fusermount_stderr() {
+			let root = std::env::temp_dir().join(format!("pi-iso-fuse-umount-{}", std::process::id()));
+			let _ = fs::remove_dir_all(&root);
+			let merged = root.join("m");
+			fs::create_dir_all(&merged).expect("create merged");
+			let busy = "echo 'failed to unmount: Device or resource busy' >&2; exit 1";
+
+			let lazy_ok = root.join("lazy-ok");
+			fs::create_dir_all(&lazy_ok).expect("create lazy-ok");
+			let program = shim(
+				&lazy_ok,
+				"fusermount3",
+				&format!("case \" $* \" in *\" -z \"*) exit 0;; esac\n{busy}"),
+			);
+			fuse_umount_with(&[program.as_str()], &merged).expect("lazy unmount succeeds");
+			let m = merged.display();
+			assert_eq!(
+				fs::read_to_string(lazy_ok.join("calls")).expect("calls"),
+				format!("-u {m}\n-u -z {m}\n")
+			);
+
+			// Root can `umount2` (EINVAL on a non-mount reads as already gone),
+			// so the surfaced-error path only exists for unprivileged users.
+			// SAFETY: `geteuid` has no preconditions.
+			if unsafe { libc::geteuid() } != 0 {
+				let failing = root.join("failing");
+				fs::create_dir_all(&failing).expect("create failing");
+				let program = shim(&failing, "fusermount3", busy);
+				let err =
+					fuse_umount_with(&[program.as_str()], &merged).expect_err("every attempt fails");
+				let message = err.to_string();
+				assert!(message.contains("-u -z (exit 1)"), "{message}");
+				assert!(message.ends_with("Device or resource busy"), "{message}");
+			}
+			let _ = fs::remove_dir_all(&root);
+		}
 	}
 }
