@@ -608,7 +608,16 @@ impl Driver {
 			options;
 		// A Python harness run names its package root; the shell turns it into
 		// this command's `PYTHONPATH` instead of exporting the capability.
-		let env = with_python_path(env, self.shell_python_path());
+		let previous_python_path = self
+			.store
+			.record(Key::Var(BStr::new(b"PYTHONPATH")))
+			.cloned();
+		let (env, python_path) = with_python_path(env, self.shell_python_path());
+		let python_path = python_path.map(|(root, injected)| PythonPathOverlay {
+			root,
+			injected,
+			previous: previous_python_path,
+		});
 		self.host.set_pipe_tap(pipe_tap);
 		self.host.set_cancel(Some(token));
 		// A command owns its observer generation, even when successive
@@ -617,9 +626,12 @@ impl Driver {
 			.shell
 			.set_event_mask(events.as_ref().map_or(EventMask::NONE, |sink| sink.mask()));
 		self.host.set_reported_error(reported_error);
-		// The values the overlay hides, restored after the run.
+		// The values the overlay hides, restored after the run. The injected
+		// `PYTHONPATH` is reconciled instead (see `finish_python_path`): a
+		// command's own export/unset must survive.
 		let saved: Vec<(BString, Option<Record>)> = env
 			.iter()
+			.filter(|(name, _)| !(python_path.is_some() && name.as_slice() == b"PYTHONPATH"))
 			.map(|(name, _)| (name.clone(), self.store.record(Key::Var(name.as_bstr())).cloned()))
 			.collect();
 		// Submission only queues the script. Bind its exact identity before
@@ -693,6 +705,7 @@ impl Driver {
 		self.host.set_reported_error(None);
 		self.host.set_cancel(None);
 		self.restore_overlay(saved);
+		self.finish_python_path(python_path);
 		let cwd = match self.store.record(Key::Misc(MiscKey::Cwd)) {
 			Some(Record::Misc(cwd)) => cwd.clone(),
 			_ => BString::default(),
@@ -731,12 +744,69 @@ impl Driver {
 
 	fn restore_overlay(&mut self, saved: Vec<(BString, Option<Record>)>) {
 		for (name, record) in saved.into_iter().rev() {
-			let key = Key::Var(name.as_bstr());
-			match record {
-				// A variable record always fits a variable key.
-				Some(record) => drop(self.store.put_out_of_band(key, record)),
-				None => self.store.del_out_of_band(key),
+			self.set_var_record(Key::Var(name.as_bstr()), record);
+		}
+	}
+
+	/// Keep a command's own `PYTHONPATH` export/unset while removing the
+	/// harness root this run injected.
+	///
+	/// The overlay sets `PYTHONPATH` to the package root plus the shell's
+	/// value. A command that leaves it untouched gets the shell's previous
+	/// value back; one that exports, appends to, or unsets it keeps its own
+	/// result, with the root entry filtered out.
+	fn finish_python_path(&mut self, overlay: Option<PythonPathOverlay>) {
+		let Some(overlay) = overlay else {
+			return;
+		};
+		let key = Key::Var(BStr::new(b"PYTHONPATH"));
+		let current = self.store.record(key).cloned();
+		let untouched = matches!(
+			&current,
+			Some(Record::Var(Var { value: VarValue::Str(value), .. }))
+				if value.as_slice() == overlay.injected.as_slice()
+		);
+		if untouched {
+			self.set_var_record(key, overlay.previous);
+			return;
+		}
+		let Some(current) = current else {
+			// The command unset it.
+			self.set_var_record(key, None);
+			return;
+		};
+		let Record::Var(mut var) = current else {
+			// A non-variable record is the command's own value; leave it intact.
+			return;
+		};
+		let VarValue::Str(value) = &var.value else {
+			// An array is the command's own value; leave it intact.
+			return;
+		};
+		let separator = if cfg!(windows) { b';' } else { b':' };
+		let mut stripped = Vec::<u8>::new();
+		for entry in value.split(|byte| *byte == separator) {
+			if entry == overlay.root.as_slice() {
+				continue;
 			}
+			if !stripped.is_empty() {
+				stripped.push(separator);
+			}
+			stripped.extend_from_slice(entry);
+		}
+		if stripped.is_empty() {
+			self.set_var_record(key, None);
+		} else {
+			var.value = VarValue::Str(BString::from(stripped));
+			self.set_var_record(key, Some(Record::Var(var)));
+		}
+	}
+
+	fn set_var_record(&mut self, key: Key, record: Option<Record>) {
+		match record {
+			// A variable record always fits a variable key.
+			Some(record) => drop(self.store.put_out_of_band(key, record)),
+			None => self.store.del_out_of_band(key),
 		}
 	}
 
@@ -802,6 +872,14 @@ impl Driver {
 	}
 }
 
+/// The harness package root a run folds into `PYTHONPATH`, and the shell's
+/// own value to reconcile after the run.
+struct PythonPathOverlay {
+	root:     BString,
+	injected: BString,
+	previous: Option<Record>,
+}
+
 /// The run's environment with the Python harness package root folded into
 /// `PYTHONPATH`.
 ///
@@ -809,24 +887,26 @@ impl Driver {
 /// program inherits ([`crate::host`] strips it from every spawn). Python
 /// programs still need the harness package on their import path, so the shell
 /// exports `PYTHONPATH` for the command instead: the root first, then the
-/// command's own `PYTHONPATH` or the shell's current one.
+/// command's own `PYTHONPATH` or the shell's current one. Returns the injected
+/// root and value so the run can reconcile a command's own `PYTHONPATH`
+/// changes afterwards.
 fn with_python_path(
 	env: Vec<(BString, BString)>,
 	shell_path: Option<BString>,
-) -> Vec<(BString, BString)> {
+) -> (Vec<(BString, BString)>, Option<(BString, BString)>) {
 	let Some(root) = env
 		.iter()
 		.find(|(name, _)| crate::host::is_python_harness_env_var(name.as_bytes()))
 		.map(|(_, value)| value.clone())
 	else {
-		return env;
+		return (env, None);
 	};
 	let prior = env
 		.iter()
 		.find(|(name, _)| name.as_slice() == b"PYTHONPATH")
 		.map(|(_, value)| value.clone())
 		.or(shell_path);
-	let mut path = root;
+	let mut path = root.clone();
 	if let Some(prior) = prior.filter(|prior| !prior.is_empty()) {
 		path.push(if cfg!(windows) { b';' } else { b':' });
 		path.extend_from_slice(&prior);
@@ -834,11 +914,12 @@ fn with_python_path(
 	let mut env: Vec<(BString, BString)> = env
 		.into_iter()
 		.filter(|(name, _)| {
-			!crate::host::is_python_harness_env_var(name.as_bytes()) && name.as_slice() != b"PYTHONPATH"
+			!crate::host::is_python_harness_env_var(name.as_bytes())
+				&& name.as_slice() != b"PYTHONPATH"
 		})
 		.collect();
-	env.push((BString::from("PYTHONPATH"), path));
-	env
+	env.push((BString::from("PYTHONPATH"), path.clone()));
+	(env, Some((root, path)))
 }
 
 #[cfg(all(test, unix))]
@@ -1931,5 +2012,46 @@ mod tests {
 		assert!(check_signal_target(pid).is_ok());
 		child.kill().unwrap();
 		child.wait().unwrap();
+	}
+
+	/// A harness run injects its package root into `PYTHONPATH`; a command's
+	/// own export or unset must survive it, and the root must never leak into
+	/// the shell's variable.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn harness_python_path_preserves_a_commands_own_export_and_unset() {
+		let mut session = session();
+		let cwd = std::env::current_dir()
+			.unwrap()
+			.to_string_lossy()
+			.into_owned();
+		let root = BString::from("/proto-harness-root");
+		let with_harness = |command: &str| RunOptions {
+			command: command.into(),
+			env: vec![(BString::from("PI_PYTHON_HARNESS_PATH"), root.clone())],
+			..RunOptions::new("")
+		};
+		// The command sees the root before its own value.
+		let during = capture(&mut session, with_harness("printf '%s' \"$PYTHONPATH\"")).await;
+		assert_eq!(during.stdout, "/proto-harness-root");
+		// An export replaces the injected path and persists.
+		capture(&mut session, with_harness("export PYTHONPATH=\"$PWD/project\"")).await;
+		assert_eq!(
+			sh(&mut session, "printf '%s' \"$PYTHONPATH\"").await.stdout,
+			format!("{cwd}/project")
+		);
+		// Appending keeps the appended entry after the root is stripped.
+		capture(&mut session, with_harness("export PYTHONPATH=\"$PYTHONPATH:$PWD/extra\"")).await;
+		assert_eq!(
+			sh(&mut session, "printf '%s' \"$PYTHONPATH\"").await.stdout,
+			format!("{cwd}/project:{cwd}/extra")
+		);
+		// An unset persists too.
+		capture(&mut session, with_harness("unset PYTHONPATH")).await;
+		assert_eq!(
+			sh(&mut session, "printf '[%s]' \"$PYTHONPATH\"")
+				.await
+				.stdout,
+			"[]"
+		);
 	}
 }
