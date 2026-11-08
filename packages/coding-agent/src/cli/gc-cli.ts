@@ -15,6 +15,7 @@ import {
 	getSessionsDir,
 	getTerminalSessionsDir,
 	normalizePathForComparison,
+	peekFile,
 	readLines,
 	Snowflake,
 } from "@oh-my-pi/pi-utils";
@@ -1012,48 +1013,56 @@ async function collectSessionFiles(session: SessionInfo): Promise<string[]> {
 
 /**
  * Session id in `file`'s header, or undefined when it has none. A file is
- * streamed only when its first byte past JSON whitespace opens a record (the
+ * probed only when its first byte past JSON whitespace opens a record (the
  * header or the title slot before it), or when its sampled prefix is all
- * whitespace; other binary and plain-text artifacts cost one small read.
+ * whitespace; other binary and plain-text artifacts cost one small positioned
+ * read instead of a header scan.
  */
 async function readArtifactSessionId(file: string): Promise<string | undefined> {
-	const prefix = (await Bun.file(file).slice(0, HEADER_SNIFF_BYTES).text()).replace(/^[ \t\r\n]+/, "");
-	if (prefix !== "" && prefix[0] !== "{") return undefined;
+	const prefix = await peekFile(file, HEADER_SNIFF_BYTES, bytes => new TextDecoder().decode(bytes));
+	const stripped = prefix.replace(/^[ \t\r\n]+/, "");
+	if (stripped !== "" && stripped[0] !== "{") return undefined;
 	return readSessionHeaderId(file);
 }
 
 /**
  * Leases of every transcript in a session: its own and those nested in its
  * artifact tree (subagent sessions, or any file a process can open with
- * `--session`), found by their session header rather than their name. Null,
- * with every lease taken so far released, when any of them is live or cannot
- * be probed (an unknown owner counts as live).
+ * `--session`), found by their session header rather than their name. Each
+ * session id is leased once, so a copied transcript that shares an id does not
+ * read as live. Null, with every lease taken so far released, when any of them
+ * is live or cannot be probed (an unknown owner counts as live).
  */
 async function tryAcquireSessionTreeLeases(
+	session: SessionInfo,
 	files: string[],
 ): Promise<{ leases: FileLockHandle[]; transcripts: Set<string> } | null> {
 	const leases: FileLockHandle[] = [];
-	const transcripts = new Set<string>();
+	const leasedIds = new Set<string>();
+	const transcripts = new Set<string>([session.path]);
 	const release = (): void => {
 		for (const held of leases) held.release();
 	};
 	for (const file of files) {
-		let transcript: boolean;
+		let lease: FileLockHandle | null = null;
 		try {
-			transcript = (await readArtifactSessionId(file)) !== undefined;
+			const sessionId = (await readArtifactSessionId(file)) ?? (file === session.path ? session.id : undefined);
+			if (sessionId === undefined) continue;
+			transcripts.add(file);
+			// The ownership marker is keyed on the path, so probe every transcript
+			// even when its session id was already leased through a copy.
+			if (liveSessionOwnerPid(file) !== undefined) {
+				release();
+				return null;
+			}
+			if (leasedIds.has(sessionId)) continue;
+			lease = tryAcquireSessionOwnershipLease(file);
+			if (lease) leasedIds.add(sessionId);
 		} catch (error) {
 			if (codeOf(error) === "ENOENT") continue;
-			release();
-			return null;
+			lease = null;
 		}
-		if (!transcript) continue;
-		transcripts.add(file);
-		if (liveSessionOwnerPid(file) !== undefined) {
-			release();
-			return null;
-		}
-		const lease = tryAcquireSessionOwnershipLease(file);
-		if (!lease) {
+		if (lease === null) {
 			release();
 			return null;
 		}
@@ -1128,7 +1137,7 @@ async function runCompressGc(options: ResolvedGcOptions, archiveRoot: string): P
 		if (candidates.length === 0) continue;
 		let tree: { leases: FileLockHandle[]; transcripts: Set<string> } | null = null;
 		try {
-			tree = await tryAcquireSessionTreeLeases(files);
+			tree = await tryAcquireSessionTreeLeases(session, files);
 			if (tree === null) {
 				result.skippedLive += 1;
 				continue;

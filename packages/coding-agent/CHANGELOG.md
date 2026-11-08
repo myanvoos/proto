@@ -21,6 +21,8 @@
 
 ### Fixed
 
+- Fixed `proto gc --compress` taking minutes on large session histories: live-transcript detection reads only each artifact's header line, skips non-JSON artifacts before probing, and leases each session id once.
+- Fixed `proto gc --compress --apply` copying and verifying every idle session on volumes where compression does not shrink files (e.g. macOS 27); it probes first and reports `compress skipped: <reason>`.
 - Keep user-initiated custom prompts and count retained native-history images correctly during compaction.
 - Count tool schemas as the request actually sends them, so context usage matches description-pruned requests and owned dialects.
 - Keep rapid follow-up submissions in order when an extension input hook is slow.
