@@ -264,12 +264,31 @@ where
 	})
 }
 
-/// Run `work` until it settles or `cancel_token` aborts or times out.
+/// The runtime every filesystem walk runs on.
 ///
-/// Dropping `work` on cancellation cancels the walker/search tasks it spawned,
-/// which is how `pi_walker` futures stop. The rejection matches [`Blocking`]'s
-/// settlement contract: a timeout rejects with `Aborted: Timeout`, other
-/// aborts with an `AbortError`.
+/// Separate from the addon's scheduler pool on purpose: a walker's directory
+/// listing is a synchronous syscall, and an uncached inode parks its thread in
+/// uninterruptible IO for as long as the device takes. The scheduler pool has
+/// one worker per CPU and is shared with `shell.run`, so enough simultaneous
+/// walks there leave no worker to poll anything else.
+static FS_RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+	tokio::runtime::Builder::new_multi_thread()
+		// A distinct name so these threads are tellable apart from the
+		// scheduler's in `/proc/<pid>/task/*/comm` when a stall is diagnosed.
+		.thread_name("pi-fs-worker")
+		.enable_all()
+		.build()
+		.expect("filesystem runtime")
+});
+
+/// Run `work` on [`FS_RUNTIME`] until it settles or `cancel_token` aborts or
+/// times out.
+///
+/// The walk and everything it spawns run on [`FS_RUNTIME`], so their
+/// synchronous syscalls cannot starve the addon's scheduler pool. Cancellation
+/// aborts the worker, dropping the walker/search tasks it spawned. The
+/// rejection matches [`Blocking`]'s settlement contract: a timeout rejects with
+/// `Aborted: Timeout`, other aborts with an `AbortError`.
 pub fn cancellable_future<'env, T, Fut>(
 	env: &'env Env,
 	tag: &'static str,
@@ -281,10 +300,19 @@ where
 	T: ToNapiValue + Send + 'static,
 {
 	future(env, tag, async move {
+		let mut worker = FS_RUNTIME.spawn(async move {
+			let _guard = profile_region(tag);
+			work.await
+		});
 		tokio::select! {
 			biased;
-			result = work => result,
-			reason = cancel_token.wait() => Err(abort_error(reason)),
+			joined = &mut worker => joined.unwrap_or_else(|err| {
+				Err(Error::from_reason(format!("native task `{tag}` failed: {err}")))
+			}),
+			reason = cancel_token.wait() => {
+				worker.abort();
+				Err(abort_error(reason))
+			},
 		}
 	})
 }
