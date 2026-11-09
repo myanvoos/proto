@@ -144,12 +144,20 @@ func ProtofsStop() {
 	if embedded.stop == nil {
 		return
 	}
-	close(embedded.stop)
-	<-embedded.done
+	stop := embedded.stop
+	embedded.stop = nil
+	close(stop)
+	select {
+	case <-embedded.done:
+	case <-time.After(3 * time.Second):
+		log.Printf("embedded protofs: stop timed out; leaving the daemon to process exit")
+	}
 	log.SetOutput(embedded.oldLog)
-	embedded.log.Close()
+	if embedded.log != nil {
+		embedded.log.Close()
+	}
 	embedded.state, embedded.socket, embedded.mount = "", "", ""
-	embedded.stop, embedded.done, embedded.log, embedded.oldLog = nil, nil, nil, nil
+	embedded.done, embedded.log, embedded.oldLog = nil, nil, nil
 }
 
 // ProtofsVersion reports the vendored daemon build.

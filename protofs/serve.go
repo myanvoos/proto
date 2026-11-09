@@ -305,6 +305,11 @@ func serveInternal(args []string, stop <-chan struct{}, ready func()) error {
 		}
 		if err = release(force); err != nil {
 			log.Printf("unmount: %v; stop again to force", err)
+			// An embedded stop channel is closed for good; retrying would spin.
+			if stop != nil && force {
+				log.Printf("unmount: %v; leaving the mount in place", err)
+				return nil
+			}
 			force = true
 			continue
 		}

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Ctrl+C now exits proto when the in-process protofs daemon is running; a checkout unmount that fails during shutdown no longer retries forever.
+
 ## [20.2.0] - 2026-11-08
 
 ### Added
