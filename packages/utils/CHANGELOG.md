@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.2] - 2026-11-15
+
 ### Added
 
 - Added `stableStringifyJson` for deterministic key-sorted serialization and `getAntigravityCliDir` for the managed Antigravity CLI data directory.

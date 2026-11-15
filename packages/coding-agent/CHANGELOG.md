@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.2] - 2026-11-15
+
 ### Added
 
 - Exposed `/login antigravity-cli` for the Antigravity CLI provider, and gave it the same 200-image request budget as the other Cloud Code transports.

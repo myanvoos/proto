@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.2] - 2026-11-15
+
 ### Added
 
 - Bundled the `antigravity-cli` provider's Gemini, Claude and GPT-OSS roster with its `antigravity-acp` API and effort ladders.

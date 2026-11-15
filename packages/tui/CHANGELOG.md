@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.2] - 2026-11-15
+
 ### Fixed
 
 - A pane that changes size when the alternate screen is borrowed (Herdr reclaims its scrollbar column, Warp re-reports height) no longer toggles the buffer in a loop that repaints the whole UI at two widths — the horizontal shake — and that host now settles every later resize by repainting in place.

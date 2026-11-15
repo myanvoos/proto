@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.2] - 2026-11-15
+
 ### Fixed
 
 - Embedding a native addon now refuses a build whose `__piNativesV…` sentinel does not match the package version, so a release can no longer ship a stale addon its own loader rejects (the broken 20.2.x darwin binaries).
