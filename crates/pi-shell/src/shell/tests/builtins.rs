@@ -16,6 +16,7 @@ async fn cmp_is_registered_as_an_in_process_builtin() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -55,6 +56,7 @@ async fn moreutils_builtins_are_registered_in_process() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -134,6 +136,7 @@ async fn uutils_sort_compress_program_uses_shell_path_and_stderr() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -197,6 +200,7 @@ async fn uutils_mkdir_resolves_cwd_and_displays_operand() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -244,6 +248,7 @@ async fn command_v_iterates_all_operands() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -302,6 +307,7 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -318,6 +324,7 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 	// Adding a utility is expected to update this list.
 	let expected = [
 		"ast-grep",
+		"awk",
 		"b2sum",
 		"base32",
 		"base64",
@@ -354,6 +361,7 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		"jq",
 		"ln",
 		"ls",
+		"md5",
 		"md5sum",
 		"mkdir",
 		"mktemp",
@@ -371,6 +379,7 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		"rm",
 		"rmdir",
 		"rsync",
+		"sd",
 		"sed",
 		"seq",
 		"sg",
@@ -379,11 +388,14 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		"sha256sum",
 		"sha384sum",
 		"sha512sum",
+		"shasum",
 		"sort",
 		"sponge",
 		"stat",
+		"strings",
 		"tac",
 		"tail",
+		"tar",
 		"tee",
 		"touch",
 		"tr",
@@ -433,12 +445,12 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 		assert!(err.is_empty(), "{name} --help wrote to stderr: {err:?}");
 		// Some builtins are registered under the familiar command name but
 		// keep their implementation's own help text, exactly as the
-		// standalone versions did: `rg` is ripgrep, `jq` is jaq, `sg`
-		// is ast-grep (whose help names itself only through its usage
-		// line, here `sg`).
+		// standalone versions did: `rg` is ripgrep, `sg` is ast-grep
+		// (whose help names itself only through its usage line, here
+		// `sg`), and `jq` prints jq 1.8.2's help.
 		let expected = match name {
 			"rg" => "ripgrep",
-			"jq" => "jaq",
+			"jq" => "jq - commandline JSON processor [version 1.8.2]",
 			"sg" => "using AST pattern",
 			other => other,
 		};
@@ -473,6 +485,7 @@ async fn every_process_builtin_is_installed_and_dispatches() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -489,6 +502,7 @@ async fn every_process_builtin_is_installed_and_dispatches() {
 	// of work that still exercises dispatch; `nohup` with no operand is a
 	// usage error, which is still the builtin answering.
 	let probes = [
+		("lsof", "lsof -v"),
 		("nohup", "nohup"),
 		("pgrep", "pgrep --help"),
 		("pidwait", "pidwait --help"),
@@ -515,7 +529,7 @@ async fn every_process_builtin_is_installed_and_dispatches() {
 	registered.sort_unstable();
 	assert_eq!(
 		registered,
-		["pgrep", "pidwait", "pkill", "ps", "sleep", "top"],
+		["lsof", "pgrep", "pidwait", "pkill", "ps", "sleep", "top"],
 		"the process builtin registry changed"
 	);
 	let mut offered: Vec<&'static str> = registered.iter().copied().chain(tools).collect();
@@ -568,6 +582,7 @@ async fn uutils_mkdir_expands_tilde_for_every_brace_element() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -611,6 +626,7 @@ async fn uutils_mkdir_help_and_bad_flag_do_not_exit_process() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -657,6 +673,7 @@ async fn uutils_head_streams_stdin_and_reads_files() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -710,6 +727,7 @@ async fn uutils_head_help_and_bad_flag_do_not_exit_process() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -755,6 +773,7 @@ async fn uutils_filters_listing_find_grep() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -850,6 +869,7 @@ async fn rg_builtin_uses_ripgrep_defaults() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -924,6 +944,7 @@ async fn fd_builtin_uses_fd_defaults() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1029,6 +1050,7 @@ async fn rg_builtin_defaults_to_cwd_unless_stdin_is_pipeline() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1084,6 +1106,7 @@ async fn grep_quiet_and_line_regexp() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1143,6 +1166,7 @@ async fn uutils_rm_and_mv_operate_on_shell_cwd() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1187,6 +1211,7 @@ async fn uutils_rm_missing_file_prints_single_diagnostic() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1226,6 +1251,7 @@ async fn uutils_find_display_and_actions_split_paths() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1291,6 +1317,113 @@ async fn uutils_find_display_and_actions_split_paths() {
 	let _ = std::fs::remove_dir_all(&tmp);
 }
 
+/// `xargs` and `env` run an external program found on `PATH` by name (on
+/// Windows that is a `sh.exe` the shell resolves through `PATHEXT`).
+#[tokio::test(flavor = "multi_thread")]
+async fn uutils_xargs_and_env_run_external_programs() {
+	let tmp = std::env::temp_dir().join(format!("pi-xargs-env-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&tmp);
+	std::fs::create_dir_all(&tmp).expect("temp dir");
+	let tmp_str = tmp.to_str().expect("utf8");
+
+	let config = ShellConfig {
+		session_env:   None,
+		snapshot_path: None,
+		minimizer:     None,
+		filesystem:    Fs::native(),
+		protolens:     ProtolensBridge::new(),
+		seed:          None,
+	};
+	let mut session = create_session(&config).await.expect("create_session");
+	session
+		.run_test(format!("cd {}", quote_arg(tmp_str)), &TestStdio::null())
+		.await
+		.expect("cwd");
+	let params = TestStdio::null();
+	let read = |name: &str| std::fs::read_to_string(tmp.join(name)).unwrap_or_default();
+
+	session
+		.run_test("printf 'a\\n' | xargs sh -c 'echo \"x:$1\"' sh > xargs.txt", &params)
+		.await
+		.expect("xargs");
+	assert_eq!(read("xargs.txt"), "x:a\n", "xargs should run the external sh");
+
+	session
+		.run_test("env PI_ENV_PROBE=ok sh -c 'echo \"$PI_ENV_PROBE\"' > env.txt", &params)
+		.await
+		.expect("env");
+	assert_eq!(read("env.txt"), "ok\n", "env should run the external sh");
+
+	let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A program under a path past `MAX_PATH` can only be started by its verbatim
+/// `\\?\` name, which accepts no `/`: `env`, `xargs` and `find -exec` must
+/// hand that name to the spawn unchanged.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn uutils_exec_runs_programs_by_verbatim_path() {
+	let tmp = std::env::temp_dir().join(format!("pi-verbatim-exec-{}", std::process::id()));
+	let _ = std::fs::remove_dir_all(&tmp);
+	std::fs::create_dir_all(&tmp).expect("temp dir");
+	let tmp_str = tmp.to_str().expect("utf8");
+
+	// `hostname.exe` is a standalone system program: its copy runs anywhere.
+	let system = std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+		.join("System32")
+		.join("hostname.exe");
+	let expected = std::process::Command::new(&system)
+		.output()
+		.expect("run hostname")
+		.stdout;
+	let mut deep = std::fs::canonicalize(&tmp).expect("canonicalize");
+	while deep.as_os_str().len() < 300 {
+		deep.push("d".repeat(50));
+	}
+	std::fs::create_dir_all(&deep).expect("deep dir");
+	let probe = deep.join("probe.exe");
+	std::fs::copy(&system, &probe).expect("copy hostname.exe");
+	let probe = probe.to_str().expect("utf8");
+	assert!(probe.starts_with(r"\\?\") && probe.len() > 260, "{probe}");
+	let probe = quote_arg(probe);
+
+	let config = ShellConfig {
+		session_env:   None,
+		snapshot_path: None,
+		minimizer:     None,
+		filesystem:    Fs::native(),
+		protolens:     ProtolensBridge::new(),
+		seed:          None,
+	};
+	let mut session = create_session(&config).await.expect("create_session");
+	session
+		.run_test(format!("cd {}", quote_arg(tmp_str)), &TestStdio::null())
+		.await
+		.expect("cwd");
+	let params = TestStdio::null();
+	let read = |name: &str| std::fs::read(tmp.join(name)).unwrap_or_default();
+
+	session
+		.run_test(format!("env V=ok {probe} > env.txt"), &params)
+		.await
+		.expect("env");
+	assert_eq!(read("env.txt"), expected, "env should run a verbatim-path program");
+
+	session
+		.run_test(format!("printf 'a\\n' | xargs -I{{}} {probe} > xargs.txt"), &params)
+		.await
+		.expect("xargs");
+	assert_eq!(read("xargs.txt"), expected, "xargs should run a verbatim-path program");
+
+	session
+		.run_test(format!("find . -maxdepth 0 -exec {probe} \\; > find.txt"), &params)
+		.await
+		.expect("find");
+	assert_eq!(read("find.txt"), expected, "find -exec should run a verbatim-path program");
+
+	let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// The vendored `sed` builtin must stream pipeline stdin through scripts and
 /// perform `-i` in-place edits (with backup suffix) against the shell
 /// working directory rather than the host process cwd.
@@ -1308,6 +1441,7 @@ async fn uutils_sed_substitutes_streams_and_edits_in_place() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1529,6 +1663,7 @@ async fn uutils_xargs_children_feed_pipeline_and_report_failure() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1639,6 +1774,7 @@ async fn uutils_jq_filters_json_and_propagates_exit_status() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 	session
@@ -1683,6 +1819,7 @@ async fn uutils_head_stdin_read_is_cancellable() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	};
 	let mut session = create_session(&config).await.expect("create_session");
 
@@ -1731,6 +1868,7 @@ async fn uutils_builtins_respect_disable_env() {
 			minimizer:     None,
 			filesystem:    Fs::native(),
 			protolens:     ProtolensBridge::new(),
+			seed:          None,
 		}
 	};
 
@@ -1740,6 +1878,7 @@ async fn uutils_builtins_respect_disable_env() {
 		minimizer:     None,
 		filesystem:    Fs::native(),
 		protolens:     ProtolensBridge::new(),
+		seed:          None,
 	})
 	.await
 	.expect("create_session");
@@ -1771,4 +1910,29 @@ async fn is_session_builtin(session: &mut ShellSessionCore, name: &str) -> bool 
 		.await
 		.expect("type -t");
 	read_capture(&out) == "builtin\n"
+}
+
+/// On Windows a utility written in the syntax of the System32 program it
+/// shadows runs that program: `find /c /v ""` counts lines with cmd's
+/// `FIND` (pi's GNU `find` read `/c` as drive `C:` and walked it), and its
+/// search string reaches `FIND` quoted, as `FIND` requires, even when it
+/// starts with `/`. GNU syntax keeps pi's `find`.
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread")]
+async fn windows_switch_syntax_runs_the_shadowed_system_program() {
+	// Varied text: `FIND` guesses UTF-16 (`IsTextUnicode`) for tiny uniform
+	// input such as `a\nb\n`.
+	let input = r"printf 'apple pie\r\nbanana split\r\nGET /api/users\r\n'";
+	let (result, output) = execute_captured(format!(
+		"{input} | find /c /v \"\"; {input} | find /i \"BANANA\"; {input} | find /i \"/API\"; find \
+		 . -maxdepth 0"
+	))
+	.await;
+	assert_eq!(result.exit_code, Some(0), "{output}");
+	let lines: Vec<&str> = output
+		.lines()
+		.map(str::trim_end)
+		.filter(|l| !l.is_empty())
+		.collect();
+	assert_eq!(lines, ["3", "banana split", "GET /api/users", "."]);
 }

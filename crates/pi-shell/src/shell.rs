@@ -36,7 +36,10 @@ use crate::{
 	observe::FsObservation,
 	output_decode::CaptureDecoder,
 	protolens::{ProtolensBridge, ProtolensCwd, ProtolensDispatcher, ProtolensProvider},
-	session::{Children, RunOptions, RunOutcome, RunStdio, Session, SessionConfig, SessionError},
+	session::{
+		Children, Image, LatestImage, RunOptions, RunOutcome, RunStdio, Session, SessionConfig,
+		SessionError,
+	},
 	stage::{StageTrace, TeeSink},
 	taps::PipeTaps,
 	vfs::VfsFs,
@@ -144,6 +147,9 @@ struct ShellConfig {
 	minimizer:     Option<minimizer::MinimizerConfig>,
 	filesystem:    Fs,
 	protolens:     ProtolensBridge,
+	/// The state a forked shell's session starts from ([`Shell::fork`]);
+	/// it replaces the env fallback and snapshot sourcing of a new session.
+	seed:          Option<Image>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -223,16 +229,29 @@ pub struct ShellExecuteOptions {
 
 pub type ShellExecuteResult = ShellRunResult;
 
-/// The live externals of the session's run in flight, readable apart from the
-/// session mutex (held for the whole command) so [`Shell::pids`] never waits
-/// for it. Replaced when a new session is created.
-type ActiveChildren = Arc<parking_lot::Mutex<Option<Children>>>;
+/// Handles of the live session readable apart from the session mutex (held
+/// for the whole command), so [`Shell::pids`] and [`Shell::fork`] never wait
+/// for it. Set when a session is created, cleared when it is dropped.
+type ActiveSession = Arc<parking_lot::Mutex<Option<SessionHandles>>>;
+
+struct SessionHandles {
+	/// The live externals of the session's run in flight.
+	children: Children,
+	/// The session's state at its last command boundary.
+	image:    LatestImage,
+}
+
+impl SessionHandles {
+	fn of(session: &Session) -> Self {
+		Self { children: session.children(), image: session.latest_image() }
+	}
+}
 
 pub struct Shell {
 	session:     Arc<TokioMutex<Option<ShellSessionCore>>>,
 	abort_state: ShellAbortState,
 	config:      ShellConfig,
-	children:    ActiveChildren,
+	active:      ActiveSession,
 }
 
 impl Shell {
@@ -246,6 +265,7 @@ impl Shell {
 				minimizer: None,
 				filesystem: Fs::native(),
 				protolens,
+				seed: None,
 			},
 			Some(opt) => {
 				let minimizer = opt
@@ -258,15 +278,36 @@ impl Shell {
 					minimizer,
 					filesystem: opt.filesystem,
 					protolens,
+					seed: None,
 				}
 			},
 		};
+		Self::with_config(config)
+	}
+
+	fn with_config(config: ShellConfig) -> Self {
 		Self {
 			session: Arc::new(TokioMutex::new(None)),
 			abort_state: ShellAbortState::default(),
 			config,
-			children: ActiveChildren::default(),
+			active: ActiveSession::default(),
 		}
+	}
+
+	/// A new shell with this one's options whose session starts from this
+	/// session's state (variables, functions, aliases, options, working
+	/// directory) as of its last command boundary: while a command runs, the
+	/// state that command started from. What the fork sets stays in the
+	/// fork. Never waits for a running command. Before this shell has a
+	/// session, the fork starts from this shell's own seed, or as a new
+	/// shell.
+	#[must_use]
+	pub fn fork(&self) -> Self {
+		let latest = self.active.lock().as_ref().map(|active| active.image.get());
+		Self::with_config(ShellConfig {
+			seed: latest.or_else(|| self.config.seed.clone()),
+			..self.config.clone()
+		})
 	}
 
 	/// Run one command on the session.
@@ -301,7 +342,7 @@ impl Shell {
 		run_shell_session(
 			self.session.clone(),
 			self.abort_state.clone(),
-			self.children.clone(),
+			self.active.clone(),
 			self.config.clone(),
 			run_config,
 			on_chunk,
@@ -332,7 +373,7 @@ impl Shell {
 			time::sleep(SHELL_CLOSE_GRACE).await;
 			kill_process_groups(&targets, true);
 		}
-		*self.children.lock() = None;
+		*self.active.lock() = None;
 	}
 
 	/// Forcefully stop this shell without waiting. Used from synchronous
@@ -345,12 +386,12 @@ impl Shell {
 			return false;
 		};
 		let Some(session) = guard.take() else {
-			*self.children.lock() = None;
+			*self.active.lock() = None;
 			return true;
 		};
 		let targets = session.session.children().pids();
 		drop(session);
-		*self.children.lock() = None;
+		*self.active.lock() = None;
 		kill_process_groups(&targets, true);
 		true
 	}
@@ -365,10 +406,10 @@ impl Shell {
 	#[must_use]
 	pub fn pids(&self) -> Vec<i32> {
 		self
-			.children
+			.active
 			.lock()
 			.as_ref()
-			.map_or_else(Vec::new, Children::pids)
+			.map_or_else(Vec::new, |active| active.children.pids())
 	}
 
 	/// Number of background jobs (`cmd &`) the persistent session still runs,
@@ -405,6 +446,7 @@ pub async fn execute_shell(
 		minimizer:     minimizer.clone(),
 		filesystem:    options.filesystem,
 		protolens:     protolens.clone(),
+		seed:          None,
 	};
 	let run_config = ShellRunConfig {
 		command: options.command,
@@ -449,6 +491,7 @@ pub async fn execute_shell_streams(
 		minimizer:     None,
 		filesystem:    options.filesystem,
 		protolens:     protolens.clone(),
+		seed:          None,
 	};
 	let run_config = ShellRunConfig {
 		command: options.command,
@@ -557,7 +600,7 @@ const fn cancelled_result(
 async fn run_shell_session(
 	session: Arc<TokioMutex<Option<ShellSessionCore>>>,
 	abort_state: ShellAbortState,
-	children: ActiveChildren,
+	active: ActiveSession,
 	config: ShellConfig,
 	run_config: ShellRunConfig,
 	on_chunk: Option<Sender<String>>,
@@ -569,6 +612,7 @@ async fn run_shell_session(
 	let mut run_task = tokio::spawn({
 		let session = session.clone();
 		let abort_state = abort_state.clone();
+		let active = active.clone();
 		let tokio_cancel = tokio_cancel.clone();
 		let at = ct.emplace_abort_token();
 		async move {
@@ -577,7 +621,7 @@ async fn run_shell_session(
 				core
 			} else {
 				let core = create_session_for_run(&config, Some(&tokio_cancel)).await?;
-				*children.lock() = Some(core.session.children());
+				*active.lock() = Some(SessionHandles::of(&core.session));
 				session_guard.insert(core)
 			};
 			abort_state.set(at).await;
@@ -590,6 +634,11 @@ async fn run_shell_session(
 		reason = ct.wait() => {
 			tokio_cancel.cancel();
 			let graceful = time::timeout(CANCEL_RUN_GRACE, &mut run_task).await;
+			// A run that wound down by itself leaves the session usable, with
+			// the background jobs earlier commands left running (a cancel
+			// spares them). One that had to be dropped, or that failed, leaves
+			// the session in an unknown state: end it.
+			let usable = matches!(graceful, Ok(Ok(Ok(_))));
 			if graceful.is_err() {
 				// Dropping the run stops the command with `KILL`.
 				run_task.abort();
@@ -599,8 +648,9 @@ async fn run_shell_session(
 			// Use try_lock to avoid deadlocking if another task holds the session.
 			// If we can't acquire the lock, the session will be cleaned up when the
 			// holding task finishes.
-			if let Ok(mut guard) = session.try_lock() {
+			if !usable && let Ok(mut guard) = session.try_lock() {
 				*guard = None;
+				*active.lock() = None;
 			}
 			stage.interrupt();
 			return Ok(cancelled_result(
@@ -619,6 +669,7 @@ async fn run_shell_session(
 	// built so far. Only a failed run leaves the shell in an unknown state.
 	if res.is_err() {
 		*session.lock().await = None;
+		*active.lock() = None;
 	}
 	Ok(res?.into_run_result())
 }
@@ -743,7 +794,7 @@ const fn normalize_env_key(key: &str) -> &str {
 /// case-sensitive shell. Per-command env keeps the narrower
 /// [`normalize_env_key`]: a lowercase `tmp` there is an ordinary variable.
 #[cfg(windows)]
-const fn normalize_inherited_env_key(key: &str) -> &str {
+pub(crate) const fn normalize_inherited_env_key(key: &str) -> &str {
 	if key.eq_ignore_ascii_case("TEMP") {
 		"TEMP"
 	} else if key.eq_ignore_ascii_case("TMP") {
@@ -756,7 +807,7 @@ const fn normalize_inherited_env_key(key: &str) -> &str {
 }
 
 #[cfg(not(windows))]
-const fn normalize_inherited_env_key(key: &str) -> &str {
+pub(crate) const fn normalize_inherited_env_key(key: &str) -> &str {
 	key
 }
 
@@ -768,7 +819,7 @@ const fn normalize_inherited_env_key(key: &str) -> &str {
 /// are expanded with the same `GetLongPathNameW` routine `cd` uses (symlinks
 /// and junctions kept); anything else, or a failed expansion, passes through.
 #[cfg(windows)]
-fn inherited_env_value<'a>(key: &str, value: &'a str) -> std::borrow::Cow<'a, str> {
+pub(crate) fn inherited_env_value<'a>(key: &str, value: &'a str) -> std::borrow::Cow<'a, str> {
 	let path = Path::new(value);
 	if !matches!(key, "TEMP" | "TMP" | "TMPDIR") || !path.is_absolute() {
 		return std::borrow::Cow::Borrowed(value);
@@ -783,7 +834,10 @@ fn inherited_env_value<'a>(key: &str, value: &'a str) -> std::borrow::Cow<'a, st
 }
 
 #[cfg(not(windows))]
-const fn inherited_env_value<'a>(_key: &str, value: &'a str) -> std::borrow::Cow<'a, str> {
+pub(crate) const fn inherited_env_value<'a>(
+	_key: &str,
+	value: &'a str,
+) -> std::borrow::Cow<'a, str> {
 	std::borrow::Cow::Borrowed(value)
 }
 
@@ -936,9 +990,9 @@ fn initial_cwd() -> BString {
 	home.map_or_else(|| BString::from("/"), |home| path_bytes(&home))
 }
 
-/// Start a session for `config`. Setup (the `env` fallback, snapshot
-/// sourcing) belongs to the creating run, so its processes and provider
-/// calls stop with `cancel_token`.
+/// Start a session for `config`, from its seed when it has one. Setup (the
+/// `env` fallback, snapshot sourcing) belongs to the creating run, so its
+/// processes and provider calls stop with `cancel_token`.
 async fn create_session_for_run(
 	config: &ShellConfig,
 	cancel_token: Option<&CancellationToken>,
@@ -963,11 +1017,12 @@ async fn create_session_for_run(
 		.into_iter()
 		.map(|(key, value)| (BString::from(key), BString::from(value)))
 		.collect();
+	let cwd = config.seed.as_ref().map_or_else(initial_cwd, Image::cwd);
 	// The pi utilities (and their `PI_DISABLE_*` gates), the process
 	// builtins, `nohup`, `timeout` and the `git` layers are the session's
 	// commands (`crate::tools`), configured from this environment; `exec`
 	// and `suspend` never act on this process.
-	let session = Session::new(SessionConfig {
+	let session_config = SessionConfig {
 		env,
 		cwd: cwd.clone(),
 		fs: Box::new(slot.clone()),
@@ -975,20 +1030,27 @@ async fn create_session_for_run(
 		runtime,
 		output_decoding: None,
 		protolens: Some(config.protolens.clone()),
-	})
+	};
+	let session = match &config.seed {
+		Some(image) => Session::restore(session_config, image),
+		None => Session::new(session_config),
+	}
 	.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
 	let mut core = ShellSessionCore { session, slot, filesystem, cwd, protolens_cwd };
 
-	if !has_env_var {
-		apply_env_fallback(&mut core, &cancel)
-			.await
-			.map_err(|err| Error::msg(format!("Failed to set env fallback: {err}")))?;
-	}
-	if let Some(snapshot_path) = config.snapshot_path.as_ref() {
-		let escaped = snapshot_path.replace('\'', "'\\''");
-		run_setup(&mut core, format!("source '{escaped}'"), &cancel)
-			.await
-			.map_err(|err| Error::msg(format!("Failed to source snapshot: {err}")))?;
+	// A seed already holds both.
+	if config.seed.is_none() {
+		if !has_env_var {
+			apply_env_fallback(&mut core, &cancel)
+				.await
+				.map_err(|err| Error::msg(format!("Failed to set env fallback: {err}")))?;
+		}
+		if let Some(snapshot_path) = config.snapshot_path.as_ref() {
+			let escaped = snapshot_path.replace('\'', "'\\''");
+			run_setup(&mut core, format!("source '{escaped}'"), &cancel)
+				.await
+				.map_err(|err| Error::msg(format!("Failed to source snapshot: {err}")))?;
+		}
 	}
 	restore_session_filesystem(&core);
 	if cancel.is_cancelled() {
@@ -2069,7 +2131,8 @@ async fn read_output_buffered(
 		// large output.
 		if !exceeded && captured_bytes.saturating_add(n) > max_capture_bytes {
 			exceeded = true;
-			captured = String::new();
+			captured.clear();
+			captured.shrink_to_fit();
 		}
 		captured_bytes = captured_bytes.saturating_add(n);
 

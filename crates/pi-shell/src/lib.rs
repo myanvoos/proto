@@ -51,6 +51,7 @@ mod suites;
 
 pub mod cancel;
 mod child_session;
+mod cmd_dialect;
 pub mod minimizer;
 pub mod output_decode;
 mod paths;

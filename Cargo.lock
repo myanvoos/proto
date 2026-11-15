@@ -441,12 +441,6 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "base64"
-version = "0.22.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
-
-[[package]]
-name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
@@ -702,6 +696,15 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
+name = "bzip2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
+dependencies = [
+ "libbz2-rs-sys",
+]
 
 [[package]]
 name = "calendrical_calculations"
@@ -3085,12 +3088,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
-name = "hifijson"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "242402749acf71e6f32f5857598b7002c4058a4e3c3b22b4c7d51cab9aea754e"
-
-[[package]]
 name = "html-escape"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3104,7 +3101,7 @@ checksum = "ab2ac876344507a167411357ae47c5f8b818c77ea7799d7fa0f687db874aeab5"
 dependencies = [
  "ahash",
  "astral-html",
- "base64 0.23.1",
+ "base64",
  "bitflags 2.13.2",
  "html-escape",
  "html5ever",
@@ -3710,9 +3707,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "jaq-core"
-version = "3.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "723ad9253808e95daa2d10ad5b258ac4e65c07003e223e08d1d8734c2942d606"
+version = "3.1.1"
 dependencies = [
  "dyn-clone",
  "once_cell",
@@ -3722,13 +3717,10 @@ dependencies = [
 [[package]]
 name = "jaq-json"
 version = "2.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4be2f53207ffb1313a2d2ad819cfa8bfaa7936cb85a110eda10fd5da822cec94"
 dependencies = [
  "bstr",
  "bytes",
  "foldhash 0.1.5",
- "hifijson",
  "indexmap",
  "jaq-core",
  "jaq-std",
@@ -3740,19 +3732,13 @@ dependencies = [
 
 [[package]]
 name = "jaq-std"
-version = "3.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56b378d4f7587d332111a92608348db6d6b9b8f7cb5ee1d2bd162ec715d7c5bf"
+version = "3.0.3"
 dependencies = [
- "aho-corasick",
- "base64 0.22.1",
  "bstr",
  "jaq-core",
  "jiff",
  "libm",
- "log",
- "regex-bites",
- "urlencoding",
+ "onig",
 ]
 
 [[package]]
@@ -3963,6 +3949,12 @@ name = "leb128"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
+
+[[package]]
+name = "libbz2-rs-sys"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32f454fd6831a29c0e827ed075bca2a15be201bd57f4168f0fd1041124eab17e"
 
 [[package]]
 name = "libc"
@@ -4178,6 +4170,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
 dependencies = [
  "twox-hash",
+]
+
+[[package]]
+name = "lzma-rust2"
+version = "0.25.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef1d73c59a56771343712b22ea5615092c612c16ba291c0979e3105dfeec4890"
+dependencies = [
+ "sha2 0.11.1",
 ]
 
 [[package]]
@@ -5255,9 +5256,10 @@ dependencies = [
  "anyhow",
  "argmax",
  "async-trait",
- "base64 0.23.1",
+ "base64",
  "bigdecimal",
  "bstr",
+ "bzip2",
  "chrono",
  "clap",
  "dns-lookup",
@@ -5289,6 +5291,7 @@ dependencies = [
  "libc",
  "lscolors",
  "lz4_flex",
+ "lzma-rust2",
  "md-5 0.10.6",
  "md4",
  "memchr",
@@ -5309,6 +5312,7 @@ dependencies = [
  "rand",
  "rayon",
  "regex",
+ "regex-automata",
  "rustc-hash",
  "rustix 1.1.6",
  "self_cell",
@@ -5316,6 +5320,8 @@ dependencies = [
  "sha1",
  "sha2 0.10.9",
  "smallvec",
+ "stacker",
+ "tar",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -5353,7 +5359,7 @@ dependencies = [
  "ashpd",
  "ast-grep-core",
  "atspi",
- "base64 0.23.1",
+ "base64",
  "core-graphics",
  "flume",
  "foreign-types",
@@ -5412,7 +5418,7 @@ version = "20.2.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.23.1",
+ "base64",
  "blake3",
  "bstr",
  "bytes",
@@ -5491,6 +5497,8 @@ dependencies = [
  "parking_lot 0.13.0",
  "pi-vfs",
  "regex",
+ "serde",
+ "serde_json",
  "tokio",
  "windows-sys 0.61.2",
 ]
@@ -5948,12 +5956,6 @@ dependencies = [
  "memchr",
  "regex-syntax",
 ]
-
-[[package]]
-name = "regex-bites"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6a15a2fa0bfda9361941c45550896ae87b15cc6c8c939ea350079670332e211"
 
 [[package]]
 name = "regex-syntax"
@@ -6493,6 +6495,16 @@ name = "tap"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
+
+[[package]]
+name = "tar"
+version = "0.4.46"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+dependencies = [
+ "filetime",
+ "libc",
+]
 
 [[package]]
 name = "target-lexicon"
@@ -7140,12 +7152,6 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
-
-[[package]]
-name = "urlencoding"
-version = "2.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "daf8dba3b7eb870caf1ddeed7bc9d2a049f3cfdfae7cb521b087cc33ae4c49da"
 
 [[package]]
 name = "utf16_iter"

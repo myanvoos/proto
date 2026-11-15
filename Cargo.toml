@@ -10,6 +10,9 @@ members = [
    "crates/pi-vfs",
    "crates/pi-walker",
    "crates/vendor/grep-searcher",
+   "crates/vendor/jaq-core",
+   "crates/vendor/jaq-json",
+   "crates/vendor/jaq-std",
 ]
 resolver = "3"
 
@@ -26,6 +29,12 @@ repository = "https://github.com/myanvoos/proto"
 # or a whole slice; the vendored copy adds the chunk-fed `search_push` the
 # engine's grep/rg pipelines feed from their own buffers.
 grep-searcher = { path = "crates/vendor/grep-searcher" }
+# jaq-core 3.1.1, jaq-json 2.0.3 and jaq-std 3.0.3 back pi's `jq` builtin. The
+# vendored copies poll cancellation inside filter evaluation and follow jq
+# 1.8's semantics where jaq's differ (see each crate's README.md).
+jaq-core = { path = "crates/vendor/jaq-core" }
+jaq-json = { path = "crates/vendor/jaq-json" }
+jaq-std = { path = "crates/vendor/jaq-std" }
 
 [profile.release]
 opt-level = 3
