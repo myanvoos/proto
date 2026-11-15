@@ -69,7 +69,7 @@ pub struct RestoreOpts {
 	/// Report a missing command as pi's shell did (`command not found:
 	/// name`) instead of bash's order (`name: command not found`); see
 	/// [`crate::bash::ShellInit::proto_errors`].
-	pub proto_errors: bool,
+	pub proto_errors:  bool,
 }
 
 /// Result of [`Shell::externalize`](crate::bash::Shell::externalize).

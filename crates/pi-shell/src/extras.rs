@@ -206,7 +206,8 @@ pub(crate) fn invocation(
 		.map(|(name, value)| (name.to_str_lossy().into_owned(), value.to_str_lossy().into_owned()))
 		.collect();
 	let [stdin, stdout, stderr] = stdio;
-	invocation.stdio = [open_fd(stdin, false, tag), open_fd(stdout, true, tag), open_fd(stderr, true, tag)];
+	invocation.stdio =
+		[open_fd(stdin, false, tag), open_fd(stdout, true, tag), open_fd(stderr, true, tag)];
 	invocation.fds = extra_fds
 		.iter()
 		.filter(|(_, fd)| fd.is_open())

@@ -47,8 +47,8 @@ pub mod fs;
 pub mod glob;
 pub mod grep;
 pub mod ignore;
-mod protofs;
 pub mod pattern;
+mod protofs;
 #[cfg(test)]
 mod testing;
 pub mod walk;

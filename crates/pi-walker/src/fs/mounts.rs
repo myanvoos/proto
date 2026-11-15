@@ -31,14 +31,14 @@ const TTL: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Mount {
 	/// Mount point, canonical spelling.
-	pub(crate) point:  PathBuf,
+	pub(crate) point:   PathBuf,
 	/// A network filesystem.
-	pub(crate) remote: bool,
+	pub(crate) remote:  bool,
 	/// Admin socket of the protofs daemon that may serve it: named by the
 	/// mount source for a Unix-socket NFS mount, else found in protofs's state
 	/// directory for a loopback NFS or SMB mount. The daemon confirms the
 	/// mount before answering for it.
-	pub(crate) protofs:  Option<PathBuf>,
+	pub(crate) protofs: Option<PathBuf>,
 }
 
 /// A reading of the mount table.

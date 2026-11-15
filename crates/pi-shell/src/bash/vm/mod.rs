@@ -152,12 +152,12 @@ pub struct ShellInit {
 	/// Unexported parameters a zsh shell sets from its command line before
 	/// its startup files: `ZSH_EXECUTION_STRING` (the `-c` string) and
 	/// `ZSH_SCRIPT` (the script file).
-	pub zsh_params:  Vec<(BString, BString)>,
+	pub zsh_params:   Vec<(BString, BString)>,
 	/// The system zsh's function directories, which a zsh shell's `fpath`
 	/// starts with when the environment sets no `FPATH` (zsh's compiled-in
 	/// `FPATH_DIR` and its subdirectories). `None`: zsh 5.9's default
 	/// layout.
-	pub zsh_fpath:   Option<Vec<BString>>,
+	pub zsh_fpath:    Option<Vec<BString>>,
 	/// Whose shell it is: a user's, or a program's ([`Profile::Tool`]).
 	pub profile:      Profile,
 	/// Report a missing command as pi's shell did (`command not found:
@@ -203,18 +203,18 @@ pub fn is_tool(store: &mut dyn StateStore, vp: &Vproc) -> Result<bool, StoreErro
 impl Default for ShellInit {
 	fn default() -> Self {
 		Self {
-			mode:        ModeId::Bash,
-			argv0:       BString::from("bash"),
-			args:        Vec::new(),
-			env:         Vec::new(),
-			cwd:         BString::from("/"),
-			interactive: false,
-			options:     Vec::new(),
-			shell_pid:   0,
-			startup:     Vec::new(),
-			zsh_params:  Vec::new(),
-			zsh_fpath:   None,
-			profile:     Profile::User,
+			mode:         ModeId::Bash,
+			argv0:        BString::from("bash"),
+			args:         Vec::new(),
+			env:          Vec::new(),
+			cwd:          BString::from("/"),
+			interactive:  false,
+			options:      Vec::new(),
+			shell_pid:    0,
+			startup:      Vec::new(),
+			zsh_params:   Vec::new(),
+			zsh_fpath:    None,
+			profile:      Profile::User,
 			proto_errors: false,
 		}
 	}

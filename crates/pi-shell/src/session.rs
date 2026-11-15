@@ -411,8 +411,13 @@ impl Session {
 			None => {
 				let mut store = MemStore::new();
 				// A program's shell: no history, line editor or completion system.
-				let init =
-					ShellInit { env, cwd, profile: Profile::Tool, proto_errors: true, ..ShellInit::default() };
+				let init = ShellInit {
+					env,
+					cwd,
+					profile: Profile::Tool,
+					proto_errors: true,
+					..ShellInit::default()
+				};
 				let shell =
 					Shell::create(&engine, &mut Cx { host: &mut host, store: &mut store }, init)
 						.map_err(SessionError::Create)?;
@@ -420,7 +425,8 @@ impl Session {
 			},
 			Some(image) => {
 				let mut store = MemStore::clone(&image.0);
-				let opts = RestoreOpts { reseed_random: true, proto_errors: true, ..RestoreOpts::default() };
+				let opts =
+					RestoreOpts { reseed_random: true, proto_errors: true, ..RestoreOpts::default() };
 				let (shell, _) =
 					Shell::restore(&engine, &mut Cx { host: &mut host, store: &mut store }, opts)
 						.map_err(SessionError::Restore)?;
