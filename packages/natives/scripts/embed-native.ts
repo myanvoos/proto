@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { addonSentinel, assertAddonSentinel } from "./addon-sentinel";
 
 const reset = process.argv.includes("--reset");
 const outputPath = path.join(import.meta.dir, "../native/embedded-addon.js");
@@ -95,11 +96,16 @@ if (available.length === 0) {
 }
 const packageJson = (await Bun.file(packageJsonPath).json()) as { version: string };
 
+// The embedded archive is what a shipped binary extracts and loads, so refuse to
+// embed a stale build: an addon compiled before the version (and sentinel) bump
+// would ship a release whose own loader rejects it.
 const archiveFilename = `${archivePrefix}${platformTag}${archiveSuffix}`;
 const archivePath = path.join(nativeDir, archiveFilename);
 const archiveEntries: Record<string, Uint8Array> = {};
 for (const addon of available) {
-	archiveEntries[addon.filename] = await fs.readFile(addon.path);
+	const bytes = await fs.readFile(addon.path);
+	assertAddonSentinel(addon.filename, addonSentinel(bytes), packageJson.version);
+	archiveEntries[addon.filename] = bytes;
 }
 await Bun.write(archivePath, await new Bun.Archive(archiveEntries, { compress: "gzip", level: 9 }).bytes());
 

@@ -279,8 +279,20 @@ jobs:
          - name: Smoke release binary
            if: matrix.libc != 'musl'
            run: |
+              set -euo pipefail
               runtime_dir="$(mktemp -d)"
-              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
+              binary="$(realpath "${{ matrix.binary_path }}")"
+              env HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$binary" --version
+              # --version never touches the addon; grep proves the embedded native
+              # archive extracts, matches the loader's version sentinel, and loads.
+              mkdir -p "$runtime_dir/search"
+              printf 'native-smoke-needle\n' > "$runtime_dir/search/sample.txt"
+              cd "$runtime_dir/search"
+              output=$(env HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$binary" grep native-smoke-needle .)
+              case "$output" in
+                *"Total matches: 1"*) ;;
+                *) echo "native addon smoke failed; grep printed:" >&2; printf '%s\n' "$output" >&2; exit 1 ;;
+              esac
          - name: Smoke musl release binary on Alpine
            if: matrix.libc == 'musl'
            run: |
@@ -364,8 +376,20 @@ jobs:
            run: bash scripts/ci-macos-sign.sh "${{ matrix.binary_path }}"
          - name: Smoke release binary
            run: |
+              set -euo pipefail
               runtime_dir="$(mktemp -d)"
-              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
+              binary="$(realpath "${{ matrix.binary_path }}")"
+              env HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$binary" --version
+              # --version never touches the addon; grep proves the embedded native
+              # archive extracts, matches the loader's version sentinel, and loads.
+              mkdir -p "$runtime_dir/search"
+              printf 'native-smoke-needle\n' > "$runtime_dir/search/sample.txt"
+              cd "$runtime_dir/search"
+              output=$(env HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "$binary" grep native-smoke-needle .)
+              case "$output" in
+                *"Total matches: 1"*) ;;
+                *) echo "native addon smoke failed; grep printed:" >&2; printf '%s\n' "$output" >&2; exit 1 ;;
+              esac
          - name: Stage binary in draft release
            env:
               GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
