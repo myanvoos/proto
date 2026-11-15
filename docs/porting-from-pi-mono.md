@@ -5,10 +5,10 @@ Use it for any merge: single file, feature branch, or full release sync.
 
 ## Last Sync Point (historical upstream marker)
 
-**Commit:** `b21b42d032919de2f2e6920a76fa9a37c3920c0a`
-**Date:** 2026-03-22
+**Commit:** `7c49c11aa5` (`upstream/main`, oh-my-pi `v18.20.2`)
+**Date:** 2026-11-15
 
-Update this section after each sync; do not reuse the previous range. This commit is an upstream pi-mono marker and may not exist in this repo's local object database.
+Update this section after each sync; do not reuse the previous range. This commit is an upstream oh-my-pi marker and may not exist in this repo's local object database.
 
 When starting a new sync, generate patches from this commit forward in a pi-mono checkout or remote that contains the commit:
 
