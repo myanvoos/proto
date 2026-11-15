@@ -16,6 +16,8 @@ export function loadProviderModels(provider: string): Record<string, unknown> | 
 			return require("./models/amazon-bedrock.json") as Record<string, unknown>;
 		case "anthropic":
 			return require("./models/anthropic.json") as Record<string, unknown>;
+		case "antigravity-cli":
+			return require("./models/antigravity-cli.json") as Record<string, unknown>;
 		case "azure":
 			return require("./models/azure.json") as Record<string, unknown>;
 		case "baseten":

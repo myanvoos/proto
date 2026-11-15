@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the `antigravity-cli` provider, which drives Google's official `agy acp` CLI over the Agent Client Protocol with managed binary installation, stateful conversations across tool steps, host tool execution through an IDE MCP bridge, and `/login antigravity-cli` Google sign-in.
+
 ## [20.2.0] - 2026-11-08
 
 ### Added

@@ -8,6 +8,7 @@ import type { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
 import type { alibabaTokenPlanProvider } from "./alibaba-token-plan";
 import type { amazonBedrockProvider } from "./amazon-bedrock";
 import type { anthropicProvider } from "./anthropic";
+import type { antigravityCliProvider } from "./antigravity-cli";
 import type { azureProvider } from "./azure";
 import type { basetenProvider } from "./baseten";
 import type { bedrockMantleProvider } from "./bedrock-mantle";
@@ -98,6 +99,7 @@ export type RegistryDefinition = [
 	typeof azureProvider,
 	typeof openaiCodexProvider,
 	typeof anthropicProvider,
+	typeof antigravityCliProvider,
 	typeof zaiProvider,
 	typeof zaiCodingPlanProvider,
 	typeof kimiCodeProvider,
@@ -194,6 +196,7 @@ export const REGISTRY_IDS = [
 	"azure",
 	"openai-codex",
 	"anthropic",
+	"antigravity-cli",
 	"zai",
 	"zai-coding-plan",
 	"kimi-code",
@@ -309,6 +312,8 @@ export function loadProviderDefinition(id: string): RegistryDefinition | undefin
 			return require("./openai-codex").openaiCodexProvider;
 		case "anthropic":
 			return require("./anthropic").anthropicProvider;
+		case "antigravity-cli":
+			return require("./antigravity-cli").antigravityCliProvider;
 		case "zai":
 			return require("./zai").zaiProvider;
 		case "zai-coding-plan":

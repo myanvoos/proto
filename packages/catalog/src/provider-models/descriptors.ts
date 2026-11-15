@@ -211,6 +211,10 @@ export const CATALOG_PROVIDERS = [
 		catalogDiscovery: { label: "DeepSeek" },
 	},
 	{
+		id: "antigravity-cli",
+		defaultModel: "gemini-4-carbon",
+	},
+	{
 		id: "devin",
 		defaultModel: "swe-1-6",
 		envVars: ["DEVIN_API_KEY"],

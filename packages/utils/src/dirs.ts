@@ -555,6 +555,11 @@ export function getPythonGatewayDir(): string {
 	return dirs.agentSubdir(undefined, "python-gateway", "state");
 }
 
+/** Get the managed Antigravity CLI directory (~/.proto/antigravity-cli): the `agy` binary and its isolated state. */
+export function getAntigravityCliDir(): string {
+	return dirs.rootSubdir("antigravity-cli", "data");
+}
+
 export function getPuppeteerDir(): string {
 	return dirs.rootSubdir("puppeteer", "cache");
 }

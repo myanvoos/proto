@@ -1,0 +1,224 @@
+{
+	"gemini-4-carbon": {
+		"id": "gemini-4-carbon",
+		"name": "Gemini 4 Carbon",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 262144,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			],
+			"defaultLevel": "medium"
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"gemini-4-argon": {
+		"id": "gemini-4-argon",
+		"name": "Gemini 4 Argon",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 65536,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			],
+			"defaultLevel": "medium"
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"gemini-4-hydrogen": {
+		"id": "gemini-4-hydrogen",
+		"name": "Gemini 4 Hydrogen",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 262144,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high",
+				"xhigh"
+			],
+			"defaultLevel": "medium"
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"gemini-3.8-flash": {
+		"id": "gemini-3.8-flash",
+		"name": "Gemini 3.8 Flash",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1048576,
+		"maxTokens": 65536,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			],
+			"defaultLevel": "medium"
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"claude-opus-5-5": {
+		"id": "claude-opus-5-5",
+		"name": "Claude Opus 5.5",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			],
+			"defaultLevel": "medium"
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"claude-sonnet-5-5": {
+		"id": "claude-sonnet-5-5",
+		"name": "Claude Sonnet 5.5",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": true,
+		"input": [
+			"text",
+			"image"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 1000000,
+		"maxTokens": 128000,
+		"thinking": {
+			"mode": "effort",
+			"efforts": [
+				"low",
+				"medium",
+				"high"
+			],
+			"defaultLevel": "medium"
+		},
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	},
+	"gpt-oss-120b-medium": {
+		"id": "gpt-oss-120b-medium",
+		"name": "GPT-OSS 120B (Medium)",
+		"api": "antigravity-acp",
+		"provider": "antigravity-cli",
+		"baseUrl": "https://antigravity.google",
+		"reasoning": false,
+		"input": [
+			"text"
+		],
+		"supportsTools": true,
+		"cost": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0
+		},
+		"contextWindow": 131072,
+		"maxTokens": 32768,
+		"requiresGlyphTokenization": false,
+		"supportsComputerUse": false,
+		"supportsAssistantPrefill": false
+	}
+}

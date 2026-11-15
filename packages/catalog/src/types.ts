@@ -17,7 +17,8 @@ export type KnownApi =
 	| "ollama-chat"
 	| "cursor-agent"
 	| "gitlab-duo-agent"
-	| "devin-agent";
+	| "devin-agent"
+	| "antigravity-acp";
 export type Api = KnownApi | (string & {});
 
 export type ThinkingControlMode =

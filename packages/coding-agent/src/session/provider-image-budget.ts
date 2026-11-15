@@ -27,6 +27,7 @@ const PROVIDER_IMAGE_BUDGETS: Record<string, number> = {
 	google: 200,
 	"google-vertex": 200,
 	"google-gemini-cli": 200,
+	"antigravity-cli": 200,
 	openrouter: 90,
 	umans: 10,
 };

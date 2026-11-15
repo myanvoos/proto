@@ -7,6 +7,7 @@ export const GENERATED_PROVIDERS = [
 	"alibaba-token-plan",
 	"amazon-bedrock",
 	"anthropic",
+	"antigravity-cli",
 	"azure",
 	"baseten",
 	"bedrock-mantle",

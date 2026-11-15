@@ -38,6 +38,7 @@ import type { ApiKey } from "./auth-retry";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
 import type { FallbackParam, StopDetails } from "./providers/anthropic-wire";
+import type { AntigravityCliOptions } from "./providers/antigravity-cli";
 import type { AzureOpenAIResponsesOptions } from "./providers/azure-openai-responses";
 import type { CursorOptions } from "./providers/cursor";
 import type { DevinOptions } from "./providers/devin";
@@ -72,6 +73,7 @@ export interface ApiOptionsMap {
 	"cursor-agent": CursorOptions;
 	"gitlab-duo-agent": GitLabDuoWorkflowOptions;
 	"devin-agent": DevinOptions;
+	"antigravity-acp": AntigravityCliOptions;
 }
 
 type _CheckExhaustive =
@@ -705,11 +707,35 @@ export interface ClaudeSdkContextPayload {
 	entries: Array<{ type: string; [key: string]: unknown }>;
 }
 
+/** Row counts of an agy conversation store at a turn end; truncating to them rewinds the conversation there. */
+export interface AntigravityCliCheckpoint {
+	steps: number;
+	generations: number;
+	executions: number;
+}
+
+/**
+ * Where an Antigravity CLI (`agy`) step ran. Written and read by the
+ * `antigravity-acp` transport: when the transcript diverges from agy's own
+ * history, it rewinds agy's conversation to the newest turn end whose digest
+ * still matches instead of replaying the whole transcript as text.
+ */
+export interface AntigravityCliPayload {
+	type: "antigravityCli";
+	/** agy conversation (ACP session) the step ran in. */
+	conversationId: string;
+	/** Structural digest of the transcript through this message. */
+	digest: string;
+	/** Present on the step that ended agy's turn. */
+	checkpoint?: AntigravityCliCheckpoint;
+}
+
 export type ProviderPayload =
 	| OpenAIResponsesHistoryPayload
 	| AnthropicMessagePayload
 	| AnthropicCompactionPayload
-	| ClaudeSdkContextPayload;
+	| ClaudeSdkContextPayload
+	| AntigravityCliPayload;
 
 export interface ProviderInputTransformation {
 	type: string;

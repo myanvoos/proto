@@ -24,6 +24,7 @@ import { ProviderHttpError } from "./error";
 import { isConcurrencyCapExclusion, isUsageLimitOutcome } from "./error/rate-limit";
 import type { BedrockOptions } from "./providers/amazon-bedrock";
 import type { AnthropicOptions } from "./providers/anthropic";
+import type { AntigravityCliOptions } from "./providers/antigravity-cli";
 import type { CursorOptions } from "./providers/cursor";
 import type { DevinOptions } from "./providers/devin";
 import { isGitLabDuoModel, streamGitLabDuo } from "./providers/gitlab-duo";
@@ -39,6 +40,7 @@ import { streamPiNative } from "./providers/pi-native-client";
 
 import {
 	streamAnthropic,
+	streamAntigravityCli,
 	streamAzureOpenAIResponses,
 	streamBedrock,
 	streamCursor,
@@ -958,6 +960,13 @@ function streamDispatch<TApi extends Api>(
 
 		case "devin-agent":
 			return streamDevin(providerModel as Model<"devin-agent">, context, providerOptions as DevinOptions);
+
+		case "antigravity-acp":
+			return streamAntigravityCli(
+				providerModel as Model<"antigravity-acp">,
+				context,
+				providerOptions as AntigravityCliOptions,
+			);
 
 		default:
 			throw new AIError.ConfigurationError(`Unhandled API: ${api}`);
@@ -2078,6 +2087,14 @@ function mapOptionsForApi<TApi extends Api>(
 				...base,
 				chatModelUid: resolveWireModelId(devinModel, effort),
 			});
+		}
+		case "antigravity-acp": {
+			const agyModel = model as Model<"antigravity-acp">;
+			const reasoning =
+				options?.reasoning && !options.disableReasoning && !options.forceReasoningOff && agyModel.reasoning
+					? requireSupportedEffort(agyModel, options.reasoning)
+					: undefined;
+			return castApi<"antigravity-acp">({ ...base, cwd: options?.cwd, reasoning });
 		}
 		default:
 			throw new AIError.ConfigurationError(`Unhandled API in mapOptionsForApi: ${model.api}`);

@@ -464,6 +464,7 @@ const STRUCTURED_API_KEY_PROVIDERS: ReadonlySet<string> = new Set([
 	"github-copilot",
 	"google-gemini-cli",
 	"google-antigravity",
+	"antigravity-cli",
 ]);
 
 const STRICT_PROBE_SKIPPED_APIS: ReadonlySet<Api> = new Set<Api>([
