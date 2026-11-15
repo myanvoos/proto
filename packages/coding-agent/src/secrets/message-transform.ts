@@ -569,11 +569,7 @@ function collectMessageRegexSecretValues(obfuscator: SecretObfuscator, messages:
 			}
 			continue;
 		}
-		if (
-			message.role !== "user" &&
-			message.role !== "toolResult" &&
-			!(message.role === "developer" && message.attribution === "user")
-		) {
+		if (message.role !== "user" && message.role !== "toolResult" && message.role !== "developer") {
 			continue;
 		}
 		const target = message as UserFacingMessage;
@@ -610,11 +606,7 @@ export function obfuscateMessages(obfuscator: SecretObfuscator, messages: Messag
 				current = replay;
 			}
 		}
-		if (
-			current.role !== "user" &&
-			current.role !== "toolResult" &&
-			!(current.role === "developer" && current.attribution === "user")
-		) {
+		if (current.role !== "user" && current.role !== "toolResult" && current.role !== "developer") {
 			if (current.role !== "assistant") return current;
 			const content = obfuscateAssistantContentForReplay(obfuscator, current.content, sharedRegexSecretValues);
 			if (content === current.content) return current;

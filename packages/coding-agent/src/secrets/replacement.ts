@@ -1,3 +1,5 @@
+import { advanceRegexAfterEmptyMatch } from "./regex";
+
 export const REPLACEMENT_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const NONMATCHING_REPLACEMENT_CHARS = `${REPLACEMENT_CHARS}!#$%&()*+,-./:;<=>?@[]^_{|}~`;
 
@@ -45,7 +47,7 @@ export function regexRematchesInContext(candidate: string, regex: RegExp, ctx: R
 
 		if (matchEnd > spanStart) return true;
 
-		if (m[0].length === 0) regex.lastIndex++;
+		if (m[0].length === 0) advanceRegexAfterEmptyMatch(regex, probe);
 	}
 	return false;
 }

@@ -6,6 +6,7 @@ import {
 	type ReplaceRegexScan,
 	resumePlaceholderScanAfterRejectedCandidate,
 } from "./placeholder";
+import { advanceRegexAfterEmptyMatch } from "./regex";
 
 export function transformOutsidePlaceholdersTracked(
 	text: string,
@@ -291,7 +292,8 @@ function chunkMatchesInSourceContext(text: string, chunkStart: number, chunkEnd:
 		if (found === null || found.index >= chunkEnd) return false;
 		const matchEnd = found.index + found[0].length;
 		if (matchEnd <= chunkEnd) return true;
-		regex.lastIndex = found[0].length === 0 ? found.index + 1 : matchEnd;
+		if (found[0].length === 0) advanceRegexAfterEmptyMatch(regex, text);
+		else regex.lastIndex = matchEnd;
 	}
 }
 
