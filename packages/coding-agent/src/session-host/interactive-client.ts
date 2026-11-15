@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import { matchesKey, ProcessTerminal, STDOUT_BACKLOG_CLEAR_BYTES } from "@oh-my-pi/pi-tui";
+import { matchesKey, ProcessTerminal, STDOUT_BACKLOG_CLEAR_BYTES, type Terminal } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
 	flagConsumesValue,
@@ -14,6 +14,7 @@ import {
 	DAEMON_CAPABILITY_TERMINAL_ATTACHMENT,
 	DAEMON_MAX_READ_BYTES,
 	DAEMON_MAX_REQUEST_BYTES,
+	type DaemonRpcResult,
 	type DaemonSnapshot,
 } from "../launch/protocol";
 import { releaseSessionOwnership } from "../session/session-liveness";
@@ -102,13 +103,29 @@ export function interactiveHostRestartArgs(
 	return result;
 }
 
+/**
+ * A broker rejection that only means the hosted daemon ended while an attachment
+ * request was in flight. The terminal face of a hosted session must treat that as
+ * the session exiting, never as a fatal error: the hosted TUI already shut down
+ * (and printed its own goodbye), so reporting "Daemon … is exited" and waiting
+ * for another Ctrl+C strands the user on a dead attachment.
+ */
+export function isHostedDaemonGone(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return (
+		message === "Process has no live terminal to attach" ||
+		message === "Process terminal is unavailable" ||
+		/^Daemon .+ is (?:exited|failed|stopping)$/.test(message)
+	);
+}
+
 /** The remote host owns the real full TUI. This client owns only a bounded terminal attachment. */
 export async function relayHostedTerminal(
 	client: DaemonBrokerClient,
 	daemon: DaemonSnapshot,
+	terminal: Terminal = new ProcessTerminal(),
 ): Promise<"detached" | "exited"> {
 	await client.ensureCapability(DAEMON_CAPABILITY_TERMINAL_ATTACHMENT);
-	const terminal = new ProcessTerminal();
 	const stopped = Promise.withResolvers<void>();
 	const abort = new AbortController();
 	const target = { name: daemon.name, expectedId: daemon.id };
@@ -126,6 +143,15 @@ export async function relayHostedTerminal(
 		abort.abort();
 		stopped.resolve();
 	};
+	/** The daemon going away ends the attachment cleanly; anything else is a failure to report. */
+	const stopFor = (error: unknown): void => {
+		if (isHostedDaemonGone(error)) {
+			outcome = "exited";
+			stop();
+			return;
+		}
+		stop(error);
+	};
 	const resize = (): void => {
 		if (!terminalLeaseId || closed) return;
 		void client
@@ -140,7 +166,7 @@ export async function relayHostedTerminal(
 				abort.signal,
 			)
 			.catch(error => {
-				if (!closed) stop(error);
+				if (!closed) stopFor(error);
 			});
 	};
 	const onInput = (data: string): void => {
@@ -162,7 +188,7 @@ export async function relayHostedTerminal(
 				await client.request({ op: "send", ...target, terminalLeaseId: lease, data, enter: false }, abort.signal);
 			})
 			.catch(error => {
-				if (!closed) stop(error);
+				if (!closed) stopFor(error);
 			})
 			.finally(() => {
 				inputBytes -= bytes;
@@ -173,19 +199,25 @@ export async function relayHostedTerminal(
 	process.on("SIGTERM", onSignal);
 	try {
 		terminal.start(onInput, resize, () => stop());
-		const attached = await client.request({
-			op: "terminal_attach",
-			...target,
-			columns: Math.max(1, Math.min(1000, terminal.columns)),
-			rows: Math.max(1, Math.min(1000, terminal.rows)),
-		});
+		let attached: DaemonRpcResult;
+		try {
+			attached = await client.request({
+				op: "terminal_attach",
+				...target,
+				columns: Math.max(1, Math.min(1000, terminal.columns)),
+				rows: Math.max(1, Math.min(1000, terminal.rows)),
+			});
+		} catch (error) {
+			if (isHostedDaemonGone(error)) return "exited";
+			throw error;
+		}
 		if (attached.op !== "terminal_attach") throw new Error("Unexpected terminal attachment response");
 		terminalLeaseId = attached.terminalLeaseId;
 		cursor = attached.cursor;
 		terminal.write("\x1b[2J\x1b[H");
 		void (async () => {
 			while (!closed) {
-				while (!closed && terminal.pendingOutputBytes > STDOUT_BACKLOG_CLEAR_BYTES) await Bun.sleep(10);
+				while (!closed && (terminal.pendingOutputBytes ?? 0) > STDOUT_BACKLOG_CLEAR_BYTES) await Bun.sleep(10);
 				if (closed) break;
 				const frame = await client.request(
 					{ op: "read", ...target, terminalLeaseId, cursor, maxBytes: DAEMON_MAX_READ_BYTES, timeoutMs: 1000 },
@@ -213,7 +245,7 @@ export async function relayHostedTerminal(
 				}
 			}
 		})().catch(error => {
-			if (!closed) stop(error);
+			if (!closed) stopFor(error);
 		});
 		await stopped.promise;
 	} finally {

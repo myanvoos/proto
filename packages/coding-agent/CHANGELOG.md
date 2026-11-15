@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- A hosted session's terminal attachment now ends cleanly when the hosted TUI has already exited: the second Ctrl+C no longer prints `Daemon … is exited` and requires a third press. `proto --resume` quits as soon as the session it resumed is gone.
 - Redact secrets from developer messages of any attribution, including agent-authored background-job notices, hook and extension messages; zero-width Unicode regex matches no longer stall or split a code point.
 
 ## [20.2.1] - 2026-11-10

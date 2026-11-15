@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import type { Terminal } from "@oh-my-pi/pi-tui";
 import { parseArgs } from "../cli/args";
-import { interactiveHostArgs, interactiveHostRestartArgs } from "./interactive-client";
+import type { DaemonBrokerClient } from "../launch/client";
+import type { DaemonOperation, DaemonSnapshot } from "../launch/protocol";
+import { interactiveHostArgs, interactiveHostRestartArgs, relayHostedTerminal } from "./interactive-client";
 
 describe("interactive host selection handoff", () => {
 	test("resumes the resolved transcript without repeating import, fork, cwd, or picker selection", () => {
@@ -134,5 +137,115 @@ describe("interactive restart argument capture", () => {
 		expect(parsed.unknownFlags.get("audit")).toBe(true);
 		expect(parsed.unknownFlags.get("label")).toBe("--provider");
 		expect(parsed.messages).toEqual([]);
+	});
+});
+
+describe("hosted terminal relay teardown", () => {
+	/** Minimal terminal face: the relay only reads the size, writes output, and hands us its input hook. */
+	function stubTerminal(): { terminal: Terminal; emitInput(data: string): void } {
+		let onInput: ((data: string) => void) | undefined;
+		const terminal = {
+			columns: 100,
+			rows: 40,
+			kittyProtocolActive: false,
+			kittyEnableSequence: null,
+			pendingOutputBytes: 0,
+			start(input: (data: string) => void) {
+				onInput = input;
+			},
+			stop() {},
+			drainInput: async () => {},
+			write() {},
+			moveBy() {},
+			hideCursor() {},
+			showCursor() {},
+			clearLine() {},
+			clearFromCursor() {},
+			clearScreen() {},
+			setTitle() {},
+			setProgress() {},
+			onAppearanceChange() {},
+		} as unknown as Terminal;
+		return { terminal, emitInput: data => onInput?.(data) };
+	}
+
+	const daemon = { name: "session-abc", id: "daemon-1" } as unknown as DaemonSnapshot;
+
+	function stubClient(
+		serve: (operation: DaemonOperation, signal?: AbortSignal) => Promise<unknown>,
+	): DaemonBrokerClient & { attached: Promise<void> } {
+		let attach!: () => void;
+		const attached = new Promise<void>(resolve => {
+			attach = resolve;
+		});
+		const request = (async (operation: DaemonOperation, signal?: AbortSignal) => {
+			switch (operation.op) {
+				case "terminal_attach":
+					attach();
+					return { op: "terminal_attach", daemon, terminalLeaseId: "lease", cursor: 0 };
+				case "terminal_detach":
+					return { op: "terminal_detach", daemon };
+				default:
+					return serve(operation, signal);
+			}
+		}) as DaemonBrokerClient["request"];
+		return {
+			projectDir: "/tmp/project",
+			runtimeDir: "/tmp/run",
+			onCompletion: () => () => {},
+			close: () => {},
+			ensureCapability: async () => {},
+			request,
+			attached,
+		};
+	}
+
+	/** A read that parks until the attachment aborts, like the real broker's long poll. */
+	function parkedRead(_operation: DaemonOperation, signal?: AbortSignal): Promise<unknown> {
+		return new Promise((_resolve, reject) => {
+			signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+		});
+	}
+
+	test("a send rejected because the hosted daemon already exited finishes the attachment instead of failing it", async () => {
+		const client = stubClient((operation, signal) => {
+			if (operation.op === "send") return Promise.reject(new Error("Daemon session-abc is exited"));
+			return parkedRead(operation, signal);
+		});
+		const { terminal, emitInput } = stubTerminal();
+		const relayed = relayHostedTerminal(client, daemon, terminal);
+		await client.attached;
+		// The relay assigns its terminal lease right after the attach response resumes.
+		await Bun.sleep(10);
+		emitInput("\u0003");
+
+		await expect(relayed).resolves.toBe("exited");
+	});
+
+	test("a send rejected for any other reason still surfaces as a failure", async () => {
+		const client = stubClient((operation, signal) => {
+			if (operation.op === "send") return Promise.reject(new Error("Terminal input exceeded its bounded queue"));
+			return parkedRead(operation, signal);
+		});
+		const { terminal, emitInput } = stubTerminal();
+		const relayed = relayHostedTerminal(client, daemon, terminal);
+		await client.attached;
+		await Bun.sleep(10);
+		emitInput("x");
+
+		await expect(relayed).rejects.toThrow("bounded queue");
+	});
+
+	test("a daemon that exits before the attachment lands reports an exited session", async () => {
+		const client = stubClient(() => parkedRead({ op: "read" } as DaemonOperation));
+		const { terminal } = stubTerminal();
+		const failing = {
+			...client,
+			request: (async (operation: DaemonOperation) => {
+				if (operation.op === "terminal_attach") throw new Error("Process has no live terminal to attach");
+				return { op: "terminal_detach", daemon };
+			}) as DaemonBrokerClient["request"],
+		};
+		await expect(relayHostedTerminal(failing, daemon, terminal)).resolves.toBe("exited");
 	});
 });
