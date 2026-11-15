@@ -301,3 +301,85 @@ test("parks the hardware cursor on the editor marker row when the live region is
 		restore();
 	}
 });
+
+/**
+ * A pane whose scrollbar column is only present on the normal screen: entering
+ * the alternate buffer widens it by one cell, leaving narrows it back. Herdr
+ * panes (and Warp, which does the same for height) report that geometry change
+ * as a SIGWINCH right after the toggle.
+ */
+class AltEchoTerminal extends FakeTerminal {
+	altToggles = 0;
+	#pendingEchoes: Array<"enter" | "exit"> = [];
+
+	override write(data: string): void {
+		super.write(data);
+		// A single write can carry both toggles; the host reports one SIGWINCH each.
+		for (const token of data.split("\x1b[?1049").slice(1)) {
+			this.#pendingEchoes.push(token.startsWith("h") ? "enter" : "exit");
+		}
+	}
+
+	hasPendingEcho(): boolean {
+		return this.#pendingEchoes.length > 0;
+	}
+
+	/** Apply the host's queued echo once, the way a real SIGWINCH lands after the write. */
+	drainEcho(): boolean {
+		const echo = this.#pendingEchoes.shift();
+		if (echo === undefined) return false;
+		this.altToggles++;
+		this.resize(echo === "enter" ? this.vt.cols + 1 : this.vt.cols - 1, this.rows);
+		this.triggerResize();
+		return true;
+	}
+}
+
+test("an alternate-buffer geometry echo of one cell does not restart the resize borrow", () => {
+	const restore = pinRenderEnvironment();
+	const terminal = new AltEchoTerminal(80, 24);
+	const scheduler = new TestScheduler();
+	const tui = new TUI(terminal, false, { renderScheduler: scheduler });
+	const transcript = new FixtureFrameProvider(6);
+	transcript.appendRows(10);
+	transcript.addEditor();
+	tui.setFrameProvider(transcript);
+
+	try {
+		tui.start({ deferInput: true });
+		scheduler.flush();
+		terminal.writes.length = 0;
+
+		// A real width resize asks for the alternate-buffer preview.
+		terminal.resize(72, 24);
+		terminal.triggerResize();
+
+		// Drain the settle timers and the host's echoes the way the event loop would.
+		for (let step = 0; step < 32; step++) {
+			scheduler.flush();
+			if (!terminal.drainEcho() && !terminal.hasPendingEcho()) break;
+		}
+		scheduler.flush();
+
+		// One borrow (enter + exit) at most: the exit echo must not start another.
+		expect(terminal.altToggles).toBeLessThanOrEqual(2);
+		const screen = terminal.screenRows().filter(row => row.length > 0);
+		expect(screen.every(row => row.length <= 72)).toBe(true);
+		expect(screen[screen.length - 1]).toBe("(hints)");
+
+		// The echo proved this host perturbs the pane, so later resizes skip the
+		// borrow entirely instead of paying one toggle (and its echo) each time.
+		const borrows = terminal.altToggles;
+		terminal.resize(68, 24);
+		terminal.triggerResize();
+		for (let step = 0; step < 8; step++) {
+			scheduler.flush();
+			if (!terminal.drainEcho()) break;
+		}
+		scheduler.flush();
+		expect(terminal.altToggles).toBe(borrows);
+	} finally {
+		tui.stop();
+		restore();
+	}
+});

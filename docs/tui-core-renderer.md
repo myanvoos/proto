@@ -302,7 +302,7 @@ default-on for kitty, Ghostty, otty, and rio (`PI_NO_KITTY_PLACEHOLDERS` /
 | `PI_HARDWARE_CURSOR=1`                                   | Show the real hardware cursor instead of a rendered one.                                                                                                                    |
 | `PI_NOTIFICATIONS=off\|0\|false`                         | Suppress terminal notifications.                                                                                                                                            |
 | `PI_DEBUG_REDRAW=1`                                      | Log resize-anchor recovery details (CPR, stale rows, and the resolved anchor) to the debug log.                                                                                 |
-| `PI_TUI_RESIZE_IN_PLACE=1\|true` / `0\|false`             | Force resize settlement to repaint in place (no alternate-screen borrow); width changes still use the provider replay/ED3 path when available. Unset defaults to in-place only for Warp outside multiplexers. |
+| `PI_TUI_RESIZE_IN_PLACE=1\|true` / `0\|false`             | Force resize settlement to repaint in place (no alternate-screen borrow); width changes still use the provider replay/ED3 path when available. Unset repaints in place for Warp and for any host observed echoing a buffer toggle as a one-cell size change. |
 
 Removed with the old engine: `PI_TUI_ED3_SAFE` (no ED3-risk lever exists),
 `PI_CLEAR_ON_SHRINK`, and `PI_TUI_DEBUG` (the per-render dump is superseded by

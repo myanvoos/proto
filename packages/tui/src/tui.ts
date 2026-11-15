@@ -1036,6 +1036,8 @@ export class TUI extends Container {
 	static readonly #OUTPUT_BACKLOG_RETRY_MS = 10;
 	/** Quiet window before restoring the normal buffer after resize. */
 	static readonly #RESIZE_VIEWPORT_SETTLE_MS = 120;
+	/** How long after an alt-buffer toggle a single-cell geometry change can still be its host echo. */
+	static readonly #ALT_TOGGLE_ECHO_WINDOW_MS = 250;
 	/** Longest wait for a CPR reply before the settled repaint falls back. */
 	static readonly #RESIZE_PROBE_TIMEOUT_MS = 200;
 	#inputRenderGraceUntilMs = 0;
@@ -1136,13 +1138,24 @@ export class TUI extends Container {
 	#resizeSettleTimer: RenderTimer | undefined;
 	#resizeEcho: { until: number; columns: number; rows: number } | undefined;
 	// Baseline geometry at the last alt-buffer toggle, plus whether its echo is
-	// still pending. A Warp-only echo is a height-only ±1 SIGWINCH against this
-	// baseline while the CPR probe is in flight. The expectation is single-shot:
-	// the first SIGWINCH after the toggle consumes it, so a real one-row resize
-	// back to the baseline can never be mistaken for the echo.
+	// still pending. An echo is a single-cell change in one dimension against
+	// this baseline, arriving inside a short window after the toggle: Warp
+	// reports height-only, and a pane that hides its scrollbar column while the
+	// alternate screen is up reports width-only. The expectation is single-shot:
+	// the first SIGWINCH after the toggle consumes it, so a real one-cell resize
+	// back to the baseline can never be mistaken for the echo twice, and a stale
+	// expectation can never swallow a much later resize.
 	#altToggleColumns = 0;
 	#altToggleRows = 0;
 	#altToggleEchoPending = false;
+	#altToggleEchoUntil = 0;
+	/**
+	 * Set once the host has echoed one of our alternate-buffer toggles as a
+	 * single-cell geometry change. The borrow perturbs this pane, so every later
+	 * resize repaints in place instead of toggling the buffer again (the same
+	 * conclusion Warp's `TERM_PROGRAM` gets up front).
+	 */
+	#altToggleEchoObserved = false;
 	// True while an in-place resize transaction (Warp) is inside its settle
 	// window: the normal-buffer anchor is stale until the settled CPR probe
 	// resolves, so ordinary paints are dropped until then.
@@ -1464,7 +1477,7 @@ export class TUI extends Container {
 					// reply already in flight may predate it: retire the probe and
 					// reissue it at the new geometry. DSR-only, no toggle, so this
 					// terminates. A real geometry change restarts the transaction below.
-					if (this.#isWarpAltToggleEcho()) {
+					if (this.#isAltToggleGeometryEcho()) {
 						this.#cancelResizeProbe();
 						this.#trackResizeBurst();
 						this.#beginResizeAnchorProbe();
@@ -1482,7 +1495,7 @@ export class TUI extends Container {
 					this.requestRender(true);
 					return;
 				}
-				if (!this.#resizeAltActive && this.#isWarpAltToggleEcho()) {
+				if (!this.#resizeAltActive && this.#isAltToggleGeometryEcho()) {
 					// Delayed echo that lost the signal-vs-pty race with its own
 					// probe's CPR reply: the probe already resolved, so re-probe at
 					// the echoed size instead of painting on a stale anchor or
@@ -1534,6 +1547,7 @@ export class TUI extends Container {
 	#resizeRepaintsInPlace(): boolean {
 		const override = resizeInPlaceOverride();
 		if (override !== null) return override;
+		if (this.#altToggleEchoObserved) return true;
 		if (isInsideTerminalMultiplexer()) return false;
 		return Bun.env.TERM_PROGRAM?.toLowerCase() === "warpterminal";
 	}
@@ -1543,24 +1557,30 @@ export class TUI extends Container {
 		this.#altToggleColumns = this.terminal.columns;
 		this.#altToggleRows = this.terminal.rows;
 		this.#altToggleEchoPending = true;
+		this.#altToggleEchoUntil = this.#renderScheduler.now() + TUI.#ALT_TOGGLE_ECHO_WINDOW_MS;
 	}
 
 	/**
-	 * Warp-only echo: height-only ±1 SIGWINCH against the pending alt-toggle
-	 * baseline. Single-shot: the first SIGWINCH after the toggle consumes the
-	 * expectation either way, so at most one signal is ever swallowed per toggle.
-	 * Never inside a multiplexer, which consumes the toggles itself.
+	 * Host echo of our own alternate-buffer toggle: one dimension moves by a
+	 * single cell within the echo window. Warp re-reports a height-only ±1
+	 * SIGWINCH on `CSI ?1049l`; a pane that reclaims a scrollbar column while the
+	 * alternate screen is up (Herdr-class) reports width-only instead. Treating
+	 * that as a real resize restarts the borrow it just measured, which toggles
+	 * the buffer forever and repaints at two widths in a row — the observed
+	 * horizontal shake. Single-shot: the first SIGWINCH after the toggle consumes
+	 * the expectation either way, so at most one signal is ever swallowed per
+	 * toggle.
 	 */
-	#isWarpAltToggleEcho(): boolean {
+	#isAltToggleGeometryEcho(): boolean {
 		if (!this.#altToggleEchoPending) return false;
 		this.#altToggleEchoPending = false;
-		// Inside a multiplexer the mux consumes alt toggles itself, so no echo is
-		// possible: every ±1 resize is real and must restart the transaction.
-		if (isInsideTerminalMultiplexer()) return false;
-		if (Bun.env.TERM_PROGRAM?.toLowerCase() !== "warpterminal") return false;
-		return (
-			this.terminal.columns === this.#altToggleColumns && Math.abs(this.terminal.rows - this.#altToggleRows) <= 1
-		);
+		if (this.#renderScheduler.now() > this.#altToggleEchoUntil) return false;
+		const echoed =
+			Math.abs(this.terminal.columns - this.#altToggleColumns) +
+				Math.abs(this.terminal.rows - this.#altToggleRows) ===
+			1;
+		if (echoed) this.#altToggleEchoObserved = true;
+		return echoed;
 	}
 
 	/**

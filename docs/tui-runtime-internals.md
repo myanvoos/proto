@@ -169,11 +169,12 @@ history remains host-owned; Proto neither clears it nor tries to reconcile
 old-width physical row coordinates. The mutable viewport and prompt are
 recomposed at the current width. Resize-preview frames do not retire content.
 
-Multiplexers and direct HerdR panes repaint in place. Terminals whose alternate
-buffer changes reported geometry also use the in-place path; other terminals
-may borrow the alternate screen for drag previews. Cursor reports anchor the
-repaint after host reflow rather than probing the reader's scroll position.
-`PI_TUI_RESIZE_IN_PLACE` controls the preview strategy, not history replay.
+Warp and any host observed echoing a buffer toggle as a one-cell geometry change
+repaint in place, because borrowing the alternate screen itself perturbs such a
+pane. Other terminals, including multiplexers, may borrow the alternate screen
+for drag previews. Cursor reports anchor the repaint after host reflow rather
+than probing the reader's scroll position. `PI_TUI_RESIZE_IN_PLACE` controls the
+preview strategy, not history replay.
 
 Overlay visibility may depend on dimensions; focus is corrected when an overlay
 becomes non-visible after resize. Explicit display reset is separate from resize
