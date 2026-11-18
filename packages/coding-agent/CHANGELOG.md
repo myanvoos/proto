@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- External programs spawned by the embedded shell now get internal URLs resolved in every argument form — @url, `-F name=@url`, `-ourl`, and environment values — and arguments the resolver cannot back stay as written (previously such arguments failed the spawn). `omp` keeps receiving its own URLs untouched, including behind `nice`/`npx`/`sudo` (port of b41e4be768).
+
 ## [20.2.3] - 2026-11-24
 
 ### Fixed
