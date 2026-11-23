@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { matchesKey, ProcessTerminal, STDOUT_BACKLOG_CLEAR_BYTES, type Terminal } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
+import chalk from "chalk";
 import {
 	flagConsumesValue,
 	OPTIONAL_VALUE_FLAGS,
@@ -267,8 +268,20 @@ export async function relayHostedTerminal(
 	return outcome;
 }
 
+/** Printed when Ctrl+] ends a hosted-terminal relay, so detaching never strands the user. */
+export const DETACH_HINT = "Detached — the session keeps running. Reattach with `proto attach`.";
+
+/** Why an attach to a live hosted session could not happen. */
+export interface HostedInteractiveAttach {
+	attached: boolean;
+	reason?: "no-live-host" | "rpc-only";
+}
+
 /** A live host is adopted without opening its transcript or claiming a second writer. */
-export async function attachExistingHostedInteractive(projectDir: string, sessionFile: string): Promise<boolean> {
+export async function attachExistingHostedInteractive(
+	projectDir: string,
+	sessionFile: string,
+): Promise<HostedInteractiveAttach> {
 	// Explicit file resumes may originate outside the owning project's broker namespace.
 	await visitEntriesFromFileStream(
 		sessionFile,
@@ -281,16 +294,18 @@ export async function attachExistingHostedInteractive(projectDir: string, sessio
 	const client = await daemonClientForProject(ownership?.projectDir ?? projectDir);
 	const name = ownership?.name ?? (await sessionHostDaemonName(sessionFile));
 	const existing = await describeQuietly(client, name, "interactive session host");
-	if (!existing || existing.state === "exited" || existing.state === "failed") return false;
+	if (!existing || existing.state === "exited" || existing.state === "failed")
+		return { attached: false, reason: "no-live-host" };
 	const described = await client.request({ op: "describe", name, expectedId: existing.id });
-	if (described.op !== "describe" || !described.spec.pty) return false;
+	if (described.op !== "describe" || !described.spec.pty) return { attached: false, reason: "rpc-only" };
 	if (ownership && path.resolve(ownership.requestedSessionFile) !== path.resolve(ownership.activeSessionFile)) {
 		throw new Error(
 			`This session belongs to an interface currently viewing ${ownership.activeSessionFile}. Reattach that file and select the requested session explicitly; running work was not interrupted.`,
 		);
 	}
-	await relayHostedTerminal(client, described.daemon);
-	return true;
+	const outcome = await relayHostedTerminal(client, described.daemon);
+	if (outcome === "detached") process.stderr.write(`${chalk.dim(DETACH_HINT)}\n`);
+	return { attached: true };
 }
 
 /** Selection is local; the host takes the only runtime/writer lease before any turn is admitted. */

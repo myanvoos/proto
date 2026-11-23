@@ -39,6 +39,7 @@ import {
 	prompt,
 	sanitizeText,
 	setProjectDir,
+	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
@@ -179,6 +180,11 @@ import type {
 import { resolvePreservedLiveToolCallIds, UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
+// Hard bound on session teardown during shutdown: a wedged dispose (a provider
+// socket, bash executor, or kernel that never settles) must not strand the user
+// inside the TUI forever. The escape hatch below (teardownFailed) exits on the
+// next Ctrl+C instead of retrying a doomed teardown.
+const SESSION_TEARDOWN_DEADLINE_MS = 10_000;
 // Shutdown already owns the input handler; a short quiet window absorbs any
 // trailing key-release bytes without paying the normal 50ms SSH drain window.
 const SHUTDOWN_INPUT_DRAIN_IDLE_MS = 5;
@@ -2602,14 +2608,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		}, STILL_CLOSING_DELAY_MS);
 		try {
 			try {
-				if (this.#signalTeardown) {
-					await this.#signalTeardown();
-				} else {
-					await this.session.dispose();
-				}
+				const teardown = this.#signalTeardown ? this.#signalTeardown() : this.session.dispose();
+				await withTimeout(teardown, SESSION_TEARDOWN_DEADLINE_MS, "Session teardown exceeded its deadline");
 			} finally {
 				clearTimeout(stillClosingTimer);
-				await detachedSessionHolder.disposeAll();
+				await withTimeout(
+					detachedSessionHolder.disposeAll(),
+					SESSION_TEARDOWN_DEADLINE_MS,
+					"Detached session disposal exceeded its deadline",
+				);
 			}
 		} catch (error) {
 			this.#isShuttingDown = false;

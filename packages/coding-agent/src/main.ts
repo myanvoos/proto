@@ -24,6 +24,7 @@ import {
 	setInteractiveHost,
 	setProjectDir,
 	VERSION,
+	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
@@ -116,7 +117,7 @@ import {
 import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } from "./session/foreign-session-store";
 import { importLegacyNodeTopology } from "./session/node-topology";
 import { findMostRecentSession, resolveResumableSession, type SessionInfo } from "./session/session-listing";
-import { claimSessionOwnership, liveSessionOwnerPid } from "./session/session-liveness";
+import { claimSessionOwnership, liveSessionOwnerPid, releaseSessionOwnership } from "./session/session-liveness";
 import { ForkSourceNotFoundError, SessionManager } from "./session/session-manager";
 import { describeDirectoryFailure, SessionDirectoryError } from "./session/session-paths";
 import {
@@ -201,6 +202,8 @@ function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): v
 	applyDefaultSettingOverrides(HOST_DEFAULTED_SETTING_PATHS, targetSettings);
 }
 
+const STDIN_EOF_DEADLINE_MS = 10_000;
+
 export async function readPipedInput(): Promise<string | undefined> {
 	if (process.stdin.isTTY === true) return undefined;
 
@@ -208,16 +211,18 @@ export async function readPipedInput(): Promise<string | undefined> {
 		? undefined
 		: setTimeout(() => {
 				process.stderr.write(
-					`${chalk.dim("Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…")}\n`,
+					`${chalk.dim("Reading prompt from piped stdin (waiting for EOF; continuing after 10s without it)…")}\n`,
 				);
 			}, 1000);
 	notice?.unref?.();
 	try {
-		const text = await Bun.stdin.text();
-		if (text.trim().length === 0) return undefined;
+		// A pipe that never delivers EOF (an editor or launcher holding stdin open) used to park
+		// startup forever; bound the wait and proceed as if no prompt was piped.
+		const text = await withTimeout(Bun.stdin.text(), STDIN_EOF_DEADLINE_MS, "stdin did not reach EOF").catch(
+			() => undefined,
+		);
+		if (text === undefined || text.trim().length === 0) return undefined;
 		return text;
-	} catch {
-		return undefined;
 	} finally {
 		clearTimeout(notice);
 	}
@@ -926,6 +931,16 @@ export function normalizeContinueSessionArgs(parsed: Args, rawArgs?: readonly st
 const FORK_NOT_FOUND_HINT =
 	"Run `proto --resume` without an argument to pick from recent sessions, or `proto` to start a new one.";
 
+/** One-line dim hint shown when a hosted interactive session can't be joined from here. */
+function writeAttachFailureHint(sessionFile: string, reason: "no-live-host" | "rpc-only"): void {
+	const join = `proto attach ${sessionFile}`;
+	const detail =
+		reason === "rpc-only"
+			? `its host is RPC-only; \`${join}\` joins it line-oriented`
+			: `its background host isn't answering; if it comes back, \`${join}\` joins it`;
+	process.stderr.write(`${chalk.dim(`${detail}. Otherwise: proto --fork ${sessionFile}`)}\n`);
+}
+
 export async function createSessionManager(
 	parsed: Args,
 	cwd: string,
@@ -974,7 +989,7 @@ export async function createSessionManager(
 				throw new SessionInUseError(
 					sessionPath,
 					`${owner} is currently using this session — release it there before resuming here.`,
-					`Run \`proto --fork ${sessionPath}\` to continue in a copy, or close the other process first.`,
+					`Run \`proto attach ${sessionPath}\` to join it from this terminal, or \`proto --fork ${sessionPath}\` to continue in a copy.`,
 				);
 			}
 			return SessionManager.open(sessionPath, parsed.sessionDir, undefined, { throwIfMissing: true });
@@ -1790,6 +1805,31 @@ export async function runRootCommand(
 					cwd,
 					settingsInstance,
 				);
+				// The most recent session is open in another proto process: try to join it
+				// instead of silently starting a fresh one. Only when an interactive terminal
+				// can relay the host; otherwise fall through with a notice.
+				const fallback = sessionManager?.getOwnershipFallback();
+				if (fallback && isInteractive && deps === DEFAULT_RUN_ROOT_DEPENDENCIES && !getSessionHostRpcInput()) {
+					stopPendingStartupComposer();
+					stopStartupWatchdog();
+					// Drop the fresh fallback session's claim so a successful attach leaves no stale marker.
+					releaseSessionOwnership({ removeMarker: true });
+					try {
+						const attach = await attachExistingHostedInteractive(cwd, fallback.sessionFile);
+						if (attach.attached) {
+							stopThemeWatcher();
+							await postmortem.quit(0);
+							return;
+						}
+					} catch {
+						// Attach is best-effort; fall through to the fresh session.
+					}
+					const pid = fallback.ownerPid === undefined ? "" : ` (pid ${fallback.ownerPid})`;
+					writeStartupNotice(
+						parsedArgs,
+						`${chalk.dim(`Most recent session is open in another proto process${pid} — starting a fresh one. \`proto attach\` joins it here.`)}\n`,
+					);
+				}
 			}
 		} catch (error: unknown) {
 			if (
@@ -1800,11 +1840,13 @@ export async function runRootCommand(
 			) {
 				stopPendingStartupComposer();
 				stopStartupWatchdog();
-				if (await attachExistingHostedInteractive(cwd, error.sessionFile)) {
+				const attach = await attachExistingHostedInteractive(cwd, error.sessionFile);
+				if (attach.attached) {
 					stopThemeWatcher();
 					await postmortem.quit(0);
 					return;
 				}
+				writeAttachFailureHint(error.sessionFile, attach.reason ?? "no-live-host");
 			}
 			if (error instanceof SessionDirectoryError) {
 				process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
@@ -1882,14 +1924,17 @@ export async function runRootCommand(
 				await sessionManager.setSessionFile(selected.path);
 			} else {
 				if (!claimSessionOwnership(selected.path)) {
+					let attachReason: "no-live-host" | "rpc-only" | undefined;
 					if (isInteractive && deps === DEFAULT_RUN_ROOT_DEPENDENCIES && !getSessionHostRpcInput()) {
 						stopPendingStartupComposer();
 						stopStartupWatchdog();
-						if (await attachExistingHostedInteractive(selected.cwd ?? cwd, selected.path)) {
+						const attach = await attachExistingHostedInteractive(selected.cwd ?? cwd, selected.path);
+						if (attach.attached) {
 							stopThemeWatcher();
 							await postmortem.quit(0);
 							return;
 						}
+						attachReason = attach.reason ?? "no-live-host";
 					}
 					const ownerPid = liveSessionOwnerPid(selected.path);
 					const owner =
@@ -1897,7 +1942,11 @@ export async function runRootCommand(
 					process.stderr.write(
 						`${chalk.red(`Error: That session is currently open in ${owner} — release it there before resuming here.`)}\n`,
 					);
-					process.stderr.write(`${chalk.dim(`Run \`proto --fork ${selected.path}\` to continue in a copy.`)}\n`);
+					if (attachReason) writeAttachFailureHint(selected.path, attachReason);
+					else
+						process.stderr.write(
+							`${chalk.dim(`Run \`proto --fork ${selected.path}\` to continue in a copy.`)}\n`,
+						);
 					stopStartupWatchdog();
 					process.exit(1);
 				}

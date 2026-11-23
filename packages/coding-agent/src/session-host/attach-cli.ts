@@ -21,7 +21,7 @@ const commandOutput = {
 };
 
 import { ensureSessionHost, stopSessionHost } from "./ensure";
-import { relayHostedTerminal } from "./interactive-client";
+import { DETACH_HINT, relayHostedTerminal } from "./interactive-client";
 import { resolveSessionHostOwnership } from "./ownership";
 import { sessionHostDaemonName } from "./protocol";
 
@@ -282,8 +282,10 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 		const described = await broker.request({ op: "describe", name: daemonName, expectedId: existing.id });
 		if (described.op === "describe" && described.spec.pty) {
 			try {
-				if (process.stdin.isTTY && process.stdout.isTTY) await relayHostedTerminal(broker, described.daemon);
-				else {
+				if (process.stdin.isTTY && process.stdout.isTTY) {
+					const outcome = await relayHostedTerminal(broker, described.daemon);
+					if (outcome === "detached") console.error(chalk.dim(DETACH_HINT));
+				} else {
 					console.error(
 						"This session is hosted by the full TUI (node protocol 3). Scripted line-oriented attach is incompatible; use the typed RpcNodeBackend client or attach from a terminal. The active host was left running.",
 					);
@@ -311,7 +313,8 @@ export async function runAttachCommand(args: AttachCommandArgs): Promise<void> {
 			});
 			const described = await broker.request({ op: "describe", name: resumed.name });
 			if (described.op !== "describe") throw new Error("Unexpected hosted session description");
-			await relayHostedTerminal(broker, described.daemon);
+			const outcome = await relayHostedTerminal(broker, described.daemon);
+			if (outcome === "detached") console.error(chalk.dim(DETACH_HINT));
 		} finally {
 			await closeDaemonClients();
 		}

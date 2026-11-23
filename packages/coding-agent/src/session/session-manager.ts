@@ -788,6 +788,7 @@ export class SessionManager {
 
 	#breadcrumbFresh = false;
 	#persistenceUnavailable: SessionDirectoryError | undefined;
+	#ownershipFallback: { sessionFile: string; ownerPid?: number } | undefined;
 	#sessionNameChangedCallbacks = new Set<() => void>();
 	#persistenceErrorCallbacks = new Set<(error: Error) => void>();
 	#historyDegradedCallbacks = new Set<(message: string) => void>();
@@ -3866,11 +3867,14 @@ export class SessionManager {
 
 		if (chosenSession === undefined) chosenSession = await findMostRecentNonEmptySession(dir, storage);
 		if (chosenSession && !claim(chosenSession)) {
+			const ownerPid = liveSessionOwnerPid(chosenSession);
 			logger.info("Most recent session is open in another proto process; starting a new session", {
 				sessionFile: chosenSession,
-				ownerPid: liveSessionOwnerPid(chosenSession),
+				ownerPid,
 			});
-			chosenSession = null;
+			const fallback = newSession();
+			fallback.markOwnershipFallback(chosenSession, ownerPid);
+			return fallback;
 		}
 
 		if (!chosenSession) return newSession();
@@ -3889,6 +3893,15 @@ export class SessionManager {
 
 	getPersistenceUnavailable(): SessionDirectoryError | undefined {
 		return this.#persistenceUnavailable;
+	}
+
+	/** Most recent session was owned by another live process, so this manager started fresh instead. */
+	markOwnershipFallback(sessionFile: string, ownerPid?: number): void {
+		this.#ownershipFallback = { sessionFile, ownerPid };
+	}
+
+	getOwnershipFallback(): { sessionFile: string; ownerPid?: number } | undefined {
+		return this.#ownershipFallback;
 	}
 
 	static inMemory(

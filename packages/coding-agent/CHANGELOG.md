@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Session teardown on exit is now bounded (10 s): a dispose that never settles — a wedged provider socket, bash executor, or kernel — used to leave the TUI in "Still closing…" forever. On deadline the session is abandoned and the next Ctrl+C exits instead of hanging; detached-session disposal is bounded the same way.
+- Ctrl+C during a hung shutdown now exits through the normal cleanup pass, restoring the terminal (kitty keyboard flags, alt screen) instead of stranding the shell — the failure mode where every later Ctrl+C echoes as a raw `^[[99;5u` sequence.
+- Piped stdin with no EOF no longer parks startup forever: after 10 s proto continues without a piped prompt instead of waiting indefinitely.
+- `proto -c` no longer silently starts an empty session when the most recent session is open in another proto process: it attaches to the running session (same relay as `--resume`) when the terminal can, and otherwise prints why attach failed and names `proto attach` instead of saying nothing.
+- Attaching to a hosted session that cannot be adopted now reports the reason — no live host vs. RPC-only host — and the resume error suggests `proto attach <session>` alongside `--fork`.
+- Detaching from a hosted session (`Ctrl+]`) now prints a one-line hint that the session keeps running and how to reattach.
+
 ## [20.2.2] - 2026-11-15
 
 ### Added

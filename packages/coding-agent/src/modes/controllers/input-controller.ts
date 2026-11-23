@@ -1047,7 +1047,11 @@ export class InputController {
 		}
 
 		if (this.ctx.isShuttingDown) {
-			postmortem.exitProcess(130);
+			// Restore the terminal (keyboard flags, alt screen) before exiting; a bare
+			// exitProcess strands the shell in kitty-keyboard mode, which is what makes
+			// later Ctrl+C presses echo as raw ^[[99;5u sequences.
+			void postmortem.quit(130).catch(() => postmortem.exitProcess(130));
+			return;
 		}
 
 		// The previous graceful close failed after disposal began, so retrying the
