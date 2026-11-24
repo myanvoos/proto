@@ -104,12 +104,6 @@ export class RequestError extends Error {
 		return createStandardError(-32002, "Resource not found", { sessionId }, `session ${sessionId}`);
 	}
 
-	// The session is mid-turn: retryable once idle (steer/follow-up/wait), not a fault. `data` keeps the stable
-	// `reason: "session_busy"` discriminator.
-	static sessionBusy(message: string, data?: unknown): RequestError {
-		return new RequestError(-32003, message, data);
-	}
-
 	toResult(): { error: ErrorResponse } {
 		return { error: this.toErrorResponse() };
 	}

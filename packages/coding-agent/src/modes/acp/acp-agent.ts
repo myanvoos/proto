@@ -111,6 +111,8 @@ export const ACP_BOOTSTRAP_RACE_GUARD_MS = 50;
 const ACP_CANCEL_CLEANUP_TIMEOUT_MS = PYTHON_KERNEL_CANCEL_BUDGET_MS + 1_000;
 const ACP_ASYNC_DELIVERY_DRAIN_TIMEOUT_MS = 250;
 const ACP_ASYNC_DELIVERY_DRAIN_MAX_PASSES = 3;
+/** Interrupts a prompt tries against runs that keep claiming the session before it gives up explicitly. */
+const ACP_DISPATCH_ATTEMPTS = 3;
 
 const ACP_SESSION_HANDLES_FILE = "acp-session-handles.json";
 
@@ -139,13 +141,25 @@ type PromptQueueState = {
 };
 type PromptDispatchCancellation = { cancelled: boolean };
 type PromptLifecycleError = Error & { readonly code: "ACP_SESSION_CLOSED" };
+type AgentEndEvent = Extract<AgentSessionEvent, { type: "agent_end" }>;
 
 type PromptTurnState = {
 	abortController: AbortController;
 	cancelRequested: boolean;
+	/** session/prompt has been answered. */
 	settled: boolean;
+	/** The answer is being prepared: the turn forwards no further events. */
+	closing: boolean;
 	awaitingSteerResubmissions?: string[];
-
+	/** A run that claimed the session before this turn's dispatch is being stopped; its events are not this turn's. */
+	interrupting: boolean;
+	/** Newest agent_end of the turn. Recovery and continuations supersede earlier ones; the last decides the answer. */
+	lastAgentEnd: AgentEndEvent | undefined;
+	/** Tool calls the client was shown that have not reached completed/failed. */
+	openToolCalls: Set<string>;
+	/** Resolves once a cancelled turn has been answered. */
+	cancelling: Promise<void> | undefined;
+	/** The session's abort of this turn. It can outlive the answer when it overruns the cancel budget. */
 	cleanup: Promise<void> | undefined;
 	usageBaseline: UsageStatistics;
 	unsubscribe: (() => void) | undefined;
@@ -955,14 +969,15 @@ export class AcpAgent implements Agent {
 		}
 		const activeTurn = record.promptTurn;
 		const steerResubmission = this.#takeSteerResubmissionCredit(activeTurn, params.prompt);
-		if (!steerResubmission && activeTurn && !activeTurn.settled && record.session.isStreaming) {
-			this.#beginCancelCleanup(record, activeTurn).catch(async (error: unknown) => {
-				logger.warn("ACP cancel cleanup timed out; closing session", {
-					acpSessionId: record.protocolSessionId,
-					error,
-				});
-				await this.#closeManagedSession(params.sessionId, record);
-			});
+		if (
+			!steerResubmission &&
+			activeTurn &&
+			!activeTurn.settled &&
+			(record.session.isStreaming || record.session.isRetrying)
+		) {
+			// A prompt sent while a turn runs, or waits to retry, steers by interrupting it (T3 Code relies on this):
+			// the running turn answers `cancelled` once it has stopped, and this prompt runs after it.
+			void this.#cancelTurn(record, activeTurn);
 		}
 		const cancellation: PromptDispatchCancellation = { cancelled: false };
 		record.pendingPromptDispatches.push(cancellation);
@@ -971,16 +986,25 @@ export class AcpAgent implements Agent {
 				const previousTurn = record.promptTurn;
 				if (previousTurn) {
 					await previousTurn.promise.catch(() => undefined);
-					await previousTurn.cleanup;
+					await this.#awaitTurnStopped(record, previousTurn);
 				}
 				this.#throwIfRecordClosed(record);
 
 				const converted = this.#convertPromptBlocks(params.prompt);
+				// A run no prompt owns (an extension's background turn, a continuation that outlived its prompt) would
+				// make this prompt busy: interrupt it as a steering prompt interrupts a turn, then run.
+				if (!cancellation.cancelled) await this.#interruptUnownedRun(record);
+				this.#throwIfRecordClosed(record);
 				const pendingPrompt = Promise.withResolvers<PromptResponse>();
-				record.promptTurn = {
+				const turn: PromptTurnState = {
 					abortController: new AbortController(),
 					cancelRequested: false,
 					settled: false,
+					closing: false,
+					interrupting: false,
+					lastAgentEnd: undefined,
+					openToolCalls: new Set(),
+					cancelling: undefined,
 					cleanup: undefined,
 					usageBaseline: this.#cloneUsageStatistics(record.session.sessionManager.getUsageStatistics()),
 					unsubscribe: undefined,
@@ -988,32 +1012,21 @@ export class AcpAgent implements Agent {
 					reject: pendingPrompt.reject,
 					promise: pendingPrompt.promise,
 				};
-
-				record.promptTurn.unsubscribe = record.session.subscribe(event => {
-					this.#trackPromptEvent(record, event);
+				record.promptTurn = turn;
+				turn.unsubscribe = record.session.subscribe(event => {
+					this.#trackPromptEvent(record, turn, event);
 				});
 
 				if (cancellation.cancelled) {
-					void this.#beginCancelCleanup(record, record.promptTurn).catch(async (error: unknown) => {
-						logger.warn("ACP cancel cleanup timed out; closing session", {
-							sessionId: record.session.sessionId,
-							error,
-						});
-						await this.#closeManagedSession(record.protocolSessionId, record);
-					});
+					// Cancelled while it waited in the queue: nothing ran, so there is nothing to stop.
+					void this.#settleTurn(record, turn, { stopReason: "cancelled" });
 					return await pendingPrompt.promise;
 				}
 
-				// Autonomous turns stream without an owning promptTurn, so a client prompt lands on the session's busy
-				// guard; type that for the wire instead of the transport's generic -32603.
-				this.#runPromptOrCommand(record, converted.text, converted.images).catch((error: unknown) => {
-					this.#finishPrompt(
-						record,
-						undefined,
-						error instanceof AgentBusyError
-							? RequestError.sessionBusy(error.message, { reason: "session_busy", hint: "steer|followUp|wait" })
-							: error,
-					);
+				this.#runPromptOrCommand(record, turn, converted.text, converted.images).catch((error: unknown) => {
+					// Errors from aborted work are the cancellation, never the answer (spec: prompt-turn cancellation).
+					if (turn.cancelRequested) return;
+					void this.#settleTurn(record, turn, undefined, error);
 				});
 
 				return await pendingPrompt.promise;
@@ -1054,8 +1067,8 @@ export class AcpAgent implements Agent {
 		return Object.assign(new Error(message), { code: "ACP_SESSION_CLOSED" as const });
 	}
 
-	#trackPromptEvent(record: ManagedSessionRecord, event: AgentSessionEvent): void {
-		const handling = this.#handlePromptEvent(record, event).catch((error: unknown) => {
+	#trackPromptEvent(record: ManagedSessionRecord, promptTurn: PromptTurnState, event: AgentSessionEvent): void {
+		const handling = this.#handlePromptEvent(record, promptTurn, event).catch((error: unknown) => {
 			logger.warn("ACP prompt event handler failed", { error });
 		});
 		record.promptEventHandlers.add(handling);
@@ -1093,10 +1106,16 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	async #runPromptOrCommand(record: ManagedSessionRecord, text: string, images: AgentImageContent[]): Promise<void> {
-		const promptTurn = record.promptTurn;
+	async #runPromptOrCommand(
+		record: ManagedSessionRecord,
+		promptTurn: PromptTurnState,
+		text: string,
+		images: AgentImageContent[],
+	): Promise<void> {
 		const skillResult = await this.#tryRunSkillCommand(record, text);
-		if (skillResult || promptTurn?.cancelRequested) {
+		if (promptTurn.cancelRequested) return;
+		if (skillResult) {
+			await this.#concludeTurn(record, promptTurn);
 			return;
 		}
 
@@ -1105,7 +1124,7 @@ export class AcpAgent implements Agent {
 			sessionManager: record.session.sessionManager,
 			settings: record.session.settings,
 			cwd: record.session.sessionManager.getCwd(),
-			signal: promptTurn?.abortController.signal,
+			signal: promptTurn.abortController.signal,
 			output: output => this.#emitCommandOutput(record, output),
 			refreshCommands: () => this.#emitAvailableCommandsUpdate(record),
 			reloadPlugins: () => this.#reloadPluginState(record),
@@ -1123,27 +1142,85 @@ export class AcpAgent implements Agent {
 				await this.#pushConfigOptionUpdate(record);
 			},
 		});
-		if (promptTurn?.cancelRequested) return;
+		if (promptTurn.cancelRequested) return;
 		if (builtinResult !== false) {
-			this.#finishPrompt(record, {
+			await this.#settleTurn(record, promptTurn, {
 				stopReason: "end_turn",
-				usage: this.#buildTurnUsage(
-					promptTurn?.usageBaseline ??
-						this.#cloneUsageStatistics(record.session.sessionManager.getUsageStatistics()),
-					record.session.sessionManager.getUsageStatistics(),
-				),
+				usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
 			});
 			return;
 		}
 
 		const extensionPromptBaseline = new Set(record.extensionUserMessageTasks);
-		const agentInvoked = await record.session.prompt(text, { images });
+		const agentInvoked = await this.#dispatchPrompt(record, promptTurn, text, images);
+		if (promptTurn.cancelRequested) return;
 
 		if (!agentInvoked) {
+			// A command handled locally can still run the agent through the messages it sends; that run answers.
 			await this.#waitForExtensionUserMessages(record, extensionPromptBaseline);
 			await this.#waitForPromptEventHandlers(record);
-			this.#finishPrompt(record, { stopReason: "end_turn" });
+			if (promptTurn.lastAgentEnd === undefined) {
+				await this.#settleTurn(record, promptTurn, { stopReason: "end_turn" });
+				return;
+			}
 		}
+		await this.#concludeTurn(record, promptTurn);
+	}
+
+	/**
+	 * Runs the prompt. A run that claimed the session first is interrupted the way a steering prompt interrupts a
+	 * turn instead of answering busy: the client may always send another session/prompt (spec: prompt-turn).
+	 */
+	async #dispatchPrompt(
+		record: ManagedSessionRecord,
+		promptTurn: PromptTurnState,
+		text: string,
+		images: AgentImageContent[],
+	): Promise<boolean> {
+		for (let attempt = 1; ; attempt++) {
+			try {
+				return await record.session.prompt(text, { images });
+			} catch (error) {
+				if (!(error instanceof AgentBusyError) || promptTurn.cancelRequested) throw error;
+				if (attempt >= ACP_DISPATCH_ATTEMPTS) throw this.#sessionNotStoppedError(record);
+				promptTurn.interrupting = true;
+				try {
+					await this.#interruptUnownedRun(record);
+				} finally {
+					promptTurn.interrupting = false;
+				}
+				if (promptTurn.cancelRequested) return true;
+			}
+		}
+	}
+
+	/**
+	 * Answers a dispatched prompt once the session is idle. An agent_end does not end the turn while recovery retries
+	 * it or a continuation or async job delivery follows: answering there left that work running with no turn to
+	 * report to, and the client's next prompt found the session busy. The newest agent_end decides the answer; a
+	 * prompt the session dropped before it ran (superseded during setup, refused by a usage preflight) reports none.
+	 */
+	async #concludeTurn(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
+		await this.#waitForAcpPromptIdle(record, promptTurn);
+		if (promptTurn.cancelRequested) return;
+		const usage = this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics());
+		const final = promptTurn.lastAgentEnd;
+		if (!final) {
+			await this.#settleTurn(record, promptTurn, { stopReason: "end_turn", usage });
+			return;
+		}
+		const failure = this.#turnFailure(record, final, false);
+		if (failure) {
+			await this.#settleTurn(record, promptTurn, undefined, failure);
+			return;
+		}
+		await this.#settleTurn(
+			record,
+			promptTurn,
+			{ stopReason: this.#resolveStopReason(final, false), usage },
+			undefined,
+			{ endOfTurnUpdates: true },
+		);
 	}
 
 	async #tryRunSkillCommand(record: ManagedSessionRecord, text: string): Promise<boolean> {
@@ -1177,68 +1254,98 @@ export class AcpAgent implements Agent {
 		const record = this.#getSessionRecord(params.sessionId);
 		for (const cancellation of record.pendingPromptDispatches) cancellation.cancelled = true;
 		const promptTurn = record.promptTurn;
-		if (isPromptTurnInFlight(promptTurn)) {
-			try {
-				await this.#beginCancelCleanup(record, promptTurn);
-			} catch (error: unknown) {
-				logger.warn("ACP cancel cleanup timed out; closing session", {
-					acpSessionId: record.protocolSessionId,
-					error,
-				});
-				await this.#closeManagedSession(record.protocolSessionId, record);
-			}
+		if (promptTurn && !promptTurn.settled) {
+			await this.#cancelTurn(record, promptTurn);
 			return;
 		}
+		// A run no prompt turn owns stops too, so the next prompt finds the session idle.
 		if (!record.session.isStreaming) return;
-		const timeoutGate = Promise.withResolvers<never>();
-		const timer = setTimeout(
-			() => timeoutGate.reject(new Error("ACP cancel cleanup timed out")),
-			this.#cancelCleanupTimeoutMs,
-		);
-		try {
-			await Promise.race([record.session.abort({ reason: USER_INTERRUPT_LABEL }), timeoutGate.promise]);
-		} catch (error: unknown) {
-			logger.warn("ACP cancel cleanup timed out; closing session", {
+		if (!(await this.#settlesWithinCancelBudget(this.#abortSession(record)))) {
+			logger.warn("ACP session did not stop within the cancel budget; it stays open", {
 				acpSessionId: record.protocolSessionId,
-				error,
+				timeoutMs: this.#cancelCleanupTimeoutMs,
 			});
-			await this.#closeManagedSession(record.protocolSessionId, record);
+		}
+	}
+
+	/**
+	 * Cancels a turn as session/cancel asks (spec: prompt-turn cancellation): stop its work, let the updates the
+	 * stopping work produces reach the client, close the tool calls still open, then answer `cancelled`. An abort
+	 * that overruns the cancel budget is still answered — the client is waiting — and the session stays registered:
+	 * the next prompt waits for that abort instead of finding the session silently closed.
+	 */
+	#cancelTurn(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
+		if (promptTurn.cancelling) return promptTurn.cancelling;
+		// Already being answered: its work is done, and stopping the idle session would only cost side effects.
+		if (promptTurn.closing) return Promise.resolve();
+		promptTurn.cancelRequested = true;
+		promptTurn.abortController.abort();
+		const cleanup = this.#abortSession(record).finally(() => {
+			if (promptTurn.cleanup === cleanup) promptTurn.cleanup = undefined;
+			if (promptTurn.settled && record.promptTurn === promptTurn) record.promptTurn = undefined;
+		});
+		promptTurn.cleanup = cleanup;
+		promptTurn.cancelling = (async () => {
+			if (!(await this.#settlesWithinCancelBudget(cleanup))) {
+				logger.warn("ACP turn did not stop within the cancel budget; answering it as cancelled", {
+					acpSessionId: record.protocolSessionId,
+					timeoutMs: this.#cancelCleanupTimeoutMs,
+				});
+			}
+			await this.#settleTurn(record, promptTurn, {
+				stopReason: "cancelled",
+				usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
+			});
+		})();
+		return promptTurn.cancelling;
+	}
+
+	#abortSession(record: ManagedSessionRecord): Promise<void> {
+		return record.session.abort({ reason: USER_INTERRUPT_LABEL }).catch((error: unknown) => {
+			logger.warn("ACP session abort failed", { acpSessionId: record.protocolSessionId, error });
+		});
+	}
+
+	/** Whether `work` settles within the cancel budget; it keeps running either way. */
+	async #settlesWithinCancelBudget(work: Promise<unknown>): Promise<boolean> {
+		const budget = Promise.withResolvers<boolean>();
+		const timer = setTimeout(() => budget.resolve(false), this.#cancelCleanupTimeoutMs);
+		try {
+			return await Promise.race([
+				work.then(
+					() => true,
+					() => true,
+				),
+				budget.promise,
+			]);
 		} finally {
 			clearTimeout(timer);
 		}
 	}
 
-	#beginCancelCleanup(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
-		if (promptTurn.cleanup) {
-			return promptTurn.cleanup;
-		}
-		promptTurn.cancelRequested = true;
-		promptTurn.abortController.abort();
-		promptTurn.unsubscribe?.();
-		const cleanup = this.#runCancelCleanup(record, promptTurn);
-		promptTurn.cleanup = cleanup;
-		this.#finishPrompt(record, {
-			stopReason: "cancelled",
-			usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
-		});
-		return cleanup;
+	/** The next prompt waits for a cancelled turn's abort, and fails explicitly when it overruns again. */
+	async #awaitTurnStopped(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
+		const cleanup = promptTurn.cleanup;
+		if (cleanup && !(await this.#settlesWithinCancelBudget(cleanup))) throw this.#sessionNotStoppedError(record);
 	}
 
-	async #runCancelCleanup(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
-		let timer: NodeJS.Timeout | undefined;
-		const timeout = new Promise<never>((_, reject) => {
-			timer = setTimeout(() => reject(new Error("ACP cancel cleanup timed out")), this.#cancelCleanupTimeoutMs);
-		});
-		try {
-			await Promise.race([record.session.abort({ reason: USER_INTERRUPT_LABEL }), timeout]);
-		} finally {
-			if (timer) clearTimeout(timer);
-
-			promptTurn.cleanup = undefined;
-			if (promptTurn.settled && record.promptTurn === promptTurn) {
-				record.promptTurn = undefined;
+	/**
+	 * A run no prompt turn owns — an extension's background turn, a wake, a continuation that outlived its prompt —
+	 * would answer this prompt busy. Interrupt it the way a steering prompt interrupts a turn, then run.
+	 */
+	async #interruptUnownedRun(record: ManagedSessionRecord): Promise<void> {
+		for (let attempt = 1; record.session.isStreaming; attempt++) {
+			if (attempt > ACP_DISPATCH_ATTEMPTS || !(await this.#settlesWithinCancelBudget(this.#abortSession(record)))) {
+				throw this.#sessionNotStoppedError(record);
 			}
 		}
+	}
+
+	#sessionNotStoppedError(record: ManagedSessionRecord): RequestError {
+		return RequestError.internalError(
+			{ sessionId: record.protocolSessionId, reason: "session_not_stopped" },
+			"the session did not stop its running work within the cancel budget, so this prompt was not started",
+		);
 	}
 
 	async extMethod(method: string, params: { [key: string]: unknown }): Promise<{ [key: string]: unknown }> {
@@ -1684,10 +1791,18 @@ export class AcpAgent implements Agent {
 		return storedSession.path;
 	}
 
-	async #handlePromptEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
-		const promptTurn = record.promptTurn;
-		if (!promptTurn || promptTurn.settled || promptTurn.cancelRequested) {
+	async #handlePromptEvent(
+		record: ManagedSessionRecord,
+		promptTurn: PromptTurnState,
+		event: AgentSessionEvent,
+	): Promise<void> {
+		// A cancelled turn keeps forwarding while its work stops: those updates must reach the client before the
+		// `cancelled` answer (spec: prompt-turn cancellation).
+		if (promptTurn.closing || promptTurn.interrupting) {
 			return;
+		}
+		if (event.type === "agent_end") {
+			promptTurn.lastAgentEnd = event;
 		}
 
 		if (event.type === "tool_execution_start" || event.type === "tool_execution_update") {
@@ -1711,33 +1826,79 @@ export class AcpAgent implements Agent {
 			cwd: record.session.sessionManager.getCwd(),
 			resolveImageData: resolveImageDataForAcp,
 		})) {
-			await this.#connection.sessionUpdate(notification);
+			await this.#sendTurnUpdate(promptTurn, notification);
 		}
 		if (event.type === "tool_execution_end") {
 			record.toolArgsById.delete(event.toolCallId);
 		}
 		this.#clearLiveAssistantMessageAfterEvent(record, event);
 
+		// The turn is answered once the session is idle (`#concludeTurn`): recovery or a continuation may still
+		// supersede this agent_end.
 		if (event.type === "agent_end") {
-			await this.#flushMissedFinalAssistantText(record, event);
-			const failure = this.#turnFailure(record, event, promptTurn.cancelRequested);
-			if (failure) {
-				// Report the failure now. Waiting for the session to go idle first
-				// would hold the client for as long as recovery keeps re-running the
-				// broken turn, which is exactly how an unreachable provider used to
-				// leave session/prompt unanswered.
-				record.liveMessageId = undefined;
-				record.liveMessageProgress = undefined;
-				this.#finishPrompt(record, undefined, failure);
-				return;
-			}
-			await this.#emitEndOfTurnUpdates(record);
-			await this.#waitForAcpPromptIdle(record);
+			if (!promptTurn.cancelRequested) await this.#flushMissedFinalAssistantText(record, event);
 			record.liveMessageId = undefined;
 			record.liveMessageProgress = undefined;
-			this.#finishPrompt(record, {
-				stopReason: this.#resolveStopReason(event, promptTurn.cancelRequested),
-				usage: this.#buildTurnUsage(promptTurn.usageBaseline, record.session.sessionManager.getUsageStatistics()),
+		}
+	}
+
+	/** Forwards a turn's update, tracking the tool calls the client shows as running. */
+	async #sendTurnUpdate(promptTurn: PromptTurnState, notification: SessionNotification): Promise<void> {
+		const update = notification.update;
+		if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+			if (update.status === "completed" || update.status === "failed") {
+				promptTurn.openToolCalls.delete(update.toolCallId);
+			} else {
+				promptTurn.openToolCalls.add(update.toolCallId);
+			}
+		}
+		await this.#connection.sessionUpdate(notification);
+	}
+
+	/**
+	 * Answers session/prompt, once. The turn stops forwarding, the updates already on their way reach the client
+	 * first, and tool calls it still shows as running are closed as failed: nothing may follow the answer, and the
+	 * client would otherwise show them running forever (spec: prompt-turn cancellation).
+	 */
+	async #settleTurn(
+		record: ManagedSessionRecord,
+		promptTurn: PromptTurnState,
+		response?: PromptResponse,
+		error?: unknown,
+		options?: { endOfTurnUpdates?: boolean },
+	): Promise<void> {
+		if (promptTurn.closing) return;
+		// A cancelled turn answers `cancelled` and nothing else, whatever its aborted work reports.
+		if (promptTurn.cancelRequested && response?.stopReason !== "cancelled") return;
+		promptTurn.closing = true;
+		promptTurn.unsubscribe?.();
+		const finalUpdates = (async () => {
+			// Handlers that started before `closing` are still sending; the ones after it send nothing.
+			await Promise.allSettled(Array.from(record.promptEventHandlers));
+			if (options?.endOfTurnUpdates) await this.#emitEndOfTurnUpdates(record);
+			await this.#closeOpenToolCalls(record, promptTurn);
+		})().catch((updateError: unknown) => {
+			logger.warn("ACP end-of-turn updates failed", { acpSessionId: record.protocolSessionId, error: updateError });
+		});
+		// Bounded: a client that stops reading must not keep session/close and dispose waiting on this answer.
+		if (!(await this.#settlesWithinCancelBudget(finalUpdates))) {
+			logger.warn("ACP turn updates did not drain before its answer", { acpSessionId: record.protocolSessionId });
+		}
+		promptTurn.settled = true;
+		record.liveMessageId = undefined;
+		record.liveMessageProgress = undefined;
+		if (!promptTurn.cleanup && record.promptTurn === promptTurn) record.promptTurn = undefined;
+		if (error !== undefined) promptTurn.reject(error);
+		else promptTurn.resolve(response ?? { stopReason: "end_turn" });
+	}
+
+	async #closeOpenToolCalls(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
+		for (const toolCallId of promptTurn.openToolCalls) {
+			promptTurn.openToolCalls.delete(toolCallId);
+			record.toolArgsById.delete(toolCallId);
+			await this.#connection.sessionUpdate({
+				sessionId: record.protocolSessionId,
+				update: { sessionUpdate: "tool_call_update", toolCallId, status: "failed" },
 			});
 		}
 	}
@@ -1771,9 +1932,10 @@ export class AcpAgent implements Agent {
 		});
 	}
 
-	async #waitForAcpPromptIdle(record: ManagedSessionRecord): Promise<void> {
+	async #waitForAcpPromptIdle(record: ManagedSessionRecord, promptTurn: PromptTurnState): Promise<void> {
 		for (let pass = 0; pass < ACP_ASYNC_DELIVERY_DRAIN_MAX_PASSES; pass++) {
-			await record.session.waitForIdle();
+			await this.#waitForSessionIdle(record);
+			if (promptTurn.cancelRequested) return;
 			const delivered = await record.session.drainAsyncJobDeliveriesForAcp({
 				timeoutMs: ACP_ASYNC_DELIVERY_DRAIN_TIMEOUT_MS,
 			});
@@ -1782,7 +1944,20 @@ export class AcpAgent implements Agent {
 			}
 		}
 
-		await record.session.waitForIdle();
+		await this.#waitForSessionIdle(record);
+	}
+
+	/**
+	 * Idle covers recovery between retries (`waitForIdle`) and submissions that are admitted or dispatched but not
+	 * streaming yet, such as a follow-up an extension sends when a run ends.
+	 */
+	async #waitForSessionIdle(record: ManagedSessionRecord): Promise<void> {
+		const session = record.session;
+		do {
+			await session.waitForAdmittedSubmissions();
+			await session.waitForIdle();
+			await session.waitForStreamingIdle();
+		} while (session.hasAdmittedSubmission || session.isStreaming);
 	}
 
 	#prepareLiveAssistantMessage(record: ManagedSessionRecord, event: AgentSessionEvent): void {
@@ -1820,24 +1995,6 @@ export class AcpAgent implements Agent {
 		}
 		record.liveMessageProgress ??= { textEmitted: false, thoughtEmitted: false };
 		return record.liveMessageProgress;
-	}
-
-	#finishPrompt(record: ManagedSessionRecord, response?: PromptResponse, error?: unknown): void {
-		const promptTurn = record.promptTurn;
-		if (!promptTurn || promptTurn.settled) {
-			return;
-		}
-		promptTurn.settled = true;
-		promptTurn.unsubscribe?.();
-
-		if (!promptTurn.cleanup && record.promptTurn === promptTurn) {
-			record.promptTurn = undefined;
-		}
-		if (error !== undefined) {
-			promptTurn.reject(error);
-			return;
-		}
-		promptTurn.resolve(response ?? { stopReason: "end_turn" });
 	}
 
 	/**
@@ -2869,11 +3026,13 @@ export class AcpAgent implements Agent {
 		if (!isPromptTurnInFlight(promptTurn)) {
 			return;
 		}
-		const cleanup = promptTurn.cleanup ?? this.#beginCancelCleanup(record, promptTurn);
-		try {
-			await cleanup;
-		} catch (error) {
-			logger.warn("Failed to abort ACP prompt during session close", { error });
+		// Each wait is bounded by the cancel budget: an abort that overruns it is disposed with the session.
+		if (!promptTurn.settled) {
+			await this.#cancelTurn(record, promptTurn);
+			return;
+		}
+		if (promptTurn.cleanup && !(await this.#settlesWithinCancelBudget(promptTurn.cleanup))) {
+			logger.warn("ACP prompt did not stop before session close", { acpSessionId: record.protocolSessionId });
 		}
 	}
 
