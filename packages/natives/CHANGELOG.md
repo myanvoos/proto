@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Shell `grep -o` with a `$`-anchored pattern printed nothing and `grep -z` missed records matching it; matches are now taken against the line without its terminator, as in GNU grep (port of [#19262](https://github.com/can1357/oh-my-pi/pull/19262) by @tuschla)
+- Shell `sed` no longer panics with `internal error` on global or numbered substitutions whose regex matches empty text on a line with multibyte characters (`s/ */_/g` on `café au lait`) (port of [#19261](https://github.com/can1357/oh-my-pi/pull/19261) by @tuschla)
+- `rg` anchored globs (`foo/**`, `**/bar`) now match against the working-directory-relative path, so `rg --glob '**/x'` from a subdirectory behaves as ripgrep does (port of 59615a1410)
+- `find`, `stat` and `diff` honor the shell's `TZ` for their timestamp output and `find -newermt`/`-daystart` (previously used the process zone or UTC); pre-1970 and post-2262 timestamps keep UTC formatting (port of 55b2c8d48a + 563b03b504 + ec692d3fec)
+- The shell's pty setup waits for non-canonical mode before sending input, removing an echo race in interactive shells (port of e1ec8e1159)
+- The output minimizer no longer rewrites small, single-file or explicit-format output: grep/rg/ls under size and context limits, `git commit` stat lines, `cargo test` totals across suites, `aws --output`/`--query`, and Go/Gradle/lint summaries pass through unmangled (port of c938b5af61)
+
 ## [20.2.2] - 2026-11-15
 
 ### Fixed
@@ -37,14 +46,6 @@
 - Reap exited background jobs while the shell is idle, so a later `wait` still reports their status and no zombies remain.
 
 ## [20.1.2] - 2026-11-04
-### Fixed
-
-- Fixed shell `grep -o` printing nothing for a pattern anchored at the end of a line, such as `echo abc | grep -o 'c$'`, and `grep -z` missing records that match such a pattern: matches are now found in the line without its terminator, as in GNU grep ([#19262](https://github.com/can1357/oh-my-pi/pull/19262) by [@tuschla](https://github.com/tuschla))
-### Fixed
-
-- Fixed shell `sed` failing with `internal error` on a global or numbered substitution whose regex matches empty text on a line with multibyte characters (`s/ */_/g` on `café au lait`) ([#19261](https://github.com/can1357/oh-my-pi/pull/19261) by [@tuschla](https://github.com/tuschla))
-
-## [18.20.1] - 2026-11-14
 
 ### Breaking Changes
 
