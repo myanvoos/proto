@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenAI completions streams whose provider error is replayed to the client are no longer retried a second time when the transport already exhausted its retry budget on a transient HTTP status (in-band 429/5xx inside a 200 stream keeps its one replay) (part of [#20215](https://github.com/can1357/oh-my-pi/pull/20215) by @JamieJ5926)
+- Replayed OpenRouter Responses reasoning items keep `id`, `format` and `signature`, so Gemini thought signatures survive long tool loops instead of being dropped on replay (port of 8333b958b9)
+- The thinking-loop guard no longer flags structured answer content (JSON records, JSON arrays of scalars, GFM tables) as a reasoning loop; prose tables leads-with-pipe rules still apply (port of 7d494eb5a9 + 92e16e31ca + a66b3c77f5)
+- Gemini planning-header runaway is now interrupted after 64 consecutive headers instead of 36 (port of a991e045ef)
+
 ## [20.2.2] - 2026-11-15
 
 ### Added

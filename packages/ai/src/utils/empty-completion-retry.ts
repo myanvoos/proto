@@ -41,6 +41,13 @@ interface StreamRetryOptions {
 	acceptEmptyResponse?: boolean;
 }
 
+/**
+ * Error messages whose HTTP status the transport already retried for its whole
+ * budget. Replaying them would multiply that budget, so the provider marks them.
+ * In-band errors inside a 200 stream are not marked and keep their one replay.
+ */
+export const transportExhaustedMessages = new WeakSet<AssistantMessage>();
+
 export interface ReplaySafeStreamRetryPolicy {
 	/** A function defers to per-attempt transport state (e.g. never replay a sent WebSocket turn). */
 	retryEmptyCompletion?: boolean | (() => boolean);
@@ -124,6 +131,7 @@ export function withReplaySafeStreamRetry<M, O extends StreamRetryOptions>(
 				failedMessage?.stopReason === "error" &&
 				failedMessage.errorMessage !== undefined &&
 				providerErrorRetries < (policy.maxProviderErrorRetries ?? 0) &&
+				!transportExhaustedMessages.has(failedMessage) &&
 				AIError.isProviderRetryableError(
 					new FinalizedProviderStreamError(failedMessage.errorMessage, failedMessage.errorStatus),
 				);

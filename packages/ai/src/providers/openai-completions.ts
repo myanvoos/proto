@@ -43,7 +43,11 @@ import {
 	kStreamingLastParseLen,
 	setStreamingPartialJson,
 } from "../utils/block-symbols";
-import { hasVisibleAssistantContent, withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
+import {
+	hasVisibleAssistantContent,
+	transportExhaustedMessages,
+	withReplaySafeStreamRetry,
+} from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
 import {
@@ -1648,6 +1652,9 @@ const streamOpenAICompletionsOnce = (
 			});
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			if (error instanceof OpenAIHttpError && AIError.isTransientStatus(result.status)) {
+				transportExhaustedMessages.add(output);
+			}
 			output.errorId = result.id;
 			output.errorMessage = result.message;
 

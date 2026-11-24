@@ -10,6 +10,31 @@ function sanitize(items: Array<Record<string, unknown>>): Array<Record<string, u
 }
 
 describe("OpenAI Responses replay hygiene", () => {
+	it("keeps the id, format and signature OpenRouter needs for Gemini thought signatures", () => {
+		const replay = sanitize([
+			{
+				type: "reasoning",
+				id: "call_g1",
+				status: "completed",
+				summary: [],
+				encrypted_content: "gemini-thought-signature",
+				format: "google-gemini-v1",
+				signature: "c2ln",
+			},
+		]);
+
+		expect(replay).toEqual([
+			{
+				type: "reasoning",
+				id: "call_g1",
+				summary: [],
+				encrypted_content: "gemini-thought-signature",
+				format: "google-gemini-v1",
+				signature: "c2ln",
+			},
+		]);
+	});
+
 	it("drops a function call with truncated JSON arguments without dropping surrounding history", () => {
 		const replay = sanitize([
 			{ type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc_1" },
