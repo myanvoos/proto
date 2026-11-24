@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ImageContent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, UserMessage } from "@oh-my-pi/pi-ai";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import type { AgentSideConnection, SessionNotification } from "@oh-my-pi/pi-utils/acp";
 import { ModelRegistry } from "../../config/model-registry";
@@ -109,6 +109,55 @@ async function startAcp(): Promise<AcpHarness> {
 	};
 }
 
+function assistant(text: string, overrides: Partial<AssistantMessage> = {}): AssistantMessage {
+	return {
+		role: "assistant",
+		content: text ? [{ type: "text", text }] : [],
+		api: "openai-completions",
+		provider: "probe",
+		model: "probe-model",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+		...overrides,
+	};
+}
+
+function user(content: string, attribution: "user" | "agent" = "user"): UserMessage {
+	return { role: "user", content: [{ type: "text", text: content }], attribution, timestamp: Date.now() };
+}
+
+/** Writes a stored session the way a finished conversation leaves it, and returns its id and file. */
+async function storeSession(build: (manager: SessionManager) => void): Promise<{ id: string; file: string }> {
+	const manager = SessionManager.create(cwd);
+	build(manager);
+	await manager.ensureOnDisk();
+	await manager.flush();
+	const file = manager.getSessionFile();
+	if (!file) throw new Error("expected a persisted session file");
+	const id = manager.getSessionId();
+	await manager.close();
+	return { id, file };
+}
+
+function chunkText(notification: SessionNotification): string {
+	const { update } = notification;
+	if (
+		(update.sessionUpdate === "user_message_chunk" || update.sessionUpdate === "agent_message_chunk") &&
+		update.content.type === "text"
+	) {
+		return update.content.text;
+	}
+	return "";
+}
+
 test("resource prompt blocks reach the model with the location the client gave, not only a name", async () => {
 	const harness = await startAcp();
 	try {
@@ -153,6 +202,88 @@ test("resource prompt blocks reach the model with the location the client gave, 
 		// An embedded image still arrives as an image, and the model learns which file it is.
 		expect(images).toEqual([{ type: "image", data: png, mimeType: "image/png" }]);
 		expect(text).toContain("/home/user/shot.png");
+	} finally {
+		await harness.dispose();
+	}
+});
+
+test("session/load replays the visible conversation, compacted history included, without injected context", async () => {
+	const stored = await storeSession(manager => {
+		manager.appendMessage(user("FIRST-QUESTION"));
+		manager.appendMessage(assistant("FIRST-ANSWER"));
+		const kept = manager.appendMessage({ role: "user", content: "SECOND-QUESTION", timestamp: Date.now() });
+		manager.appendMessage(assistant("SECOND-ANSWER"));
+		manager.appendCompaction("COMPACTION-SUMMARY", "compacted", kept, 1000);
+		manager.appendMessage({
+			role: "developer",
+			content: [{ type: "text", text: "DEVELOPER-CONTEXT" }],
+			timestamp: Date.now(),
+		});
+		manager.appendCustomMessageEntry(
+			"goal-reminder",
+			[{ type: "text", text: "HIDDEN-CUSTOM" }],
+			false,
+			undefined,
+			"agent",
+		);
+		manager.appendCustomMessageEntry(
+			"async-result",
+			[{ type: "text", text: "AGENT-NOTICE" }],
+			true,
+			undefined,
+			"agent",
+		);
+		manager.appendMessage({
+			role: "hookMessage",
+			customType: "hook",
+			content: [{ type: "text", text: "HOOK-TEXT" }],
+			display: true,
+			timestamp: Date.now(),
+		});
+		manager.appendCustomMessageEntry(
+			"skill-prompt",
+			"SKILL-BODY",
+			true,
+			{ name: "review", path: "/skills/review/SKILL.md", args: "pr 12", lineCount: 1 },
+			"user",
+		);
+		manager.appendMessage(assistant("SKILL-ANSWER"));
+		manager.appendMessage(user("AGENT-SIDE-PROMPT", "agent"));
+		manager.appendMessage(
+			assistant("", {
+				stopReason: "error",
+				errorMessage: "RETRY-ERROR",
+				retryRecovery: { kind: "auto-retry", status: "superseded", attempt: 1, recovery: "plain", note: "retried" },
+			}),
+		);
+		manager.appendMessage(user("THIRD-QUESTION"));
+		manager.appendMessage(assistant("THIRD-ANSWER"));
+		manager.appendMessage(user("FOURTH-QUESTION"));
+		manager.appendMessage(assistant("", { stopReason: "aborted", errorMessage: "Interrupted by user" }));
+	});
+
+	const harness = await startAcp();
+	try {
+		await harness.acp.loadSession({ sessionId: stored.id, cwd, mcpServers: [] });
+		const conversation = harness.updates
+			.filter(
+				notification =>
+					notification.update.sessionUpdate === "user_message_chunk" ||
+					notification.update.sessionUpdate === "agent_message_chunk",
+			)
+			.map(notification => `${notification.update.sessionUpdate}: ${chunkText(notification)}`);
+
+		expect(conversation).toEqual([
+			"user_message_chunk: FIRST-QUESTION",
+			"agent_message_chunk: FIRST-ANSWER",
+			"user_message_chunk: SECOND-QUESTION",
+			"agent_message_chunk: SECOND-ANSWER",
+			"user_message_chunk: /skill:review pr 12",
+			"agent_message_chunk: SKILL-ANSWER",
+			"user_message_chunk: THIRD-QUESTION",
+			"agent_message_chunk: THIRD-ANSWER",
+			"user_message_chunk: FOURTH-QUESTION",
+		]);
 	} finally {
 		await harness.dispose();
 	}

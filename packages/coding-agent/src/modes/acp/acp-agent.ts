@@ -1,7 +1,7 @@
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
+import { AgentBusyError, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import {
@@ -76,10 +76,12 @@ import { loadAllExtensions } from "../../modes/components/extensions/state-manag
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession, AgentSessionEvent } from "../../session/agent-session";
 import { BlobStore, resolveImageDataSync } from "../../session/blob-store";
-import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
+import { SKILL_PROMPT_MESSAGE_TYPE, shouldRenderAbortReason, USER_INTERRUPT_LABEL } from "../../session/messages";
+import { isUserAuthoredQueuedMessage } from "../../session/queued-messages";
 import type { UsageStatistics } from "../../session/session-entries";
 import type { SessionInfo as StoredSessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
+import { titleTextFromSkillPrompt } from "../../session/skill-title-input";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash-commands/available-commands";
 import { refreshAgentDiscovery } from "../../task";
@@ -2585,7 +2587,11 @@ export class AcpAgent implements Agent {
 		const cwd = record.session.sessionManager.getCwd();
 		const replayedToolCallIds = new Set<string>();
 		const replayedToolCallArgs = new Map<string, unknown>();
-		for (const message of record.session.sessionManager.buildSessionContext().messages as ReplayableMessage[]) {
+		// The transcript the TUI rebuilds on resume, not the model context: history a compaction folded
+		// away is kept, summaries stay out of the turns, and secrets are deobfuscated. A turn still
+		// running keeps its in-flight tool calls, as it does on screen.
+		const { messages } = record.session.buildTranscriptSessionContext({ keepInFlightToolCalls: true });
+		for (const message of messages) {
 			for (const notification of this.#messageToReplayNotifications(
 				record.protocolSessionId,
 				message,
@@ -2600,64 +2606,48 @@ export class AcpAgent implements Agent {
 
 	#messageToReplayNotifications(
 		sessionId: string,
-		message: ReplayableMessage,
+		message: AgentMessage,
 		cwd: string,
 		replayedToolCallIds: Set<string>,
 		replayedToolCallArgs: Map<string, unknown>,
 	): SessionNotification[] {
 		if (message.role === "assistant") {
+			// A failed attempt that auto-retry superseded reached the client only as retry progress.
+			if (message.retryRecovery) return [];
 			return this.#replayAssistantMessage(sessionId, message, cwd, replayedToolCallIds, replayedToolCallArgs);
 		}
-		if (
-			message.role === "user" ||
-			message.role === "developer" ||
-			message.role === "custom" ||
-			message.role === "hookMessage"
-		) {
-			return this.#wrapReplayContent(
-				sessionId,
-				this.#extractReplayContent(message.content, undefined),
-				"user_message_chunk",
-				crypto.randomUUID(),
-			);
+		if (message.role === "toolResult") {
+			// Persisted rows are not schema-checked; a malformed result is skipped rather than failing the load.
+			if (typeof message.toolCallId !== "string" || typeof message.toolName !== "string") return [];
+			return this.#replayToolResult(sessionId, cwd, message, {
+				includeStart: !replayedToolCallIds.has(message.toolCallId),
+				toolArgs: replayedToolCallArgs.get(message.toolCallId),
+			});
 		}
-		if (
-			message.role === "toolResult" &&
-			typeof message.toolCallId === "string" &&
-			typeof message.toolName === "string"
-		) {
-			return this.#replayToolResult(
-				sessionId,
-				cwd,
-				{
-					...message,
-					toolCallId: message.toolCallId,
-					toolName: message.toolName,
-				},
-				{
-					includeStart: !replayedToolCallIds.has(message.toolCallId),
-					toolArgs: replayedToolCallArgs.get(message.toolCallId),
-				},
-			);
+		// Only turns the user wrote replay as user messages. Developer context, hook and hidden or
+		// agent-injected custom messages, compaction and branch summaries, and file-mention or shell rows
+		// were never part of the conversation an ACP client showed.
+		if (!isUserAuthoredQueuedMessage(message)) return [];
+		return this.#wrapReplayContent(
+			sessionId,
+			this.#userReplayContent(message),
+			"user_message_chunk",
+			crypto.randomUUID(),
+		);
+	}
+
+	/** A user turn as the client sent it: a skill prompt replays as the command that invoked it, not its body. */
+	#userReplayContent(message: AgentMessage): PromptRequest["prompt"] {
+		if (message.role === "custom") {
+			const command = titleTextFromSkillPrompt(message);
+			if (command) return [{ type: "text", text: command }];
 		}
-		if (
-			message.role === "bashExecution" ||
-			message.role === "pythonExecution" ||
-			message.role === "compactionSummary"
-		) {
-			return this.#wrapReplayContent(
-				sessionId,
-				this.#extractReplayContent(message.content, undefined),
-				"user_message_chunk",
-				crypto.randomUUID(),
-			);
-		}
-		return [];
+		return "content" in message ? this.#extractReplayContent(message.content) : [];
 	}
 
 	#replayAssistantMessage(
 		sessionId: string,
-		message: ReplayableMessage,
+		message: AssistantMessage,
 		cwd: string,
 		replayedToolCallIds: Set<string>,
 		replayedToolCallArgs: Map<string, unknown>,
@@ -2691,7 +2681,11 @@ export class AcpAgent implements Agent {
 						sessionId,
 						update: {
 							sessionUpdate: "agent_message_chunk",
-							content: { type: "image", data: item.data, mimeType: item.mimeType },
+							content: {
+								type: "image",
+								data: resolveImageDataSync(this.#blobs, item.data),
+								mimeType: item.mimeType,
+							},
 							messageId,
 						},
 					});
@@ -2734,7 +2728,8 @@ export class AcpAgent implements Agent {
 				}
 			}
 		}
-		if (notifications.length === 0 && message.errorMessage) {
+		// A user's own interrupt and a silent abort ended the turn without a message, live and on screen.
+		if (notifications.length === 0 && message.errorMessage && shouldRenderAbortReason(message)) {
 			notifications.push({
 				sessionId,
 				update: {
@@ -2816,7 +2811,8 @@ export class AcpAgent implements Agent {
 		}));
 	}
 
-	#extractReplayContent(content: unknown, errorMessage: string | undefined): PromptRequest["prompt"] {
+	#extractReplayContent(content: unknown): PromptRequest["prompt"] {
+		if (typeof content === "string") return content.length > 0 ? [{ type: "text", text: content }] : [];
 		const replay: PromptRequest["prompt"] = [];
 		if (Array.isArray(content)) {
 			for (const item of content) {
@@ -2834,12 +2830,13 @@ export class AcpAgent implements Agent {
 					typeof item.data === "string" &&
 					typeof item.mimeType === "string"
 				) {
-					replay.push({ type: "image", data: item.data, mimeType: item.mimeType });
+					replay.push({
+						type: "image",
+						data: resolveImageDataSync(this.#blobs, item.data),
+						mimeType: item.mimeType,
+					});
 				}
 			}
-		}
-		if (replay.length === 0 && errorMessage) {
-			replay.push({ type: "text", text: errorMessage });
 		}
 		return replay;
 	}
