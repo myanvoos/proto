@@ -393,7 +393,14 @@ async function elicitFormFromAcpClient(
 		signal?.removeEventListener("abort", onAbort);
 		resolve(value);
 	};
-	const onAbort = () => finish(undefined);
+	// An abandoned form must not stay open in the client: withdraw it with `$/cancel_request`.
+	const request = new AbortController();
+	const abandon = () => {
+		if (settled) return;
+		finish(undefined);
+		request.abort();
+	};
+	const onAbort = () => abandon();
 	signal?.addEventListener("abort", onAbort, { once: true });
 	if (dialogOptions?.timeout !== undefined) {
 		timeoutId = setTimeout(() => {
@@ -403,22 +410,25 @@ async function elicitFormFromAcpClient(
 			} catch (error) {
 				logger.warn("ACP elicitation onTimeout threw", { acpSessionId: sessionId, method, error });
 			}
-			finish(undefined);
+			abandon();
 		}, dialogOptions.timeout);
 
 		timeoutId.unref();
 	}
 	connection
-		.unstable_createElicitation({
-			mode: "form",
-			sessionId,
-			message,
-			requestedSchema: {
-				type: "object",
-				properties,
-				required,
+		.unstable_createElicitation(
+			{
+				mode: "form",
+				sessionId,
+				message,
+				requestedSchema: {
+					type: "object",
+					properties,
+					required,
+				},
 			},
-		})
+			{ signal: request.signal },
+		)
 		.then(finish, error => {
 			if (settled) return;
 			logger.warn("ACP elicitation failed", { acpSessionId: sessionId, method, error });

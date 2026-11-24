@@ -146,10 +146,21 @@ type Dispatcher = (
 	signal?: AbortSignal,
 ) => MaybePromise<unknown>;
 type Pending = { resolve(value: unknown): void; reject(reason: unknown): void };
+type InboundCanceller = { controller: AbortController; answersItself: boolean };
 
 export interface RpcConnectionOptions {
 	/** Only cancel immediately when the dispatcher honors its inbound abort signal. */
 	honorsInboundCancellation?: boolean;
+	/**
+	 * Inbound methods whose handler answers a peer `$/cancel_request` itself, with a valid result once its work has
+	 * stopped (an ACP prompt answers with the `cancelled` stop reason), instead of the immediate `-32800`.
+	 */
+	answersOwnCancellation?: (method: string) => boolean;
+}
+
+export interface RequestOptions {
+	/** Aborting withdraws the request: the peer is sent `$/cancel_request` and the call rejects with `-32800`. */
+	signal?: AbortSignal;
 }
 
 // Bounds the clean-EOF inbound drain so `closed` cannot hang on a handler that never settles.
@@ -161,7 +172,8 @@ export class RpcConnection {
 	#inbound = new Set<Promise<void>>();
 	#openInboundIds = new Set<JsonRpcId>();
 	/** Abort controller per inbound request, fired by a peer `$/cancel_request`. */
-	#inboundCancellers: Map<JsonRpcId, AbortController> | undefined;
+	#inboundCancellers: Map<JsonRpcId, InboundCanceller> | undefined;
+	#answersOwnCancellation: (method: string) => boolean;
 	#writable: WritableStream<AnyMessage>;
 	#writeTail: Promise<void> = Promise.resolve();
 	#abort = new AbortController();
@@ -172,6 +184,7 @@ export class RpcConnection {
 		this.#writable = stream.writable;
 		this.#dispatcher = dispatcher;
 		this.#inboundCancellers = options?.honorsInboundCancellation ? new Map() : undefined;
+		this.#answersOwnCancellation = options?.answersOwnCancellation ?? (() => false);
 		void this.#read(stream.readable);
 	}
 
@@ -183,11 +196,26 @@ export class RpcConnection {
 		return this.#closed.promise;
 	}
 
-	request<Response>(method: string, params?: unknown): Promise<Response> {
+	request<Response>(method: string, params?: unknown, options?: RequestOptions): Promise<Response> {
 		if (this.signal.aborted) return Promise.reject(new Error("Connection closed"));
+		const signal = options?.signal;
+		if (signal?.aborted) return Promise.reject(RequestError.requestCancelled({ method }));
 		const id = this.#nextId++;
 		const deferred = Promise.withResolvers<unknown>();
 		this.#pending.set(id, deferred);
+		if (signal) {
+			// The side that sent a request is the one that cancels it. The peer still answers, and that late
+			// answer lands on the forgotten id.
+			const withdraw = () => {
+				if (this.#pending.get(id) !== deferred) return;
+				this.#pending.delete(id);
+				deferred.reject(RequestError.requestCancelled({ requestId: id }));
+				void this.notify("$/cancel_request", { requestId: id }).catch(() => undefined);
+			};
+			signal.addEventListener("abort", withdraw, { once: true });
+			const release = () => signal.removeEventListener("abort", withdraw);
+			void deferred.promise.then(release, release);
+		}
 		void this.#write({ jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) }).catch(error => {
 			this.#pending.delete(id);
 			deferred.reject(error);
@@ -293,7 +321,11 @@ export class RpcConnection {
 			return;
 		}
 		const canceller = this.#inboundCancellers ? new AbortController() : undefined;
-		if (canceller) this.#inboundCancellers?.set(message.id, canceller);
+		if (canceller)
+			this.#inboundCancellers?.set(message.id, {
+				controller: canceller,
+				answersItself: this.#answersOwnCancellation(message.method),
+			});
 		try {
 			const result = await this.#dispatcher(message.method, message.params, false, canceller?.signal);
 			await this.#respond(message.id, { result: result ?? {} });
@@ -310,7 +342,9 @@ export class RpcConnection {
 		const canceller = this.#inboundCancellers?.get(id);
 		if (canceller) {
 			this.#inboundCancellers?.delete(id);
-			canceller.abort(RequestError.requestCancelled({ requestId: id }));
+			canceller.controller.abort(RequestError.requestCancelled({ requestId: id }));
+			// Its handler stops the work and then answers with a valid result (spec: `$/cancel_request`).
+			if (canceller.answersItself) return;
 		}
 		// Spec: a cancelled request still gets a response. Answer `-32800`
 		// here — synchronously with the notification — so the peer is never

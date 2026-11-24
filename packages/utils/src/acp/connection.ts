@@ -39,7 +39,7 @@ import type {
 	WriteTextFileResponse,
 } from "./protocol";
 import type { Stream } from "./stream";
-import { RequestError, RpcConnection } from "./transport";
+import { RequestError, type RequestOptions, RpcConnection } from "./transport";
 
 export interface CreateTerminalResponse {
 	terminalId: string;
@@ -75,11 +75,18 @@ export class AgentSideConnection {
 
 	constructor(toAgent: (connection: AgentSideConnection) => Agent, stream: Stream) {
 		let agent: Agent | undefined;
-		this.#connection = new RpcConnection(stream, async (method, params, notification) => {
-			const target = agent;
-			if (!target) throw RequestError.internalError(undefined, "Agent is not initialized");
-			return dispatchAgent(target, method, params, notification);
-		});
+		this.#connection = new RpcConnection(
+			stream,
+			async (method, params, notification, signal) => {
+				const target = agent;
+				if (!target) throw RequestError.internalError(undefined, "Agent is not initialized");
+				return dispatchAgent(target, method, params, notification, signal);
+			},
+			// Spec (`$/cancel_request`, stable since schema 1.17): a cancelled request is still answered. A prompt
+			// answers itself — its turn is cancelled like session/cancel and it reports the `cancelled` stop reason
+			// once the work has stopped; every other request is answered `-32800` at once.
+			{ honorsInboundCancellation: true, answersOwnCancellation: method => method === "session/prompt" },
+		);
 		agent = toAgent(this);
 	}
 
@@ -112,16 +119,24 @@ export class AgentSideConnection {
 		return new TerminalHandle(response.terminalId, params.sessionId, this.#connection);
 	}
 
-	unstable_createElicitation(params: CreateElicitationRequest): Promise<CreateElicitationResponse> {
-		return this.#connection.request("elicitation/create", params);
+	/** Aborting `options.signal` withdraws the form: the client is sent `$/cancel_request` for it. */
+	unstable_createElicitation(
+		params: CreateElicitationRequest,
+		options?: RequestOptions,
+	): Promise<CreateElicitationResponse> {
+		return this.#connection.request("elicitation/create", params, options);
 	}
 
 	unstable_completeElicitation(params: CompleteElicitationNotification): Promise<void> {
 		return this.#connection.notify("elicitation/complete", params);
 	}
 
-	request<Response = unknown, Params = unknown>(method: string, params?: Params): Promise<Response> {
-		return this.#connection.request(method, params);
+	request<Response = unknown, Params = unknown>(
+		method: string,
+		params?: Params,
+		options?: RequestOptions,
+	): Promise<Response> {
+		return this.#connection.request(method, params, options);
 	}
 
 	notify<Params = unknown>(method: string, params?: Params): Promise<void> {
@@ -243,14 +258,20 @@ export class ClientSideConnection {
 	}
 }
 
-async function dispatchAgent(agent: Agent, method: string, params: unknown, notification: boolean): Promise<unknown> {
+async function dispatchAgent(
+	agent: Agent,
+	method: string,
+	params: unknown,
+	notification: boolean,
+	signal?: AbortSignal,
+): Promise<unknown> {
 	switch (method) {
 		case "initialize":
 			return agent.initialize(params as InitializeRequest);
 		case "authenticate":
 			return invokeRequired(agent, agent.authenticate, method, params as AuthenticateRequest);
 		case "session/new":
-			return agent.newSession(params as NewSessionRequest);
+			return closeUnclaimedSession(agent, signal, await agent.newSession(params as NewSessionRequest));
 		case "session/load":
 			return invokeRequired(agent, agent.loadSession, method, params as LoadSessionRequest);
 		case "session/list":
@@ -258,7 +279,11 @@ async function dispatchAgent(agent: Agent, method: string, params: unknown, noti
 		case "session/resume":
 			return invokeRequired(agent, agent.resumeSession, method, params as ResumeSessionRequest);
 		case "session/fork":
-			return invokeRequired(agent, agent.unstable_forkSession, method, params as ForkSessionRequest);
+			return closeUnclaimedSession(
+				agent,
+				signal,
+				await invokeRequired(agent, agent.unstable_forkSession, method, params as ForkSessionRequest),
+			);
 		case "session/close":
 			return invokeRequired(agent, agent.closeSession, method, params as CloseSessionRequest);
 		case "session/set_mode":
@@ -266,10 +291,11 @@ async function dispatchAgent(agent: Agent, method: string, params: unknown, noti
 		case "session/set_config_option":
 			return invokeRequired(agent, agent.setSessionConfigOption, method, params as SetSessionConfigOptionRequest);
 		case "session/prompt":
-			return agent.prompt(params as PromptRequest);
+			return promptUntilCancelled(agent, params as PromptRequest, signal);
 		case "session/cancel":
 			return agent.cancel(params as { sessionId: string });
 		default:
+			// The transport already aborted the cancelled request's handler and answered it.
 			if (method === "$/cancel_request") return;
 			if (notification && agent.extNotification)
 				return agent.extNotification(method, params as Record<string, unknown>);
@@ -342,6 +368,44 @@ async function dispatchClient(
 			if (!notification && client.extMethod) return client.extMethod(method, params as Record<string, unknown>);
 			throw RequestError.methodNotFound(method);
 	}
+}
+
+/**
+ * `$/cancel_request` for a prompt cancels its turn exactly like session/cancel, so the prompt answers with the
+ * `cancelled` stop reason after its work has stopped rather than with `-32800` while it is still running.
+ */
+async function promptUntilCancelled(
+	agent: Agent,
+	params: PromptRequest,
+	signal: AbortSignal | undefined,
+): Promise<PromptResponse> {
+	const response = agent.prompt(params);
+	if (!signal) return response;
+	const cancel = () => {
+		void Promise.resolve()
+			.then(() => agent.cancel({ sessionId: params.sessionId }))
+			.catch(() => undefined);
+	};
+	signal.addEventListener("abort", cancel, { once: true });
+	try {
+		return await response;
+	} finally {
+		signal.removeEventListener("abort", cancel);
+	}
+}
+
+/** A session created for a request the client cancelled is one it never learns about: close it instead of leaking it. */
+function closeUnclaimedSession<Created extends { sessionId: string }>(
+	agent: Agent,
+	signal: AbortSignal | undefined,
+	created: Created,
+): Created {
+	if (signal?.aborted && agent.closeSession) {
+		void Promise.resolve()
+			.then(() => agent.closeSession?.({ sessionId: created.sessionId }))
+			.catch(() => undefined);
+	}
+	return created;
 }
 
 function invokeRequired<Params, Response>(
