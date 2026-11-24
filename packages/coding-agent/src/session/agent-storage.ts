@@ -124,7 +124,7 @@ let cancelExitCleanup: (() => void) | undefined;
 export class AgentStorage {
 	#db: Database;
 	#cleanup: AgentStorageCleanup;
-	#authStore: AuthCredentialStore;
+	#authStore: SqliteAuthCredentialStore;
 
 	#listSettingsStmt: Statement;
 	#upsertModelUsageStmt: Statement;
@@ -343,7 +343,8 @@ FROM model_usage_legacy
 		}
 
 		AgentStorage.#ensureDir(dbPath);
-		return openSqliteDatabase(
+		let preservedPath: string | undefined;
+		const opened = await openSqliteDatabase(
 			dbPath,
 			db => {
 				const storage = new AgentStorage(db, dbPath);
@@ -353,8 +354,16 @@ FROM model_usage_legacy
 				instanceFinalizer.register(storage, { dbPath, token, cleanup: storage.#cleanup }, token);
 				return storage;
 			},
-			{ recoverCorruption: true },
+			{
+				recoverCorruption: true,
+				onCorruptionPreserved: backupPath => {
+					preservedPath = backupPath;
+				},
+			},
 		);
+		// The quarantined store held the user's provider credentials; carry over what is readable.
+		if (preservedPath) opened.#authStore.salvageQuarantinedCredentials(preservedPath);
+		return opened;
 	}
 
 	/** Flushes deferred writes, closes every process-wide database, and permits reopening them. */

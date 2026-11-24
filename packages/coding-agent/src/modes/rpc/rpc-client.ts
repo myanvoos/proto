@@ -120,6 +120,8 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	"manual_compaction_end",
 	"auto_retry_start",
 	"auto_retry_end",
+	"cache_warming_start",
+	"cache_warming_end",
 	"retry_fallback_applied",
 	"retry_fallback_succeeded",
 	"ttsr_triggered",
@@ -129,6 +131,7 @@ const sessionEventTypes = new Set<AgentSessionEvent["type"]>([
 	"notice",
 	"thinking_level_changed",
 	"model_changed",
+	"config_warnings_changed",
 	"goal_updated",
 ]);
 
