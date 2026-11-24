@@ -74,6 +74,23 @@ export function isDashScopeTokenLimitText(errorMessage: string): boolean {
 const TPM_RPM_THROTTLE_PATTERN =
 	/\b(?:tpm|rpm)\b[^\n]{0,40}\b(?:exhaust\w*|exceed\w*|limit\w*|throttl\w*|reach\w*)\b|\b(?:exhaust\w*|exceed\w*|limit\w*|throttl\w*|reach\w*)\b[^\n]{0,40}\b(?:tpm|rpm)\b|\bRateLimitExceeded\.(?:Endpoint)?(?:TPM|RPM)\w*/i;
 
+// A 429 whose `x-ratelimit-limit-*` header reports 0 (Mistral
+// `x-ratelimit-limit-req-minute: 0` for a model the plan does not cover, #19300)
+// is an entitlement wall, not a window: no wait or replay can succeed. Headers
+// do not survive into persisted turns, so the transport appends
+// {@link formatZeroAllowanceNotice} to the message and the text classifiers
+// below key on it.
+const ZERO_ALLOWANCE_PATTERN = /\bx-ratelimit-limit-[a-z0-9-]+:\s*0(?![\d.])/i;
+
+/**
+ * Actionable suffix for a 429 whose `header` (an `x-ratelimit-limit-*` name)
+ * reported a zero allowance. Recognized by {@link matchesUsageLimitText},
+ * {@link parseRateLimitReason}, and {@link isBillingCapUsageLimit}.
+ */
+export function formatZeroAllowanceNotice(header: string): string {
+	return `(${header}: 0 — this plan grants no allowance for the model; switch models or upgrade the plan)`;
+}
+
 const GOOGLE_RPC_ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
 const GOOGLE_RPC_QUOTA_FAILURE_TYPE = "type.googleapis.com/google.rpc.QuotaFailure";
 const GOOGLE_RPC_RETRY_INFO_TYPE = "type.googleapis.com/google.rpc.RetryInfo";
@@ -204,11 +221,14 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 	const lower = lowerWithStatus.replace(RESOURCE_EXHAUSTED_PATTERN, "");
 	const hasResourceExhaustedStatus = lower !== lowerWithStatus;
 
+	// A zero-allowance notice is the same quota state, though its "Rate limit
+	// exceeded" body would otherwise land in RATE_LIMIT_EXCEEDED below.
 	if (
 		lower.includes("quota will reset") ||
 		lower.includes("exhausted your capacity") ||
 		lower.includes("individual quota reached") ||
-		lower.includes("individual quota")
+		lower.includes("individual quota") ||
+		ZERO_ALLOWANCE_PATTERN.test(errorMessage)
 	) {
 		return "QUOTA_EXHAUSTED";
 	}
@@ -358,7 +378,8 @@ const OUT_OF_CREDIT_PATTERN = /\bout of credit|\badd (?:more )?credit|\btop ?up\
 /**
  * Whether a usage-limit failure is a *billing* cap rather than a window that
  * reopens on a clock: an out-of-credit balance (402), a spent prepaid
- * balance, a credits wall, or a spend ceiling. Topping the account up clears
+ * balance, a credits wall, a spend ceiling, or a plan with a zero
+ * `x-ratelimit-limit-*` allowance for the model. Topping the account up clears
  * it; waiting never does, so the retry loop must surface the error instead of
  * sleeping the QUOTA_EXHAUSTED heuristic (30 min) — a `retry.maxDelayMs` at
  * or above that heuristic would otherwise hold the session through the whole
@@ -369,17 +390,20 @@ const OUT_OF_CREDIT_PATTERN = /\bout of credit|\badd (?:more )?credit|\btop ?up\
  */
 export function isBillingCapUsageLimit(status: number | undefined, message: string | undefined): boolean {
 	if (message === undefined) return false;
-	if (isConcurrencyCapExclusion(status, message)) return false;
+	const reason = parseRateLimitReason(message);
+	if (reason === "CONCURRENT_LIMIT" && status !== 402) return false;
 	if (isDashScopeTokenLimitText(message)) return false;
 	if (status === 402) return is402BillingCapBody(message);
 	return (
+		reason === "INSUFFICIENT_G1_CREDITS_BALANCE" ||
 		OUT_OF_CREDIT_PATTERN.test(message) ||
 		INSUFFICIENT_BALANCE_PATTERN.test(message) ||
 		CREDITS_EXHAUSTED_PATTERN.test(message) ||
 		PREPAID_BALANCE_EXHAUSTED_PATTERN.test(message) ||
 		SPEND_LIMIT_PATTERN.test(message) ||
 		ANTHROPIC_CREDITS_REQUIRED_PATTERN.test(message) ||
-		/\binsufficient_quota\b/i.test(message)
+		/\binsufficient_quota\b/i.test(message) ||
+		ZERO_ALLOWANCE_PATTERN.test(message)
 	);
 }
 
@@ -426,7 +450,8 @@ export function matchesUsageLimitText(errorMessage: string): boolean {
 		SPEND_LIMIT_PATTERN.test(errorMessage) ||
 		ACCOUNT_RATE_LIMIT_PATTERN.test(errorMessage) ||
 		matchesSubscriptionCapText(errorMessage) ||
-		OPENROUTER_DAILY_FREE_LIMIT_PATTERN.test(errorMessage)
+		OPENROUTER_DAILY_FREE_LIMIT_PATTERN.test(errorMessage) ||
+		ZERO_ALLOWANCE_PATTERN.test(errorMessage)
 	);
 }
 

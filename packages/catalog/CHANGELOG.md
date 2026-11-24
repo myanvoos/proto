@@ -10,6 +10,7 @@
 - GLM 5.3 gets its `low`/`high`/`max` effort ladder (and required effort) and Mistral Large 4 gets `low`/`medium`/`high` in the bundled data (port of a03a7fdbed)
 - The GitHub Copilot `/models` roster is authoritative again: models the account has disabled are no longer offered (port of 91276dc62a)
 - Cursor pricing for gpt-5.1 / gpt-5.1-high / gpt-5.1-low corrected to $1.25/$10 (port of 48f93242b3)
+- GitHub Copilot's provider descriptor now marks dynamic models authoritative, matching its model manager options
 
 ## [20.2.2] - 2026-11-15
 

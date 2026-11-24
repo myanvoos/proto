@@ -8,6 +8,7 @@ import {
 	isCacheControlUnsupported,
 	isContextOverflow,
 	isGitHubCopilotPolicyDenial,
+	isTransientStreamDropError,
 	isUsageLimit,
 	retriable,
 } from "./flags";
@@ -440,5 +441,18 @@ describe("402 billing-error bodies", () => {
 		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
 		expect(is402BillingCapBody("A subscription is required; see the billing page")).toBe(false);
 		expect(is402BillingCapBody("Request rejected (type=billing_error_other)")).toBe(false);
+	});
+});
+
+describe("stream interruption classification (upstream #19709)", () => {
+	it("treats statusless gateway interruptions as transient without weakening 4xx handling", () => {
+		const errorMessage = "Provider error (Dots3 Note Preview (Kilo)): stream interrupted";
+		expect(isTransientStreamDropError(errorMessage)).toBe(true);
+		expect(isTransientStreamDropError("stream was interrupted")).toBe(true);
+		const id = classifyMessage({ errorMessage });
+		expect(is(id, Flag.Transient)).toBe(true);
+		expect(retriable(id)).toBe(true);
+		const denied = classifyMessage({ errorMessage, errorStatus: 400 });
+		expect(retriable(denied)).toBe(false);
 	});
 });

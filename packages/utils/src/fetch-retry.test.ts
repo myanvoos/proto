@@ -57,6 +57,18 @@ describe("extractRetryHint account reset bodies", () => {
 		expect(extractRetryHint(undefined, '{"quotaResetDelay": "90s"}')).toBe(90_000);
 	});
 
+	it.each([
+		["30m", 1_800_000],
+		["1h", 3_600_000],
+		["1.5h", 5_400_000],
+		["1h30m", 5_400_000],
+	])("prefers structured quotaResetDelay %s to display text", (quotaResetDelay, expected) => {
+		// Google's Go-duration metadata is authoritative; a shorter display
+		// message must not turn a 30-minute quota into a 2-second retry.
+		const body = `Cloud Code Assist API error (429): {"error":{"status":"RESOURCE_EXHAUSTED","message":"Resets in 2s.","details":[{"metadata":{"quotaResetDelay":"${quotaResetDelay}"}}]}}`;
+		expect(extractRetryHint(undefined, body)).toBe(expected);
+	});
+
 	it("parses retry-after-ms from a response body", () => {
 		expect(extractRetryHint(undefined, "request blocked; retry-after-ms=98497000")).toBe(98_497_000);
 	});

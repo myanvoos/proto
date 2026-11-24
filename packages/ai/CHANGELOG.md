@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Mistral 429s that report a zero request allowance fail fast instead of burning transport retries, and carry the allowance header in the surfaced error (port of 03a02d0926)
+- Statusless "stream interrupted" gateway errors are transient and retriable again, while the same wording with an HTTP 4xx stays terminal (port of 49543a3a3a)
+- Structured Google RPC quota timing wins over display text: `quotaResetDelay: "30m"` means a 30-minute wait, and `INSUFFICIENT_G1_CREDITS_BALANCE` is a billing cap (port of 3efa3bab9e)
 - OpenAI completions streams whose provider error is replayed to the client are no longer retried a second time when the transport already exhausted its retry budget on a transient HTTP status (in-band 429/5xx inside a 200 stream keeps its one replay) (part of [#20215](https://github.com/can1357/oh-my-pi/pull/20215) by @JamieJ5926)
 - Replayed OpenRouter Responses reasoning items keep `id`, `format` and `signature`, so Gemini thought signatures survive long tool loops instead of being dropped on replay (port of 8333b958b9)
 - The thinking-loop guard no longer flags structured answer content (JSON records, JSON arrays of scalars, GFM tables) as a reasoning loop; prose tables leads-with-pipe rules still apply (port of 7d494eb5a9 + 92e16e31ca + a66b3c77f5)

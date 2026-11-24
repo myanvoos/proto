@@ -1,8 +1,11 @@
 import { scheduler } from "node:timers/promises";
 
+// Google's structured metadata uses Go duration strings, including abbreviated durations like `30m`.
+const GOOGLE_RPC_RESET_DELAY_PATTERN =
+	/"quotaResetDelay"\s*:\s*"((?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)(ms|s))?)"/i;
 // "reset after 1h2m3s" / "10m15s" / "39s" / "Resets in 71h48m47s"
 const QUOTA_RESET_PATTERN =
-	/(?:(?:will\s+)?reset after|(?:will\s+)?resets?\s+in|"(?:retryDelay|quotaResetDelay)":\s*")\s*(?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
+	/(?:(?:will\s+)?reset after|(?:will\s+)?resets?\s+in|"retryDelay":\s*")\s*(?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
 
 const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
 
@@ -105,7 +108,20 @@ export function extractRetryHint(
 		else retryNow = true;
 	};
 
-	const quotaMatch = QUOTA_RESET_PATTERN.exec(body);
+	// Prefer structured quota timing to a display-oriented reset message.
+	// Independent RetryInfo, timestamp, and header signals still participate.
+	const quotaResetDelay = GOOGLE_RPC_RESET_DELAY_PATTERN.exec(body);
+	const quotaResetDelayMs = quotaResetDelay?.[1]
+		? Math.floor(
+				Number(quotaResetDelay[2] ?? 0) * 3_600_000 +
+					Number(quotaResetDelay[3] ?? 0) * 60_000 +
+					Number(quotaResetDelay[4] ?? 0) * (quotaResetDelay[5]?.toLowerCase() === "ms" ? 1 : 1_000),
+			)
+		: undefined;
+	const hasStructuredQuotaDelay = quotaResetDelayMs !== undefined && Number.isFinite(quotaResetDelayMs);
+	if (hasStructuredQuotaDelay) considerClamped(quotaResetDelayMs);
+
+	const quotaMatch = hasStructuredQuotaDelay ? null : QUOTA_RESET_PATTERN.exec(body);
 	if (quotaMatch) {
 		const hours = quotaMatch[1] ? Number.parseInt(quotaMatch[1], 10) : 0;
 		const minutes = quotaMatch[2] ? Number.parseInt(quotaMatch[2], 10) : 0;
@@ -126,7 +142,7 @@ export function extractRetryHint(
 	}
 
 	// The generic reset-in pattern only captures the leading "2hr" of "Resets in 2hr 15min".
-	const compoundResetMatch = RESET_IN_HR_MIN_PATTERN.exec(body);
+	const compoundResetMatch = hasStructuredQuotaDelay ? null : RESET_IN_HR_MIN_PATTERN.exec(body);
 	if (compoundResetMatch?.[1] && compoundResetMatch[2]) {
 		const hours = Number.parseFloat(compoundResetMatch[1]);
 		const minutes = Number.parseFloat(compoundResetMatch[2]);
@@ -135,7 +151,7 @@ export function extractRetryHint(
 		}
 	}
 
-	const accountResetMatch = WILL_RESET_IN_PATTERN.exec(body);
+	const accountResetMatch = hasStructuredQuotaDelay ? null : WILL_RESET_IN_PATTERN.exec(body);
 	if (accountResetMatch?.[1]) {
 		const value = Number.parseFloat(accountResetMatch[1]);
 		if (Number.isFinite(value) && value > 0) {

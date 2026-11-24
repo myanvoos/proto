@@ -2076,18 +2076,10 @@ export class TurnRecovery {
 			(parsedRetryAfterMs !== undefined || recordedUsageLimitOutcome.reportResetAtMs !== undefined) &&
 			effectiveUsageLimitWaitMs !== undefined &&
 			delayMs <= effectiveUsageLimitWaitMs;
-		// An account out of money has no reset to wait for: the QUOTA_EXHAUSTED
-		// heuristic backoff is a guess at a clock that does not exist, and a
-		// `retry.maxDelayMs` set at or above it (the 30-minute default ceiling
-		// users raise) would sleep through the whole guess. Surface the provider
-		// error instead, so the user tops up and the error frame's Retry
-		// re-attempts at once rather than idling in a retry the session cannot
-		// finish.
+		// An out-of-credit account has no reset to wait for. Even when the
+		// 30-minute quota heuristic fits the cap, only a fallback can recover it.
 		const billingCap = isBillingCapUsageLimit(message.errorStatus, errorMessage);
-		const exceedsDelayCap = (waitMs: number): boolean => {
-			if (billingCap) return true;
-			return maxDelayMs > 0 && waitMs > maxDelayMs && !waitForUsageReset;
-		};
+		const exceedsDelayCap = (waitMs: number): boolean => maxDelayMs > 0 && waitMs > maxDelayMs && !waitForUsageReset;
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && currentSelector) {
 			const parsedSelector = parseRetryFallbackSelector(currentSelector, this.#host.modelRegistry);
 			const refusalKey = parsedSelector ? formatRetryFallbackBaseSelector(parsedSelector) : currentSelector;
@@ -2098,7 +2090,7 @@ export class TurnRecovery {
 				(retrySettings.fallbackOn === "any" || AIError.is(id, AIError.Flag.UsageLimit)) &&
 				!thinkingLoop &&
 				!(!retryBudgetExhausted && AIError.isCodexSteerRejection({ api: currentModel?.api, errorMessage })) &&
-				!waitForSiblingCredential &&
+				(!waitForSiblingCredential || billingCap) &&
 				!refusalWalkRepeats &&
 				!this.#isFirstAttemptMidStreamSocketDrop(message, id, retryBudgetExhausted)
 			) {
@@ -2128,6 +2120,7 @@ export class TurnRecovery {
 						!classifierRefusal &&
 						!accountPolicyDenial &&
 						AIError.retriable(id) &&
+						!billingCap &&
 						!exceedsDelayCap(delayMs),
 					wrapAround: longUsageLimitFallback,
 					preserveFailedTurn,
@@ -2207,7 +2200,7 @@ export class TurnRecovery {
 			return false;
 		}
 
-		if (exceedsDelayCap(delayMs) && !switchedCredential && !switchedModel) {
+		if (!switchedCredential && !switchedModel && (billingCap || exceedsDelayCap(delayMs))) {
 			await this.persistTerminalEmptyErrorTurn(message);
 			const attempt = this.#retryAttempt;
 			this.#retryAttempt = 0;
@@ -2219,7 +2212,7 @@ export class TurnRecovery {
 				// money — so the message the user acts on is the provider's own.
 				finalError: billingCap
 					? errorMessage
-					: `Provider requested ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
+					: `${delayMs === parsedRetryAfterMs ? "Provider requested" : "Retry requires"} ${Math.ceil(delayMs)}ms wait, exceeds retry.maxDelayMs (${maxDelayMs}ms). Original error: ${errorMessage}`,
 			});
 			this.#clearPendingRetryErrors();
 			this.resolveRetry();

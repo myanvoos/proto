@@ -68,7 +68,7 @@ Types: `OpenAICompat` / `ResolvedOpenAISharedCompat` in `packages/catalog/src/ty
 | `qwenPreserveThinking` | Chat: Qwen thinking formats on local backends with `replayReasoningContent`. Responses: always `false` (template knob is chat-completions-only) | Emits `preserve_thinking: true` (top-level and/or in `chat_template_kwargs`) so Qwen 3.6+ templates render `<think>` for older turns too — a history knob, not a per-turn switch (`applyChatCompletionsCompatPolicy`) |
 | `kimiApiFormat` | Per-model protocol metadata | `"openai"` vs `"anthropic"` transport for Kimi Code models (`providers/kimi.ts`) |
 | `includeEncryptedReasoning` | Chat: always `true`. Responses: `false` for `xai-oauth` | Whether Responses requests replay encrypted reasoning items |
-| `filterReasoningHistory` | Chat: OpenRouter Anthropic models. Responses: adds `xai-oauth` | Filters native reasoning items out of replayed Responses history |
+| `filterReasoningHistory` | Chat: OpenRouter Muse Spark models only (Claude replays thinking again). Responses: OpenCode Zen/Go Muse Spark | Filters native reasoning items out of replayed Responses history |
 
 #### Tool choice / strict interaction
 

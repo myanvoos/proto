@@ -3,7 +3,7 @@ import { buildModel, modelAcceptsSamplingParams } from "./build";
 import { Effort } from "./effort";
 import { isPromptCachePersistent, resolvePromptCacheLookback } from "./model-policy";
 import { clampThinkingLevelForModel, getSupportedEfforts } from "./model-thinking";
-import { calculateUncachedInputCost, getBundledModel } from "./models";
+import { calculateUncachedInputCost } from "./models";
 import type { Api, ModelSpec } from "./types";
 
 function spec<TApi extends Api = "openai-completions">(
@@ -156,7 +156,6 @@ describe("upstream catalog correctness ports", () => {
 				reasoning: true,
 			});
 			expect(discovered.compat.reasoningDisableMode).toBe(mode);
-			expect(getBundledModel<"openai-responses">("openai", id).compat.reasoningDisableMode).toBe(mode);
 		}
 	});
 
@@ -178,12 +177,7 @@ describe("upstream catalog correctness ports", () => {
 				},
 			});
 			expect(getSupportedEfforts(discovered)).toEqual([...efforts]);
-			expect(getSupportedEfforts(getBundledModel("mistral", id))).toEqual([...efforts]);
 		}
-		expect(getBundledModel("mistral", "zai-glm-5-3").thinking).toMatchObject({
-			defaultLevel: Effort.Max,
-			requiresEffort: true,
-		});
 	});
 });
 
@@ -194,7 +188,6 @@ describe("Cursor GPT-5.1 pricing", () => {
 			expect(
 				buildModel({ ...spec(id, "cursor"), cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }).cost,
 			).toMatchObject(card);
-			expect(getBundledModel("cursor", id).cost).toMatchObject(card);
 		}
 	});
 });

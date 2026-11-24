@@ -862,7 +862,7 @@ export function isTransientStreamParseError(error: unknown): boolean {
 
 // Transport-level stream drops before a terminal event: the statusless twin of `408 stream disconnected`.
 const STREAM_DROP_PATTERN =
-	/stream disconnected before completion|(?:stream|websocket) closed before response\.completed|stream was interrupted|stream ended before (?:terminal (?:chunk|completion event)|message_(?:start|delta|stop))|socket disconnected before secure tls connection/i;
+	/stream disconnected before completion|(?:stream|websocket) closed before response\.completed|stream (?:was )?interrupted|stream ended before (?:terminal (?:chunk|completion event)|message_(?:start|delta|stop))|socket disconnected before secure tls connection/i;
 
 export function isTransientStreamDropError(error: unknown): boolean {
 	if (typeof error === "string") return STREAM_DROP_PATTERN.test(error);

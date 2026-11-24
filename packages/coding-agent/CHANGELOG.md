@@ -4,10 +4,13 @@
 
 ### Fixed
 
-- External programs spawned by the embedded shell now get internal URLs resolved in every argument form — @url, `-F name=@url`, `-ourl`, and environment values — and arguments the resolver cannot back stay as written (previously such arguments failed the spawn). `omp` keeps receiving its own URLs untouched, including behind `nice`/`npx`/`sudo` (port of b41e4be768).
+- Provider-stated usage-limit waits within `retry.maxDelayMs` are allowed, while billing caps — including structured `INSUFFICIENT_G1_CREDITS_BALANCE` — fail fast after credential and model fallbacks instead of sleeping a guessed window (port of 3efa3bab9e)
+- The embedded shell no longer leaves a URL literal when a directory merely named `proto` is an operand; `proto` (and `omp` alongside oh-my-pi) keeps its own URLs untouched through `nice`/`npx`/`sudo`
+- External programs spawned by the embedded shell now get internal URLs resolved in every argument form — @url, `-F name=@url`, `-ourl`, and environment values — and arguments the resolver cannot back stay as written (previously such arguments failed the spawn). `proto` keeps receiving its own URLs untouched, including behind `nice`/`npx`/`sudo` (port of b41e4be768).
 - RPC sessions no longer drop `config_warnings_changed`, `cache_warming_start` and `cache_warming_end` events from the forwarded event set (port of 2fa92ed0f1)
 - Plugins whose manifest `entries` contains a non-string are skipped with a warning instead of aborting all extension loading (port of 7ba0e30e81)
-- A corrupt `agent.db` no longer silently discards every stored provider credential: salvageable rows from the quarantined copy are restored into the fresh store (disabled ones stay disabled); if salvage fails, the quarantine path and a `sqlite3 ... .recover` command are logged (port of 8b1ebeaa05)
+- A corrupt `agent.db` no longer silently discards every stored provider credential: salvageable rows from the quarantined copy are restored into the fresh store (disabled ones stay disabled, including when the cause is not a string); if salvage fails, the quarantine path and a `sqlite3 ... .recover` command are logged (port of 8b1ebeaa05, f1e55ae973)
+- RPC event validation is exhaustively keyed on the event unions, so a newly added session event cannot be silently dropped from forwarded frames
 
 ## [20.2.3] - 2026-11-24
 

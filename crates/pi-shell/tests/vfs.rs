@@ -537,44 +537,75 @@ async fn commands_run_through_a_wrapper_receive_host_paths_for_url_arguments() {
 	assert_eq!(run.stdout.lines().collect::<Vec<_>>(), expected);
 }
 
-/// `omp` resolves the URLs it is given itself, selectors included, so its
-/// arguments and environment reach it as written: run by name, by path, or
-/// through a program that execs it.
+/// The agent CLI (`proto` here, `omp` alongside oh-my-pi) resolves the URLs it
+/// is given itself, selectors included, so its arguments and environment reach
+/// it as written: run by name, by path, or through a program that execs it.
 #[cfg(unix)]
 #[tokio::test]
-async fn omp_receives_its_url_arguments_as_written() {
+async fn agent_cli_receives_its_url_arguments_as_written() {
 	use std::os::unix::fs::PermissionsExt;
 
+	// proto is this fork's CLI; omp is the name used alongside oh-my-pi.
+	for cli in ["proto", "omp"] {
+		let directory = tempfile::tempdir().expect("isolated provider filesystem");
+		let docs = directory.path().join("docs");
+		fs::create_dir(&docs).expect("provider directory");
+		fs::write(docs.join("a.txt"), b"alpha\n").expect("document");
+		let bin = tempfile::tempdir().expect("program directory");
+		let cli_path = bin.path().join(cli);
+		fs::write(&cli_path, b"#!/bin/sh\nprintf '%s\\n' \"$@\" \"ref=$REF\"\n")
+			.expect("stand-in agent CLI");
+		fs::set_permissions(&cli_path, fs::Permissions::from_mode(0o755))
+			.expect("executable stand-in");
+		let script = format!(
+			"PATH='{bin}':$PATH; REF=virtual://docs/a.txt {cli} read virtual://docs/a.txt:1-2 \
+			 --from=virtual://docs/a.txt; nice {cli} read virtual://docs; '{cli_path}' read \
+			 @virtual://docs/a.txt",
+			bin = bin.path().display(),
+			cli_path = cli_path.display(),
+		);
+		let run = run_virtual(directory.path(), &script).await;
+		assert_eq!(run.status, Some(0), "{cli}: {}", run.stderr);
+		let expected = [
+			"read",
+			"virtual://docs/a.txt:1-2",
+			"--from=virtual://docs/a.txt",
+			"ref=virtual://docs/a.txt",
+			"read",
+			"virtual://docs",
+			"ref=",
+			"read",
+			"@virtual://docs/a.txt",
+			"ref=",
+		];
+		assert_eq!(run.stdout.lines().collect::<Vec<_>>(), expected, "cli={cli}");
+	}
+}
+
+/// A directory that merely shares the agent CLI's name is an ordinary operand:
+/// a URL after it still resolves instead of being left literal for a program
+/// that never runs the CLI.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_directory_named_like_the_agent_cli_does_not_hide_urls() {
 	let directory = tempfile::tempdir().expect("isolated provider filesystem");
 	let docs = directory.path().join("docs");
 	fs::create_dir(&docs).expect("provider directory");
 	fs::write(docs.join("a.txt"), b"alpha\n").expect("document");
-	let bin = tempfile::tempdir().expect("program directory");
-	let omp = bin.path().join("omp");
-	fs::write(&omp, b"#!/bin/sh\nprintf '%s\\n' \"$@\" \"ref=$REF\"\n").expect("stand-in omp");
-	fs::set_permissions(&omp, fs::Permissions::from_mode(0o755)).expect("executable stand-in");
+	let proto_dir = directory.path().join("proto");
+	fs::create_dir(&proto_dir).expect("directory sharing the CLI name");
+
 	let script = format!(
-		"PATH='{bin}':$PATH; REF=virtual://docs/a.txt omp read virtual://docs/a.txt:1-2 \
-		 --from=virtual://docs/a.txt; nice omp read virtual://docs; '{omp}' read \
-		 @virtual://docs/a.txt",
-		bin = bin.path().display(),
-		omp = omp.display(),
+		"{PROBE} operand foo {proto_dir} virtual://docs/a.txt",
+		proto_dir = proto_dir.display(),
 	);
 	let run = run_virtual(directory.path(), &script).await;
 	assert_eq!(run.status, Some(0), "{}", run.stderr);
-	let expected = [
-		"read",
-		"virtual://docs/a.txt:1-2",
-		"--from=virtual://docs/a.txt",
-		"ref=virtual://docs/a.txt",
-		"read",
-		"virtual://docs",
-		"ref=",
-		"read",
-		"@virtual://docs/a.txt",
-		"ref=",
-	];
-	assert_eq!(run.stdout.lines().collect::<Vec<_>>(), expected);
+	assert_eq!(run.stdout.lines().collect::<Vec<_>>(), [
+		"operand:foo".to_owned(),
+		format!("operand:{}", proto_dir.display()),
+		format!("operand:{}", docs.join("a.txt").display()),
+	]);
 }
 
 /// A provider directory that aliases a real one is a usable working directory

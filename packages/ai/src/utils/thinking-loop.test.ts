@@ -102,7 +102,7 @@ test("does not trip on one-line JSON records (#11129)", () => {
 		(_, i) =>
 			`{"case_id": ${35350 + i}, "case_name": "case ${i + 1}", "case_url": "https://example.com/#/CaseEdit?fs_id=${35350 + i}", "case_sheet": 0}`,
 	);
-	expect(detect(`[TA_CASES]#{"cases": [${items.join(", ")}]}`, 20)).toBeNull();
+	expect(detectSemantic(`[TA_CASES]#{"cases": [${items.join(", ")}]}`, 20)).toBeNull();
 });
 
 test("does not trip on array-valued JSON fields (#11129)", () => {
@@ -111,13 +111,13 @@ test("does not trip on array-valued JSON fields (#11129)", () => {
 		(_, i) =>
 			`{"case_id": ${35350 + i}, "case_name": "case ${i + 1}", "steps": [1, 2, 3], "tags": ["auth", "login"], "case_sheet": 0}`,
 	);
-	expect(detect(`[TA_CASES]#{"cases": [${items.join(", ")}]}`, 20)).toBeNull();
+	expect(detectSemantic(`[TA_CASES]#{"cases": [${items.join(", ")}]}`, 20)).toBeNull();
 });
 
 test("does not trip on markdown table rows with prose cells", () => {
 	const rows = ["| case_id | status | note |", "| --- | --- | --- |"];
 	for (let i = 0; i < 150; i++) rows.push(`| ${35350 + i} | Verify the login page loads | Pass |`);
-	expect(detect(rows.join("\n"), 20)).toBeNull();
+	expect(detectSemantic(rows.join("\n"), 20)).toBeNull();
 });
 
 test("still trips on a reasoning loop whose lines name a union type", () => {

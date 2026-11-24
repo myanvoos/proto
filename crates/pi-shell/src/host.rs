@@ -746,7 +746,8 @@ impl crate::bash::Host for PiHost {
 	/// backed by nothing, or one the filesystem refuses to change, refuses
 	/// the command, as does a program the provider cannot resolve; an
 	/// argument or environment value it cannot resolve stays as written, and
-	/// `omp` is handed every one as written ([`urls`]). Only a spawn that
+	/// the agent CLI (`proto` here, `omp` alongside oh-my-pi) is handed every
+	/// one as written ([`urls`]). Only a spawn that
 	/// names a URL asks the provider, and it
 	/// awaits the answer: the returned future owns a copy of the names and
 	/// the spawn's descriptors, and launches (routing, observer and all)

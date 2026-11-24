@@ -156,6 +156,9 @@ fn from_c(ss: &libc::sockaddr_storage, len: libc::socklen_t) -> io::Result<SockA
 			let un = unsafe { &*std::ptr::from_ref(ss).cast::<libc::sockaddr_un>() };
 			let offset = std::mem::offset_of!(libc::sockaddr_un, sun_path);
 			let n = (len as usize).saturating_sub(offset).min(un.sun_path.len());
+			// sun_path is i8 on x86_64 and u8 on aarch64; the cast is needed
+			// on the former and flagged as redundant on the latter.
+			#[allow(clippy::unnecessary_cast, reason = "sun_path is i8 on x86_64 and u8 on aarch64")]
 			let path: Vec<u8> = un.sun_path[..n]
 				.iter()
 				.map(|&c| c as u8)
@@ -394,6 +397,8 @@ fn reverse(addr: IpAddr) -> Option<BString> {
 	if rc != 0 {
 		return None;
 	}
+	// Host bytes are i8 on x86_64 and u8 on aarch64.
+	#[allow(clippy::unnecessary_cast, reason = "host bytes are i8 on x86_64 and u8 on aarch64")]
 	let name: Vec<u8> = host
 		.iter()
 		.map(|&c| c as u8)

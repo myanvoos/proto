@@ -6,7 +6,7 @@ export { OpenAIHttpError };
 
 import type { FetchImpl } from "../types";
 import type { CapturedHttpErrorResponse } from "./http-inspector";
-import { getShouldRetryFromHeaders } from "./retry-after";
+import { getShouldRetryFromHeaders, getZeroRateLimitHeader } from "./retry-after";
 
 const DEFAULT_MAX_ATTEMPTS = 6;
 
@@ -55,8 +55,11 @@ export async function postOpenAIStream<TEvent>(init: OpenAIStreamRequestInit): P
 			fetch: init.fetch,
 			maxAttempts: init.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
 
+			// A 429 with a zero `x-ratelimit-limit-*` allowance names a plan that cannot serve the
+			// model at all: no replay succeeds, so fail fast (#19300).
 			shouldRetryResponse: async (response, bodyText) =>
 				getShouldRetryFromHeaders(response.headers) !== false &&
+				!(response.status === 429 && getZeroRateLimitHeader(response.headers) !== undefined) &&
 				!isConcurrencyAdmissionRejection(response, bodyText) &&
 				(init.shouldRetryResponse === undefined || (await init.shouldRetryResponse(response, bodyText))),
 
@@ -123,8 +126,12 @@ export async function captureOpenAIHttpError(response: Response): Promise<AIErro
 	};
 	const { detail, code } = OpenAIHttpError.parseEnvelope(bodyJson, bodyText);
 
-	const message = detail
+	let message = detail
 		? `${response.status} ${detail.length > MAX_DETAIL_CHARS ? detail.slice(0, MAX_DETAIL_CHARS) : detail}`
 		: `${response.status} status code (no body)`;
+	// Headers do not reach persisted turns; carry a zero allowance in the text so
+	// retry/rotation classifiers and the user both see it (#19300).
+	const zeroLimitHeader = response.status === 429 ? getZeroRateLimitHeader(response.headers) : undefined;
+	if (zeroLimitHeader) message += ` ${AIError.formatZeroAllowanceNotice(zeroLimitHeader)}`;
 	return new AIError.OpenAIHttpError(message, captured, code);
 }

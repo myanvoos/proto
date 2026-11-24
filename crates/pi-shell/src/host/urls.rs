@@ -10,9 +10,9 @@
 //! an identifier or as part of a message (`bm read memory://notes/x`,
 //! `log.sh 'agent://A; agent://B'`) as it is handed a path. Only a program
 //! or working directory the provider rejects fails the spawn, since nothing
-//! could run there. `omp` resolves the URLs it is given itself (with their
-//! selectors: `omp read skill://x:1-20`), so its arguments and environment
-//! are never rewritten.
+//! could run there. The agent CLI — `proto` here, `omp` alongside oh-my-pi —
+//! resolves the URLs it is given itself (with their selectors: `proto read
+//! skill://x:1-20`), so its arguments and environment are never rewritten.
 //!
 //! A spawn that names a URL is taken apart ([`split`]) into the [`Names`] to
 //! resolve and the [`Rest`] it moves untouched; the provider is awaited
@@ -103,27 +103,62 @@ impl Rest {
 pub(super) fn names_url(spec: &SpawnSpec<'_>) -> bool {
 	is_url(spec.path)
 		|| is_url(spec.cwd)
-		|| (!runs_omp(spec.argv)
+		|| (!runs_agent_cli(spec.argv)
 			&& (spec.argv.iter().skip(1).any(|arg| arg.contains_str("://"))
 				|| spec.env.iter().any(|(name, value)| env_url(name, value))))
 }
 
-/// Whether `argv` runs `omp`: as the program, or as the command a wrapper
-/// (`nice omp …`, `npx omp …`) is given ahead of any URL.
-fn runs_omp(argv: &[BString]) -> bool {
-	argv
-		.iter()
-		.take_while(|arg| !arg.contains_str("://"))
-		.any(|arg| is_omp(arg))
+/// Whether `argv` runs the agent CLI: as the program, or as the command a
+/// known wrapper (`nice proto …`, `npx proto …`) is given ahead of any URL.
+/// Only wrappers that exec their command are followed — an arbitrary word
+/// before a URL (a `src/proto` directory passed to `rg`, for example) is an
+/// ordinary argument and must still have its URL resolved.
+fn runs_agent_cli(argv: &[BString]) -> bool {
+	let mut words = argv.iter().take_while(|arg| !arg.contains_str("://"));
+	let Some(program) = words.next() else {
+		return false;
+	};
+	if is_agent_cli(program) {
+		return true;
+	}
+	if !is_wrapper(program) {
+		return false;
+	}
+	for word in words {
+		if is_agent_cli(word) {
+			return true;
+		}
+		if is_wrapper(word) {
+			continue;
+		}
+		// Wrapper options and their values (`nice -n 10`, `env FOO=bar`,
+		// `timeout 5`) are not the CLI. Anything else is an argument the
+		// wrapper will hand to some other program, so its URLs stay literal
+		// only for the CLI itself, never for a lookalike path.
+		if word.starts_with(b"-") || word.contains(&b'=') || word.iter().all(u8::is_ascii_digit) {
+			continue;
+		}
+		return false;
+	}
+	false
 }
 
-/// Whether `word` names the `omp` program, by any path.
-fn is_omp(word: &[u8]) -> bool {
+/// A program that execs the command it is handed, so URL resolution stays off
+/// for that command.
+const fn is_wrapper(word: &[u8]) -> bool {
+	matches!(word, b"nice" | b"npx" | b"bunx" | b"sudo" | b"env" | b"time" | b"nohup" | b"timeout")
+}
+
+/// Whether `word` names the agent CLI, by any path.
+fn is_agent_cli(word: &[u8]) -> bool {
 	let name = word
 		.rsplit(|&b| b == b'/' || (cfg!(windows) && b == b'\\'))
 		.next()
 		.unwrap_or(word);
-	name == b"omp" || (cfg!(windows) && name.eq_ignore_ascii_case(b"omp.exe"))
+	name == b"proto"
+		|| name == b"omp"
+		|| (cfg!(windows)
+			&& (name.eq_ignore_ascii_case(b"proto.exe") || name.eq_ignore_ascii_case(b"omp.exe")))
 }
 
 /// Whether the environment variable `name` holds a URL to resolve. `PWD`
@@ -238,7 +273,7 @@ pub(super) async fn resolve(fs: &pi_vfs::Fs, names: &Names) -> io::Result<Names>
 		},
 		_ => names.path.clone(),
 	};
-	let literal = runs_omp(&names.argv);
+	let literal = runs_agent_cli(&names.argv);
 	let mut argv = Vec::with_capacity(names.argv.len());
 	for (i, arg) in names.argv.iter().enumerate() {
 		let host = if i == 0 || literal {

@@ -201,7 +201,7 @@ Google Gemini integrations use REST/SSE over HTTP (`POST https://generativelangu
   1. *Verbatim tail repetition* (`EXACT_TAIL_WINDOW = 4096`, at least 1,024 repeated characters across 3 or more cycles).
   2. *Near-duplicate segments* (trigram Jaccard similarity >= 0.8 across last 16 segments).
   3. *Progress-lexicon stall* (novelty <= 0.2 without new concrete reference anchors over 8 consecutive segments).
-  4. Gemini's `GEMINI_HEADER_RUNAWAY_THRESHOLD = 36` halts streams emitting excessive titled reasoning summaries without acting. Triggers emit a synthetic retryable `error` tagged with `AIError.Flag.ThinkingLoop`.
+  4. Gemini's `GEMINI_HEADER_RUNAWAY_THRESHOLD = 64` halts streams emitting excessive titled reasoning summaries without acting. Triggers emit a synthetic retryable `error` tagged with `AIError.Flag.ThinkingLoop`.
 - **Finish reason mapping & incomplete streams**: `candidate.finishReason` is mapped via `mapStopReason`; `stop`/`length` reasons upgrade to `toolUse` if output contains tool calls. Drops without `finishReason` throw `ProviderResponseError` with `kind: "incomplete-stream"`.
 - **UsageMetadata accounting**: Attached to trailing chunks in `consumeGoogleStream`. `input` is calculated as `promptTokenCount - (cachedContentTokenCount || 0)`; `output` as `candidatesTokenCount + (thoughtsTokenCount || 0)`; `cacheRead` as `cachedContentTokenCount || 0`; and `reasoningTokens` as `thoughtsTokenCount`. Token costs are computed via `calculateCost(model, output.usage)`.
 
