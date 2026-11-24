@@ -130,3 +130,22 @@ export async function logoutCredential(
 	await modelRegistry.refreshProvider(providerId, "online");
 	return { removed: true, remainingSource: authStorage.describeCredentialSource(providerId, sessionId) };
 }
+
+/**
+ * Removes every stored credential for `providerId`: all OAuth accounts, API keys and keyless markers. Env vars,
+ * models.yml keys and `--api-key` overrides are not stored credentials, so `remainingSource` names the one still in use.
+ */
+export async function logoutProvider(
+	modelRegistry: ModelRegistry,
+	providerId: string,
+	sessionId?: string,
+): Promise<{ removed: number; remainingSource?: string }> {
+	const authStorage = modelRegistry.authStorage;
+	await authStorage.reload();
+	const removed = authStorage.listStoredCredentials(providerId).length;
+	if (removed > 0) {
+		await authStorage.remove(providerId);
+		await modelRegistry.refreshProvider(providerId, "online");
+	}
+	return { removed, remainingSource: authStorage.describeCredentialSource(providerId, sessionId) };
+}

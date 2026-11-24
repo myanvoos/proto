@@ -786,3 +786,34 @@ test("keeps an authHeader extension provider's cached catalog when a forced refr
 	await nextLaunch.refreshRuntimeProviders();
 	expect(nextLaunch.find("auth-ext", "auth-model")).toBeDefined();
 });
+
+test("isModelProvider names disabled model providers but not capability-provider ids", async () => {
+	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-model-registry-is-model-provider-"));
+	const modelsPath = path.join(tempDir, "models.yml");
+	await Bun.write(
+		modelsPath,
+		[
+			"providers:",
+			"  my-gateway:",
+			"    baseUrl: https://gateway.invalid/v1",
+			"    api: openai-completions",
+			"    apiKey: test-key",
+			"    models:",
+			"      - id: gateway-model",
+			"",
+		].join("\n"),
+	);
+	authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
+	const registry = new ModelRegistry(authStorage, modelsPath, {
+		cacheDbPath: path.join(tempDir, "models.db"),
+		fetch: () => Promise.reject(new Error("network disabled in test")),
+		// Disabled implicit engines are never registered as discoverable; they must still count as model providers.
+		settings: Settings.isolated({ disabledProviders: ["my-gateway", "llama.cpp", "claude-plugins"] }),
+	});
+
+	expect(registry.getAvailable().some(model => model.provider === "my-gateway")).toBe(false);
+	expect(registry.isModelProvider("my-gateway")).toBe(true);
+	expect(registry.isModelProvider("llama.cpp")).toBe(true);
+	expect(registry.isModelProvider("anthropic")).toBe(true);
+	expect(registry.isModelProvider("claude-plugins")).toBe(false);
+});

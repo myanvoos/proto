@@ -32,7 +32,7 @@ import {
 import { getRoleInfo } from "../../config/model-roles";
 import { settings } from "../../config/settings";
 import type { TreeFilterMode } from "../../config/settings-schema";
-import { disableProvider, enableProvider } from "../../discovery";
+import { disableProvider, enableProvider, reloadDisabledProviders } from "../../discovery";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
 	getInstalledPluginsRegistryPath,
@@ -76,7 +76,12 @@ import { readSessionLiveState } from "../../session/session-liveness";
 import { SessionManager } from "../../session/session-manager";
 import { FileSessionStorage } from "../../session/session-storage";
 import { buildSessionTrajectory } from "../../session/trajectory/session-source";
-import { type LogoutAccount, listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
+import {
+	type LogoutAccount,
+	listLogoutAccounts,
+	logoutCredential,
+	logoutProvider,
+} from "../../slash-commands/helpers/logout";
 import {
 	describeRedeemOutcome,
 	type ResetUsageAccount,
@@ -1143,6 +1148,24 @@ export class SelectorController {
 					if (!isCurrent()) return;
 					done();
 					void this.#loginThenReopenModelHub(providerId, target);
+				},
+				// Credentials and `disabledProviders` are application-wide, so these skip the target-session check.
+				onProviderLogout: providerId =>
+					logoutProvider(modelSession.modelRegistry, providerId, modelSession.sessionId),
+				onProviderEnabledChange: async (providerId, enabled) => {
+					// Not the discovery toggles: they persist the resolved list, which drops path-scoped entries.
+					const applied = this.ctx.settings.setProviderDisabled(providerId, !enabled);
+					reloadDisabledProviders();
+					if (!applied) {
+						throw new Error(
+							"project settings or a path-scoped entry decide disabledProviders here; edit that file instead",
+						);
+					}
+					if (!enabled) return;
+					// Implicit local endpoints (ollama, llama.cpp, lm-studio) re-register only on a forced static reload.
+					await modelSession.modelRegistry.refreshProvider(providerId, "online", {
+						refreshCommandCredentials: true,
+					});
 				},
 				onCycleOrderChange: order => {
 					if (!isCurrent()) return;

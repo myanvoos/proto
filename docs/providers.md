@@ -268,6 +268,8 @@ Provider IDs are matched exactly. Disable `google` to hide the Google Gemini API
 
 Disabling a provider does not delete its stored credentials — re-enable it by removing its ID from the effective list.
 
+In the TUI, open `/model`, focus the provider in the sidebar, and press Delete (or Backspace with an empty search). Choose `log out` to delete the provider's stored credentials, or `disable` to add its ID to `disabledProviders` in `~/.proto/agent/config.yml`. Disabled model providers appear in the sidebar's Disabled section; press Enter on one to re-enable it. These actions change only bare string IDs and keep path-scoped entries as written. If a project file, `--config` overlay or path-scoped entry decides the effective list, `/model` reports that and leaves the files unchanged; edit that source instead. An `acp` or `rpc` process that is already running reads the change when it restarts.
+
 ## Project-specific provider control
 
 Project settings live in `<project>/.proto/config.yml`. Use them when one repository must allow or hide a different provider set than your global default:

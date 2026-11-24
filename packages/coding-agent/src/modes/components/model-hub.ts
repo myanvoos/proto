@@ -88,6 +88,12 @@ export interface ModelHubCallbacks {
 
 	onLoginRequest?: (providerId: string) => void;
 
+	/** Deletes every stored credential for a provider. Enables the `log out` choice of the remove strip. */
+	onProviderLogout?: (providerId: string) => Promise<{ removed: number; remainingSource?: string }>;
+
+	/** Removes a provider from `disabledProviders` or adds it there. Enables `disable` and the Disabled section. */
+	onProviderEnabledChange?: (providerId: string, enabled: boolean) => void | Promise<void>;
+
 	onCycleOrderChange?: (order: string[]) => void;
 	onCancel: () => void;
 }
@@ -102,6 +108,8 @@ interface SidebarEntry {
 	label: string;
 	providerId?: string;
 	locked?: boolean;
+	/** Hidden by `disabledProviders`; always `locked` too, so browser and refresh paths skip it. */
+	disabled?: boolean;
 
 	annotation?: string;
 	oauth?: boolean;
@@ -121,7 +129,16 @@ interface StripChip {
 
 	styled: string;
 	role?: string;
-	action: "assign" | "unassign" | "fallback" | "fallbackModel" | "fallbackProvider" | "scope" | "thinking";
+	action:
+		| "assign"
+		| "unassign"
+		| "fallback"
+		| "fallbackModel"
+		| "fallbackProvider"
+		| "scope"
+		| "thinking"
+		| "logout"
+		| "disable";
 	thinkingLevel?: ThinkingLevel;
 	scope?: ModelRoleSelectionScope;
 }
@@ -144,7 +161,18 @@ type StripState =
 	| {
 			kind: "roleName";
 			input: Input;
+	  }
+	| {
+			kind: "provider";
+			providerId: string;
+			chips: StripChip[];
+			index: number;
 	  };
+
+interface ProviderNotice {
+	text: string;
+	tone: "success" | "warning" | "error";
+}
 
 interface ChipRange {
 	start: number;
@@ -182,6 +210,7 @@ export class ModelHubComponent implements Component {
 	#fixedEntries: SidebarEntry[] = [];
 	#unlockedProviderEntries: SidebarEntry[] = [];
 	#lockedProviderEntries: SidebarEntry[] = [];
+	#disabledProviderEntries: SidebarEntry[] = [];
 
 	#recentSearchCount = 0;
 	#searchTotal = 0;
@@ -205,6 +234,10 @@ export class ModelHubComponent implements Component {
 	#strip: StripState | null = null;
 	// An async role assignment (default-model switch) is persisting; input is held until it settles.
 	#assignmentPending = false;
+	// Provider whose logout/disable/enable is persisting; input is held until it settles.
+	#providerActionPending: string | null = null;
+	// Outcome of the last provider action, shown in the status row until the sidebar focus moves.
+	#notice: ProviderNotice | null = null;
 
 	#searchCounts: Map<string, number> | null = null;
 
@@ -225,7 +258,7 @@ export class ModelHubComponent implements Component {
 	#bodyOffset = 1;
 	#widthLast = 0;
 	#chipRanges: ChipRange[] = [];
-	#lockedLoginLine: number | null = null;
+	#lockedActionLine: number | null = null;
 	#rolesRowStart = 1;
 
 	constructor(
@@ -454,6 +487,14 @@ export class ModelHubComponent implements Component {
 		this.#lockedProviderEntries = [...locked]
 			.sort((a, b) => a.localeCompare(b))
 			.map(provider => providerEntry(provider, true));
+		// `disabledProviders` also holds capability-provider ids; list only the model providers it hides.
+		this.#disabledProviderEntries =
+			scoped || !this.#callbacks.onProviderEnabledChange
+				? []
+				: [...disabledProviders]
+						.filter(provider => this.#registry.isModelProvider(provider))
+						.sort((a, b) => a.localeCompare(b))
+						.map(provider => ({ ...providerEntry(provider, true), disabled: true }));
 		this.#composeEntries();
 	}
 
@@ -476,6 +517,9 @@ export class ModelHubComponent implements Component {
 		if (this.#lockedProviderEntries.length > 0) {
 			entries.push({ id: "sep:locked", kind: "separator", label: "" }, ...this.#lockedProviderEntries);
 		}
+		if (this.#disabledProviderEntries.length > 0) {
+			entries.push({ id: "sep:disabled", kind: "separator", label: "" }, ...this.#disabledProviderEntries);
+		}
 
 		this.#entries = entries;
 		if (!entries.some(entry => entry.id === this.#activeEntryId)) {
@@ -490,6 +534,7 @@ export class ModelHubComponent implements Component {
 
 	#setActiveEntry(id: string): void {
 		if (!this.#entries.some(entry => entry.id === id)) return;
+		this.#notice = null;
 		this.#activeEntryId = id;
 		this.#sidebarFollowActive = true;
 		this.#applyScope();
@@ -1034,6 +1079,10 @@ export class ModelHubComponent implements Component {
 		if (!strip || strip.kind === "roleName") return;
 		const chip = strip.chips[strip.index];
 		if (!chip) return;
+		if (strip.kind === "provider") {
+			if (chip.action === "logout" || chip.action === "disable") this.#removeProvider(strip.providerId, chip.action);
+			return;
+		}
 		switch (chip.action) {
 			case "assign":
 				if (chip.role) {
@@ -1253,7 +1302,7 @@ export class ModelHubComponent implements Component {
 	}
 
 	handleInput(data: string): void {
-		if (this.#assignmentPending) {
+		if (this.#assignmentPending || this.#providerActionPending !== null) {
 			if (matchesSelectCancel(data)) this.#callbacks.onCancel();
 			return;
 		}
@@ -1321,6 +1370,17 @@ export class ModelHubComponent implements Component {
 				this.#moveSidebar(1);
 				return;
 			}
+			// Forward Delete, or Backspace with no query (macOS labels Backspace "delete"), removes the focused
+			// configured provider.
+			if (
+				entry.kind === "provider" &&
+				!entry.locked &&
+				this.#assigning === null &&
+				(matchesKey(data, "delete") || (matchesKey(data, "backspace") && this.#browser.query.length === 0)) &&
+				this.#openProviderStrip(entry)
+			) {
+				return;
+			}
 		}
 
 		if (rolesView) {
@@ -1346,7 +1406,7 @@ export class ModelHubComponent implements Component {
 				return;
 			}
 			if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n") {
-				this.#requestLogin(entry);
+				this.#activateLockedEntry(entry);
 			}
 			return;
 		}
@@ -1556,14 +1616,132 @@ export class ModelHubComponent implements Component {
 	}
 
 	#requestLogin(entry: SidebarEntry): void {
-		if (!entry.providerId) return;
+		if (!entry.providerId || entry.disabled) return;
 		if (entry.oauth) {
 			this.#callbacks.onLoginRequest?.(entry.providerId);
 		}
 	}
 
+	#activateLockedEntry(entry: SidebarEntry): void {
+		if (entry.disabled) {
+			this.#enableProvider(entry);
+			return;
+		}
+		this.#requestLogin(entry);
+	}
+
+	/** Opens the remove strip for a configured provider; false when no removal action is wired. */
+	#openProviderStrip(entry: SidebarEntry): boolean {
+		const providerId = entry.providerId;
+		if (!providerId || this.#scopedModels.length > 0) return false;
+		const chips: StripChip[] = [];
+		// Stored credentials only; env, models.yml and keyless sources cannot be logged out, only disabled.
+		if (this.#callbacks.onProviderLogout && this.#registry.authStorage.has(providerId)) {
+			chips.push({ label: "log out", styled: theme.fg("warning", "log out"), action: "logout" });
+		}
+		if (this.#callbacks.onProviderEnabledChange) {
+			chips.push({ label: "disable", styled: theme.fg("warning", "disable"), action: "disable" });
+		}
+		if (chips.length === 0) return false;
+		this.#notice = null;
+		this.#strip = { kind: "provider", providerId, chips, index: 0 };
+		return true;
+	}
+
+	#removeProvider(providerId: string, action: "logout" | "disable"): void {
+		this.#strip = null;
+		this.#chipRanges = [];
+		if (action === "logout") {
+			const logout = this.#callbacks.onProviderLogout;
+			if (!logout) return;
+			void this.#runProviderAction(providerId, async () => {
+				const { removed, remainingSource } = await logout(providerId);
+				return () => {
+					if (removed === 0) return { tone: "warning", text: `No stored credentials for ${providerId}` };
+					if (!this.#isProviderConfigured(providerId)) {
+						const roles = this.#rolesNamingProvider(providerId);
+						if (roles.length > 0) {
+							return {
+								tone: "warning",
+								text: `Logged out of ${providerId} · still named by roles: ${roles.join(", ")}`,
+							};
+						}
+						const what = `${removed} stored ${removed === 1 ? "credential" : "credentials"}`;
+						return { tone: "success", text: `Logged out of ${providerId} · removed ${what}` };
+					}
+					// Env, models.yml and keyless sources survive a logout; only disabling hides them.
+					const via = remainingSource ? ` via ${remainingSource}` : "";
+					return {
+						tone: "warning",
+						text: `Logged out, but ${providerId} is still configured${via} · disable hides it`,
+					};
+				};
+			});
+			return;
+		}
+		const setEnabled = this.#callbacks.onProviderEnabledChange;
+		if (!setEnabled) return;
+		void this.#runProviderAction(providerId, async () => {
+			await setEnabled(providerId, false);
+			return () => {
+				const roles = this.#rolesNamingProvider(providerId);
+				if (roles.length > 0) {
+					return { tone: "warning", text: `${providerId} disabled · still named by roles: ${roles.join(", ")}` };
+				}
+				return { tone: "success", text: `${providerId} disabled · Enter re-enables it` };
+			};
+		});
+	}
+
+	#enableProvider(entry: SidebarEntry): void {
+		const providerId = entry.providerId;
+		const setEnabled = this.#callbacks.onProviderEnabledChange;
+		if (!providerId || !setEnabled) return;
+		void this.#runProviderAction(providerId, async () => {
+			await setEnabled(providerId, true);
+			return () =>
+				this.#lockedProviderEntries.some(locked => locked.providerId === providerId)
+					? { tone: "warning", text: `${providerId} enabled · it has no credentials yet` }
+					: { tone: "success", text: `${providerId} enabled` };
+		});
+	}
+
+	async #runProviderAction(providerId: string, action: () => Promise<() => ProviderNotice>): Promise<void> {
+		// A queued hover refresh would re-fetch a provider that is being logged out or hidden.
+		this.#cancelScheduledRefreshesExcept();
+		this.#providerActionPending = providerId;
+		this.#notice = null;
+		this.#tui.requestRender();
+		let describe: () => ProviderNotice;
+		try {
+			describe = await action();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			describe = () => ({ tone: "error", text: `${providerId}: ${message}` });
+		}
+		this.#providerActionPending = null;
+		if (this.#disposed) return;
+		// The focused entry keeps its id across sections (configured -> not configured/disabled), so focus follows it.
+		this.#syncFromRegistryState();
+		this.#notice = describe();
+		this.#tui.requestRender();
+	}
+
+	#isProviderConfigured(providerId: string): boolean {
+		return this.#unlockedProviderEntries.some(entry => entry.providerId === providerId);
+	}
+
+	/** Visible roles whose configured selector names `providerId`; removing the provider leaves them unresolvable. */
+	#rolesNamingProvider(providerId: string): string[] {
+		return this.#visibleRoleIds().filter(role =>
+			(this.#settings.getModelRole(role) ?? "")
+				.split(",")
+				.some(selector => selector.trim().split("/", 1)[0] === providerId),
+		);
+	}
+
 	#routeMouseEvent(event: SgrMouseEvent): boolean {
-		if (this.#assignmentPending) return true;
+		if (this.#assignmentPending || this.#providerActionPending !== null) return true;
 		const contentLine = event.row - this.#contentRowStart;
 		const overContent = contentLine >= 0 && contentLine < this.#contentRowCount;
 		const sidebarColStart = this.#contentColInset;
@@ -1666,8 +1844,8 @@ export class ModelHubComponent implements Component {
 					}
 				}
 			} else if (entry.kind === "provider" && entry.locked && this.#assigning === null) {
-				if (this.#lockedLoginLine !== null && bodyLine === this.#lockedLoginLine) {
-					this.#requestLogin(entry);
+				if (this.#lockedActionLine !== null && bodyLine === this.#lockedActionLine) {
+					this.#activateLockedEntry(entry);
 				}
 			} else if (this.#isBrowserView(entry)) {
 				this.#focus = "list";
@@ -1740,6 +1918,8 @@ export class ModelHubComponent implements Component {
 				icon = theme.icon.extensionSkill;
 			} else if (entry.kind === "all") {
 				icon = theme.icon.model;
+			} else if (entry.disabled) {
+				icon = theme.status.disabled;
 			} else {
 				icon = muted ? theme.status.shadowed : theme.status.enabled;
 			}
@@ -1778,6 +1958,12 @@ export class ModelHubComponent implements Component {
 		if (this.#assignmentPending) {
 			return truncateToWidth(theme.fg("accent", " Applying model…"), width);
 		}
+		if (this.#providerActionPending !== null) {
+			return truncateToWidth(theme.fg("accent", ` Updating ${this.#providerActionPending}…`), width);
+		}
+		if (this.#notice && this.#assigning === null) {
+			return truncateToWidth(theme.fg(this.#notice.tone, ` ${this.#notice.text}`), width);
+		}
 		if (this.#assigning !== null) {
 			if (this.#assigning.kind === "fallbackKey") {
 				return truncateToWidth(
@@ -1814,7 +2000,9 @@ export class ModelHubComponent implements Component {
 				text = "Model roles — f adds a retry fallback, cleared roles fall back to auto-selection";
 				break;
 			case "provider":
-				if (entry.locked) {
+				if (entry.disabled) {
+					text = `${entry.label} · disabled`;
+				} else if (entry.locked) {
 					text = `${entry.label} · not configured`;
 				} else if (entry.providerId && this.#refreshingProviders.has(entry.providerId)) {
 					text = `${entry.label} · refreshing model list…`;
@@ -1982,12 +2170,35 @@ export class ModelHubComponent implements Component {
 		return lines;
 	}
 
-	#renderLockedView(entry: SidebarEntry, width: number, rows: number): string[] {
+	#renderDisabledView(entry: SidebarEntry, width: number, rows: number): string[] {
 		const lines: string[] = [];
-		this.#lockedLoginLine = null;
+		this.#lockedActionLine = null;
+		if (rows < 6) {
+			this.#lockedActionLine = 0;
+			lines.push(truncateToWidth(theme.fg("accent", `${theme.nav.cursor} Enter enable`), width));
+		} else {
+			lines.push("");
+			lines.push(truncateToWidth(theme.fg("warning", `  ${entry.label} is disabled`), width));
+			lines.push("");
+			lines.push(
+				truncateToWidth(theme.fg("muted", "  Its models are hidden from /model, roles and ACP clients."), width),
+			);
+			lines.push(truncateToWidth(theme.fg("dim", "  Stored credentials and models.yml config are kept."), width));
+			lines.push("");
+			this.#lockedActionLine = lines.length;
+			lines.push(truncateToWidth(theme.fg("accent", `  ${theme.nav.cursor} Enable (Enter)`), width));
+		}
+		while (lines.length < rows) lines.push("");
+		return lines.slice(0, rows);
+	}
+
+	#renderLockedView(entry: SidebarEntry, width: number, rows: number): string[] {
+		if (entry.disabled) return this.#renderDisabledView(entry, width, rows);
+		const lines: string[] = [];
+		this.#lockedActionLine = null;
 		if (rows < 6) {
 			if (entry.oauth) {
-				this.#lockedLoginLine = 0;
+				this.#lockedActionLine = 0;
 				lines.push(truncateToWidth(theme.fg("accent", `${theme.nav.cursor} Enter log in`), width));
 			} else {
 				lines.push(truncateToWidth(theme.fg("warning", "API key required"), width));
@@ -2010,7 +2221,7 @@ export class ModelHubComponent implements Component {
 			lines.push(truncateToWidth(theme.fg("muted", "  Add an API key for this provider in config."), width));
 		}
 		if (entry.oauth) {
-			this.#lockedLoginLine = lines.length;
+			this.#lockedActionLine = lines.length;
 			lines.push(truncateToWidth(theme.fg("accent", `  ${theme.nav.cursor} Log in with OAuth (Enter)`), width));
 		}
 		lines.push("");
@@ -2036,6 +2247,7 @@ export class ModelHubComponent implements Component {
 			}
 			if (strip.kind === "role") return "←/→ choose · Enter assign/clear · Esc cancel";
 			if (strip.kind === "scope") return "←/→ save scope · Enter choose · Esc cancel";
+			if (strip.kind === "provider") return "←/→ choose · Enter confirm · Esc cancel";
 			return "←/→ thinking level · Enter apply · Esc keep";
 		}
 		if (this.#assigning !== null) {
@@ -2067,11 +2279,18 @@ export class ModelHubComponent implements Component {
 			return "↑/↓ rows · Enter pick · f fallback · x clear · t thinking · c cycle · [/] reorder · n new";
 		}
 		if (entry.kind === "provider" && entry.locked) {
+			if (entry.disabled) return "Enter enable · ↑/↓ providers · Esc close";
 			return entry.oauth ? "Enter log in · ↑/↓ providers · Esc close" : "↑/↓ providers · Esc close";
 		}
 		const arrows = this.#focus === "scope" ? "↑/↓ providers · → models" : "↑/↓ models · ← providers";
 		const refresh = entry.kind === "provider" ? " · F5 refresh" : "";
-		return `Enter assign roles · ${arrows} · type to search${refresh} · Esc close`;
+		const removable =
+			entry.kind === "provider" &&
+			this.#focus === "scope" &&
+			this.#scopedModels.length === 0 &&
+			(this.#callbacks.onProviderLogout !== undefined || this.#callbacks.onProviderEnabledChange !== undefined);
+		const remove = removable ? " · Del remove" : "";
+		return `Enter assign roles · ${arrows}${remove} · type to search${refresh} · Esc close`;
 	}
 
 	#renderFooter(width: number): string {
@@ -2104,9 +2323,11 @@ export class ModelHubComponent implements Component {
 		}
 
 		const prefix =
-			strip.kind === "role"
-				? `${theme.fg("accent", strip.item.id)}${theme.fg("dim", " →")} `
-				: `${theme.fg(getRoleInfo(strip.role ?? "", this.#settings).color ?? "muted", (getRoleInfo(strip.role ?? "", this.#settings).tag ?? strip.role ?? "").toLowerCase())}${theme.fg("dim", ` · ${strip.item.id} →`)} `;
+			strip.kind === "provider"
+				? `${theme.fg("warning", "Remove")} ${theme.fg("accent", strip.providerId)}${theme.fg("dim", " →")} `
+				: strip.kind === "role"
+					? `${theme.fg("accent", strip.item.id)}${theme.fg("dim", " →")} `
+					: `${theme.fg(getRoleInfo(strip.role ?? "", this.#settings).color ?? "muted", (getRoleInfo(strip.role ?? "", this.#settings).tag ?? strip.role ?? "").toLowerCase())}${theme.fg("dim", ` · ${strip.item.id} →`)} `;
 
 		const prefixWidth = visibleWidth(prefix);
 		const available = Math.max(1, width - prefixWidth);

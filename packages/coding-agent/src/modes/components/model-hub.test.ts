@@ -385,3 +385,156 @@ test("a focused provider that vanishes on its refresh hands focus to its neighbo
 		hub.dispose();
 	}
 });
+
+const DELETE = "\x1b[3~";
+const RIGHT = "\x1b[C";
+const DOWN = "\x1b[B";
+
+/** Two configured providers; `prov-a` holds a stored credential unless `stored` is empty. */
+function setupRemovalHub(options: { stored?: string[]; settings?: Settings; removable?: boolean } = {}) {
+	resetProviderAutoRefreshGuard();
+	const settings = options.settings ?? Settings.isolated();
+	const catalog = ["prov-a", "prov-b"].map(provider => buildModel({ ...models[0], provider } as never));
+	const configured = new Set(["prov-a", "prov-b"]);
+	const stored = new Set(options.stored ?? ["prov-a"]);
+	const disabled = () => new Set(settings.get("disabledProviders"));
+	const liveRegistry = {
+		refresh: async () => {},
+		refreshProvider: async () => {},
+		getError: () => undefined,
+		getAll: () => catalog,
+		getAvailable: () => catalog.filter(model => configured.has(model.provider) && !disabled().has(model.provider)),
+		getDiscoverableProviders: () => [],
+		getProviderDiscoveryState: () => undefined,
+		// Capability-provider ids share `disabledProviders`; only `prov-*` are model providers here.
+		isModelProvider: (providerId: string) => providerId.startsWith("prov-"),
+		authStorage: {
+			hasAuth: (providerId: string) => configured.has(providerId),
+			has: (providerId: string) => stored.has(providerId),
+		},
+	} as unknown as ModelRegistry;
+	const calls: string[] = [];
+	const hub = new ModelHubComponent(
+		{ terminal: { rows: 24 }, requestRender() {} } as unknown as TUI,
+		settings,
+		liveRegistry,
+		[],
+		options.removable === false
+			? { onAssign() {}, onUnassign() {}, onCancel() {} }
+			: {
+					onAssign() {},
+					onUnassign() {},
+					onCancel() {},
+					onProviderLogout: async providerId => {
+						calls.push(`logout:${providerId}`);
+						const removed = stored.delete(providerId) ? 1 : 0;
+						configured.delete(providerId);
+						return { removed };
+					},
+					onProviderEnabledChange: (providerId, enabled) => {
+						calls.push(`${enabled ? "enable" : "disable"}:${providerId}`);
+						const next = disabled();
+						if (enabled) next.delete(providerId);
+						else next.add(providerId);
+						settings.set("disabledProviders", [...next]);
+					},
+				},
+	);
+	const screen = () => plain(hub.render(100));
+	return { hub, calls, settings, screen };
+}
+
+test("Delete on a configured provider offers log out, which moves it to the not-configured section", async () => {
+	const { hub, calls, screen } = setupRemovalHub();
+	try {
+		hub.render(100);
+		hub.handleInput(DOWN); // All models -> prov-a
+		expect(screen().some(line => line.includes("Del remove"))).toBe(true);
+		hub.handleInput(DELETE);
+		const footer = screen().find(line => line.includes("Remove prov-a")) ?? "";
+		expect(footer).toContain("log out");
+		expect(footer).toContain("disable");
+		hub.handleInput("\r");
+		await Bun.sleep(0);
+		expect(calls).toEqual(["logout:prov-a"]);
+		const lines = screen();
+		expect(lines.some(line => line.includes("Logged out of prov-a · removed 1 stored credential"))).toBe(true);
+		expect(lines.some(line => line.includes("prov-a has no credentials configured"))).toBe(true);
+	} finally {
+		hub.dispose();
+	}
+});
+
+test("disable hides a provider under Disabled, and Enter there re-enables it", async () => {
+	const { hub, calls, settings, screen } = setupRemovalHub({ stored: [] });
+	try {
+		hub.render(100);
+		hub.handleInput(DOWN);
+		hub.handleInput(DELETE);
+		const footer = screen().find(line => line.includes("Remove prov-a")) ?? "";
+		// Env/config-backed providers have nothing to log out of, so disable is the only removal.
+		expect(footer).not.toContain("log out");
+		hub.handleInput("\r");
+		await Bun.sleep(0);
+		expect(calls).toEqual(["disable:prov-a"]);
+		expect(settings.get("disabledProviders")).toEqual(["prov-a"]);
+		let lines = screen();
+		expect(lines.some(line => line.includes("prov-a disabled"))).toBe(true);
+		expect(lines.some(line => line.includes("prov-a is disabled"))).toBe(true);
+		expect(lines.some(line => line.includes("Enter enable"))).toBe(true);
+
+		hub.handleInput("\r");
+		await Bun.sleep(0);
+		expect(calls).toEqual(["disable:prov-a", "enable:prov-a"]);
+		expect(settings.get("disabledProviders")).toEqual([]);
+		lines = screen();
+		expect(lines.some(line => line.includes("prov-a enabled"))).toBe(true);
+		expect(lines.some(line => line.includes("prov-a is disabled"))).toBe(false);
+	} finally {
+		hub.dispose();
+	}
+});
+
+test("disabling a provider a role still names warns, and capability ids stay out of Disabled", async () => {
+	const settings = Settings.isolated({ modelRoles: { default: "prov-b/model-00" } });
+	settings.set("disabledProviders", ["claude-plugins"]);
+	const { hub, screen } = setupRemovalHub({ stored: [], settings });
+	try {
+		hub.render(100);
+		expect(screen().some(line => line.includes("claude-plugins"))).toBe(false);
+		hub.handleInput(DOWN);
+		hub.handleInput(DOWN); // prov-a -> prov-b
+		hub.handleInput(DELETE);
+		hub.handleInput("\r");
+		await Bun.sleep(0);
+		expect(screen().some(line => line.includes("prov-b disabled · still named by roles: default"))).toBe(true);
+		expect(settings.get("disabledProviders")).toEqual(["claude-plugins", "prov-b"]);
+	} finally {
+		hub.dispose();
+	}
+});
+
+test("Esc closes the remove strip without acting, and hubs without removal callbacks ignore Delete", () => {
+	const removable = setupRemovalHub();
+	try {
+		removable.hub.render(100);
+		removable.hub.handleInput(DOWN);
+		removable.hub.handleInput(DELETE);
+		removable.hub.handleInput(RIGHT);
+		removable.hub.handleInput("\x1b");
+		expect(removable.calls).toEqual([]);
+		expect(removable.screen().some(line => line.includes("Remove prov-a"))).toBe(false);
+	} finally {
+		removable.hub.dispose();
+	}
+	const plainHub = setupRemovalHub({ removable: false });
+	try {
+		plainHub.hub.render(100);
+		plainHub.hub.handleInput(DOWN);
+		expect(plainHub.screen().some(line => line.includes("Del remove"))).toBe(false);
+		plainHub.hub.handleInput(DELETE);
+		expect(plainHub.screen().some(line => line.includes("Remove prov-a"))).toBe(false);
+	} finally {
+		plainHub.hub.dispose();
+	}
+});

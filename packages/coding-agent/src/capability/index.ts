@@ -277,10 +277,14 @@ export async function loadCapability<T>(
 
 export function initializeWithSettings(activeSettings: Settings): void {
 	settings = activeSettings;
+	reloadDisabledProviders();
+}
 
-	const disabled = settings.get("disabledProviders");
+/** Re-reads `disabledProviders` after another writer changed it, so a later toggle does not persist a stale set. */
+export function reloadDisabledProviders(): void {
+	if (!settings) return;
 	disabledProviders.clear();
-	for (const id of disabled) {
+	for (const id of settings.get("disabledProviders")) {
 		disabledProviders.add(id);
 	}
 }

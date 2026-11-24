@@ -48,6 +48,7 @@ export {
 	isProviderEnabled,
 	listCapabilities,
 	loadCapability,
+	reloadDisabledProviders,
 	reset,
 	setDisabledProviders,
 } from "../capability";

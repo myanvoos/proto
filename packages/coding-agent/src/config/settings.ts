@@ -1083,6 +1083,22 @@ export class Settings {
 		this.set("disabledProviders", ids);
 	}
 
+	/**
+	 * Adds or removes one bare `disabledProviders` id in config.yml, leaving path-scoped entries as written. Returns
+	 * whether the effective value now matches: a project file, `--config` overlay, runtime override or path-scoped
+	 * entry can still decide it, and editing config.yml cannot change that.
+	 */
+	setProviderDisabled(providerId: string, disabled: boolean): boolean {
+		const current = getByPath(this.#global, SETTING_PATH_SEGMENTS.disabledProviders);
+		const entries: unknown[] = Array.isArray(current) ? current : [];
+		if (entries.includes(providerId) !== disabled) {
+			const next = disabled ? [...entries, providerId] : entries.filter(entry => entry !== providerId);
+			// Scoped entries are objects; `get` resolves them, so the stored array is wider than the setting's type.
+			this.set("disabledProviders", next as SettingValue<"disabledProviders">);
+		}
+		return this.get("disabledProviders").includes(providerId) === disabled;
+	}
+
 	async #load(): Promise<Settings> {
 		const [globalResult, projectResult] = await Promise.allSettled([
 			this.#persist ? this.#loadGlobalSettings() : Promise.resolve(),

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `/model` can remove a configured provider: with the provider focused in the sidebar, Delete (or Backspace with an empty search) offers `log out`, which deletes its stored credentials, and `disable`, which adds it to `disabledProviders` so env-var, `models.yml` and keyless providers can be hidden too. Disabled model providers are listed in a Disabled section, where Enter re-enables them. The toggle edits only bare IDs in `config.yml`, keeps path-scoped entries, and reports when project settings decide the list instead.
+
 ### Fixed
 
 - Blackhole's memory calls now reuse the live system prompt and messages as a cache-hit prefix, with the memory instruction appended as a system reminder, instead of a cold summarizer prompt

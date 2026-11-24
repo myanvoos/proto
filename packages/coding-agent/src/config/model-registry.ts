@@ -32,6 +32,7 @@ import {
 } from "@oh-my-pi/pi-catalog/model-manager";
 import { getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
 import {
+	getCatalogProviderEntry,
 	googleAntigravityModelManagerOptions,
 	googleGeminiCliModelManagerOptions,
 	isCredentialScopedModelCacheProvider,
@@ -166,6 +167,9 @@ interface CustomModelsResult {
 
 type ModifyModelsHook = (models: Model<Api>[], credentials: OAuthCredentials) => Model<Api>[];
 
+/** Local endpoints probed without models.yml config; see `#addImplicitDiscoverableProviders`. */
+const IMPLICIT_LOCAL_PROVIDER_IDS: ReadonlySet<string> = new Set(["ollama", "llama.cpp", "lm-studio"]);
+
 function getDisabledProviderIdsFromSettings(settingsInstance?: Settings): Set<string> {
 	try {
 		return new Set((settingsInstance ?? settings).get("disabledProviders"));
@@ -216,6 +220,8 @@ export class ModelRegistry {
 	#commandConfigsByProvider: Map<string, Set<string>> = new Map();
 	#keylessProviders: Set<string> = new Set();
 	#discoverableProviders: DiscoveryProviderConfig[] = [];
+	// Provider ids declared under `providers:` in models.yml, kept even while `disabledProviders` hides them.
+	#configuredProviderIds: ReadonlySet<string> = new Set();
 	#implicitLocalProviders = new Set<string>();
 	#implicitProviderEndpointEnv = new Map<string, string>();
 	#configWarnings: string[] = [];
@@ -612,6 +618,7 @@ export class ModelRegistry {
 		this.#configError = configError;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
+		this.#configuredProviderIds = configuredProviders;
 		this.#customModelOverlays = customModels;
 		this.#providerOverrides = overrides;
 		this.#modelOverrides = modelOverrides;
@@ -2252,6 +2259,22 @@ export class ModelRegistry {
 			if (provider.toLowerCase() === normalized) return provider;
 		}
 		return undefined;
+	}
+
+	/**
+	 * Whether `providerId` names a model provider, enabled or not: a catalog provider, a models.yml provider, an
+	 * implicit local endpoint, or an extension-registered provider. `disabledProviders` also holds capability-provider
+	 * ids, so callers listing disabled model providers filter through this.
+	 */
+	isModelProvider(providerId: string): boolean {
+		return (
+			getCatalogProviderEntry(providerId) !== undefined ||
+			IMPLICIT_LOCAL_PROVIDER_IDS.has(providerId) ||
+			this.#configuredProviderIds.has(providerId) ||
+			this.#runtimeProviderSourceByName.has(providerId) ||
+			this.#runtimeModelManagers.has(providerId) ||
+			this.#discoverableProviders.some(provider => provider.provider === providerId)
+		);
 	}
 
 	hasProvider(providerId: string): boolean {
