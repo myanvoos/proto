@@ -119,8 +119,10 @@ export function parseArgs(inputArgs: string[], extensionFlags?: Map<string, { ty
 		const flagIndex = i;
 
 		let equalsValueIndex = -1;
-		if (arg.startsWith("--") && arg.includes("=")) {
-			const eqIdx = arg.indexOf("=");
+		const eqIdx = arg.startsWith("--") ? arg.indexOf("=") : -1;
+		// "--model a=b" is a flag and value joined into one argument, not `--model a` set to `b`: keep it
+		// whole so the unknown-flag report can show the split it needs.
+		if (eqIdx !== -1 && !/\s/.test(arg.slice(0, eqIdx))) {
 			const value = arg.slice(eqIdx + 1);
 			arg = arg.slice(0, eqIdx);
 			args.splice(i + 1, 0, value);
@@ -256,14 +258,45 @@ export function validateToolNames(requested: readonly string[] | undefined, know
 	);
 }
 
+/**
+ * Extensions register `--name` flags only once a session loads them, so an unknown `--name` may still be
+ * one. A short flag, or a token holding whitespace (a flag and its value passed as one argument), never is.
+ */
+export function isPossibleExtensionFlag(flag: string): boolean {
+	return flag.startsWith("--") && !/\s/.test(flag);
+}
+
+/**
+ * Launchers that take a list of arguments pass `"--model a/b"` through as one token. Spell out the split
+ * instead of leaving "unknown flag" to explain it.
+ */
+function joinedArgumentHint(token: string): string | undefined {
+	const trimmed = token.trim();
+	const split = trimmed.search(/\s/);
+	if (split === -1) {
+		if (trimmed === token) return undefined;
+		return `hint: ${JSON.stringify(token)} includes surrounding whitespace; pass it as ${JSON.stringify(trimmed)}.`;
+	}
+	const flag = trimmed.slice(0, split);
+	const value = trimmed.slice(split).trim();
+	return `hint: ${JSON.stringify(token)} arrived as one argument; pass ${JSON.stringify(flag)} and ${JSON.stringify(value)} as separate arguments.`;
+}
+
+export function describeUnrecognizedFlags(flags: readonly string[]): string {
+	return `unknown flag${flags.length === 1 ? "" : "s"}: ${flags.join(", ")}`;
+}
+
 export function reportUnrecognizedFlags(
 	args: Pick<Args, "unrecognizedFlags">,
 	write: (text: string) => void = text => process.stderr.write(text),
 ): boolean {
 	if (args.unrecognizedFlags.length === 0) return false;
 	const flags = args.unrecognizedFlags;
-	const plural = flags.length === 1 ? "" : "s";
-	write(`${chalk.red(`error: unknown flag${plural}: ${flags.join(", ")}`)}\n`);
+	write(`${chalk.red(`error: ${describeUnrecognizedFlags(flags)}`)}\n`);
+	for (const flag of flags) {
+		const hint = joinedArgumentHint(flag);
+		if (hint) write(`${hint}\n`);
+	}
 	write(`Run \`${BINARY_NAME} --help\` for available flags.\n`);
 	return true;
 }

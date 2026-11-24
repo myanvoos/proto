@@ -29,7 +29,13 @@ import {
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { CliUsageError } from "@oh-my-pi/pi-utils/cli";
 import { reset as resetCapabilities } from "./capability";
-import { type Args, reportUnrecognizedFlags, validateToolNames } from "./cli/args";
+import {
+	type Args,
+	describeUnrecognizedFlags,
+	isPossibleExtensionFlag,
+	reportUnrecognizedFlags,
+	validateToolNames,
+} from "./cli/args";
 import { applyExtensionFlags, type ExtensionFlagSink } from "./cli/extension-flags";
 import { processFileArguments } from "./cli/file-processor";
 import { scheduleGcAutoCompress } from "./cli/gc-auto-compress";
@@ -370,7 +376,7 @@ interface AcpSessionFactoryOptions {
 	sessionDir?: string;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
-	parsedArgs: Pick<Args, "apiKey" | "trustedExtensions" | "tools">;
+	parsedArgs: Pick<Args, "apiKey" | "trustedExtensions" | "tools" | "unrecognizedFlags">;
 	rawArgs: string[];
 	createSession: (options: CreateAgentSessionOptions) => Promise<CreateAgentSessionResult>;
 }
@@ -444,6 +450,17 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 				: undefined,
 			args.rawArgs,
 		);
+		// Startup already rejected every unknown flag no extension could own. The rest are only unknown
+		// once this session's extensions have registered theirs; the connection is live by now, so fail
+		// the session request instead of exiting.
+		const unrecognizedFlags = (reparsedArgs ?? args.parsedArgs).unrecognizedFlags;
+		if (unrecognizedFlags.length > 0) {
+			await nextSession.dispose();
+			reportUnrecognizedFlags({ unrecognizedFlags });
+			throw new CliUsageError(
+				`${describeUnrecognizedFlags(unrecognizedFlags)}. Run \`${BINARY_NAME} --help\` for available flags.`,
+			);
+		}
 		const requestedTools = reparsedArgs?.tools ?? args.parsedArgs.tools;
 		if (requestedTools) {
 			try {
@@ -1547,6 +1564,17 @@ export async function runRootCommand(
 			process.exit(1);
 		}
 		const mode = parsedArgs.mode || "text";
+		// The TUI and RPC modes reject unknown flags once extensions have declared theirs. ACP loads
+		// extensions per session, for that session's cwd, so only flags no extension could own fail here,
+		// before the handshake; createAcpSessionFactory rejects the rest.
+		if (
+			mode === "acp" &&
+			reportUnrecognizedFlags({
+				unrecognizedFlags: parsedArgs.unrecognizedFlags.filter(flag => !isPossibleExtensionFlag(flag)),
+			})
+		) {
+			process.exit(1);
+		}
 
 		const rpcInput = mode === "rpc" || mode === "rpc-ui" ? claimRpcInput() : undefined;
 
