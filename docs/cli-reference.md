@@ -228,11 +228,14 @@ The ACP server answers with JSON-RPC errors rather than pretending a request or 
 
 | Situation | Code |
 | --- | --- |
-| Any recognized non-`initialize` request before a successful `initialize` | `-32002` Server not initialized |
-| Missing/ill-typed params, a `cwd` that is not an existing absolute directory, an unknown `sessionId`, model, config option or auth method | `-32602` Invalid params |
+| Any recognized non-`initialize` request before a successful `initialize` | `-32600` Invalid request |
+| Missing/ill-typed params, a `cwd` that is not an existing absolute directory, an unknown model, mode, config option or auth method, or a `session/list` cursor the server did not hand out | `-32602` Invalid params |
+| A `sessionId` that names no session open on this connection (`session/prompt`, `session/set_mode`, `session/set_config_option`), or no stored session (`session/load`, `session/resume`, `session/fork`) | `-32002` Resource not found, with `data.sessionId` |
 | Unknown method | `-32601` Method not found |
 | A turn that ended in a provider error (bad credentials → `-32000` Authentication required, anything else → `-32603` Internal error) | `-32000` / `-32603` |
 | A line that is not JSON, or JSON that is not a JSON-RPC message | `-32700` Parse error / `-32600` Invalid request — answered on `id: null` without dropping the connection |
+
+A `-32603` message ends with the first line of the reason, as in `Internal error: <reason>`; `data.details` carries the full text.
 
 `initialize` negotiates: a client asking for a newer protocol version is answered with the newest version the agent speaks, and the downgrade is reported on stderr. A failed turn is reported as a JSON-RPC error rather than a successful response; an error event itself is not streamed as `agent_message_chunk` text, although text emitted before a provider failure may already have been sent.
 

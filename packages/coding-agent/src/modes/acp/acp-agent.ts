@@ -25,6 +25,7 @@ import {
 	type CloseSessionRequest,
 	type CloseSessionResponse,
 	type CreateElicitationResponse,
+	conciseErrorReason,
 	type ElicitationContentValue,
 	type ElicitationPropertySchema,
 	type ForkSessionRequest,
@@ -626,9 +627,6 @@ export function createAcpExtensionUiContext(
 		setToolsExpanded: () => {},
 	};
 }
-
-/** JSON-RPC server error the LSP ecosystem uses for "initialize has not run yet". */
-const SERVER_NOT_INITIALIZED = -32002;
 
 function requireObjectParams(method: string, params: unknown): Record<string, unknown> {
 	if (typeof params !== "object" || params === null || Array.isArray(params)) {
@@ -1232,7 +1230,7 @@ export class AcpAgent implements Agent {
 			}
 			case "_proto/chats/byCwd": {
 				const cwd = typeof params.cwd === "string" ? (params.cwd as string) : undefined;
-				if (!cwd) throw new Error("cwd required");
+				if (!cwd) throw RequestError.invalidParams({ method, field: "cwd" }, "cwd required");
 				const limit = typeof params.limit === "number" ? Math.max(1, Math.min(500, params.limit as number)) : 100;
 				const sessions = await SessionManager.list(cwd);
 				const sorted = sessions.sort((l, r) => r.modified.getTime() - l.modified.getTime()).slice(0, limit);
@@ -1256,7 +1254,9 @@ export class AcpAgent implements Agent {
 			}
 			case "_proto/extensions/toggle": {
 				const providerId = params.providerId;
-				if (typeof providerId !== "string") throw new Error("providerId required");
+				if (typeof providerId !== "string") {
+					throw RequestError.invalidParams({ method, field: "providerId" }, "providerId required");
+				}
 				if (params.enabled === false) {
 					disableProvider(providerId);
 					return { enabled: false };
@@ -1420,7 +1420,7 @@ export class AcpAgent implements Agent {
 		const stored =
 			(moved ? await this.#findStoredSession(moved, cwd) : undefined) ??
 			(await this.#findStoredSession(handle, cwd));
-		if (!stored) throw new Error(`ACP session not found: ${handle}`);
+		if (!stored) throw RequestError.sessionNotFound(handle);
 		return stored;
 	}
 
@@ -1595,7 +1595,7 @@ export class AcpAgent implements Agent {
 	#getSessionRecord(sessionId: string): ManagedSessionRecord {
 		const record = this.#sessions.get(sessionId);
 		if (!record) {
-			throw RequestError.invalidParams({ field: "sessionId", sessionId }, `unknown session: ${sessionId}`);
+			throw RequestError.sessionNotFound(sessionId);
 		}
 		return record;
 	}
@@ -1604,7 +1604,10 @@ export class AcpAgent implements Agent {
 		const expected = path.resolve(cwd);
 		const actual = path.resolve(session.sessionManager.getCwd());
 		if (actual !== expected) {
-			throw new Error(`ACP session ${session.sessionId} is already loaded for ${actual}, not ${expected}`);
+			throw RequestError.invalidParams(
+				{ field: "cwd", cwd: expected, loadedCwd: actual },
+				`session ${session.sessionId} is already loaded for ${actual}, not ${expected}`,
+			);
 		}
 	}
 
@@ -1624,7 +1627,7 @@ export class AcpAgent implements Agent {
 
 		const storedSession = await this.#findStoredSessionById(sessionId);
 		if (!storedSession) {
-			throw new Error(`ACP session not found: ${sessionId}`);
+			throw RequestError.sessionNotFound(sessionId);
 		}
 		return storedSession.path;
 	}
@@ -1808,7 +1811,7 @@ export class AcpAgent implements Agent {
 		if (/\b(401|403)\b|unauthor|invalid[_ ]api[_ ]key|authentication/i.test(errorMessage)) {
 			return RequestError.authRequired({ details }, details);
 		}
-		return RequestError.internalError({ details }, details);
+		return RequestError.internalError({ details }, conciseErrorReason(details));
 	}
 
 	#resolveStopReason(
@@ -1855,9 +1858,8 @@ export class AcpAgent implements Agent {
 
 	#requireInitialized(method: string): void {
 		if (this.#initialized) return;
-		throw new RequestError(SERVER_NOT_INITIALIZED, "Server not initialized", {
-			details: `${method} requires a successful initialize request first`,
-		});
+		// ACP rejects every request but `initialize` that arrives before initialization with -32600.
+		throw RequestError.invalidRequest({ method }, `${method} requires a successful initialize request first`);
 	}
 
 	/**
@@ -2028,7 +2030,10 @@ export class AcpAgent implements Agent {
 	#applyModeChange(session: AgentSession, modeId: string): void {
 		const availableModes = this.#getAvailableModes(session);
 		if (!availableModes.some(mode => mode.id === modeId)) {
-			throw new Error(`Unsupported ACP mode: ${modeId}`);
+			throw RequestError.invalidParams(
+				{ modeId, supported: availableModes.map(mode => mode.id) },
+				`unknown mode: ${modeId}`,
+			);
 		}
 	}
 
@@ -2236,11 +2241,11 @@ export class AcpAgent implements Agent {
 		if (!cursor) {
 			return 0;
 		}
-		const parsed = Number.parseInt(cursor, 10);
-		if (!Number.isFinite(parsed) || parsed < 0) {
-			throw new Error(`Invalid ACP session cursor: ${cursor}`);
+		// Cursors are the decimal offsets this method hands out; anything else did not come from here.
+		if (!/^\d+$/.test(cursor)) {
+			throw RequestError.invalidParams({ field: "cursor", cursor }, `invalid session/list cursor: ${cursor}`);
 		}
-		return parsed;
+		return Number.parseInt(cursor, 10);
 	}
 
 	async #replaySessionHistory(record: ManagedSessionRecord): Promise<void> {

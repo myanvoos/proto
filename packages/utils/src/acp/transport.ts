@@ -1,3 +1,4 @@
+import { truncate } from "../format";
 import type { MaybePromise } from "./protocol";
 import type { Stream } from "./stream";
 
@@ -65,7 +66,7 @@ export class RequestError extends Error {
 	}
 
 	static methodNotFound(method: string): RequestError {
-		return new RequestError(-32601, `"Method not found": ${method}`, { method });
+		return createStandardError(-32601, "Method not found", { method }, method);
 	}
 
 	static invalidParams(data?: unknown, additionalMessage?: string): RequestError {
@@ -74,6 +75,12 @@ export class RequestError extends Error {
 
 	static internalError(data?: unknown, additionalMessage?: string): RequestError {
 		return createStandardError(-32603, "Internal error", data, additionalMessage);
+	}
+
+	/** A failure that is not a protocol error: its first line names the reason, `data.details` keeps the full text. */
+	static internalErrorFrom(error: unknown): RequestError {
+		const details = error instanceof Error ? error.message : String(error);
+		return RequestError.internalError({ details }, conciseErrorReason(details));
 	}
 
 	static requestCancelled(data?: unknown, additionalMessage?: string): RequestError {
@@ -90,6 +97,11 @@ export class RequestError extends Error {
 			uri === undefined ? "Resource not found" : `Resource not found: ${uri}`,
 			uri === undefined ? undefined : { uri },
 		);
+	}
+
+	/** ACP's answer to a session-scoped request naming a session that does not exist or is not active. */
+	static sessionNotFound(sessionId: string): RequestError {
+		return createStandardError(-32002, "Resource not found", { sessionId }, `session ${sessionId}`);
 	}
 
 	// The session is mid-turn: retryable once idle (steer/follow-up/wait), not a fault. `data` keeps the stable
@@ -114,6 +126,16 @@ function createStandardError(
 	additionalMessage: string | undefined,
 ): RequestError {
 	return new RequestError(code, additionalMessage ? `${message}: ${additionalMessage}` : message, data);
+}
+
+/** Longest reason an error `message` carries; the full text belongs in `data.details`. */
+const MAX_ERROR_REASON_LENGTH = 240;
+
+/** The first non-blank line of a failure's text, bounded: the part of it a client can show as the reason. */
+export function conciseErrorReason(text: string): string {
+	const trimmed = text.trimStart();
+	const lineEnd = trimmed.indexOf("\n");
+	return truncate((lineEnd === -1 ? trimmed : trimmed.slice(0, lineEnd)).trimEnd(), MAX_ERROR_REASON_LENGTH);
 }
 
 type Dispatcher = (
@@ -276,10 +298,7 @@ export class RpcConnection {
 			const result = await this.#dispatcher(message.method, message.params, false, canceller?.signal);
 			await this.#respond(message.id, { result: result ?? {} });
 		} catch (error) {
-			const protocolError =
-				error instanceof RequestError
-					? error
-					: RequestError.internalError({ details: error instanceof Error ? error.message : String(error) });
+			const protocolError = error instanceof RequestError ? error : RequestError.internalErrorFrom(error);
 			await this.#respond(message.id, { error: protocolError.toErrorResponse() });
 		} finally {
 			this.#inboundCancellers?.delete(message.id);

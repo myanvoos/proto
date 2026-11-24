@@ -333,8 +333,8 @@ test("protocol hygiene: initialization, params, cwd, methods and sessions use th
 	try {
 		server.send({ jsonrpc: "2.0", id: 1, method: "session/new", params: { cwd: workDir } });
 		const beforeInit = await server.response(1);
-		expect(beforeInit.error?.code).toBe(-32002);
-		expect(beforeInit.error?.message).toBe("Server not initialized");
+		expect(beforeInit.error?.code).toBe(-32600);
+		expect(beforeInit.error?.message).toContain("initialize");
 
 		const badVersion = await server.initialize("abc", 2);
 		expect(badVersion.error?.code).toBe(-32602);
@@ -375,8 +375,8 @@ test("protocol hygiene: initialization, params, cwd, methods and sessions use th
 			params: { sessionId: "does-not-exist", prompt: [] },
 		});
 		const unknownSession = await server.response(9);
-		expect(unknownSession.error?.code).toBe(-32602);
-		expect(unknownSession.error?.message).toContain("unknown session");
+		expect(unknownSession.error?.code).toBe(-32002);
+		expect(unknownSession.error?.data).toEqual({ sessionId: "does-not-exist" });
 
 		const sessionId = await server.newSession(10);
 		server.send({
