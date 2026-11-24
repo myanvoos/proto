@@ -1,10 +1,15 @@
 import { scheduler } from "node:timers/promises";
 
-const QUOTA_RESET_PATTERN = /reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
+// Google's structured metadata uses Go duration strings, including abbreviated durations like `30m`.
+const GOOGLE_RPC_RESET_DELAY_PATTERN =
+	/"quotaResetDelay"\s*:\s*"((?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)(ms|s))?)"/i;
+// "reset after 1h2m3s" / "10m15s" / "39s" / "Resets in 71h48m47s"
+const QUOTA_RESET_PATTERN =
+	/(?:(?:will\s+)?reset after|(?:will\s+)?resets?\s+in|"retryDelay":\s*")\s*(?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
 
 const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
 
-const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
+const RETRY_DELAY_FIELD_PATTERN = /"(?:retryDelay|quotaResetDelay)":\s*"([0-9.]+)(ms|s)"/i;
 
 const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
 
@@ -16,7 +21,14 @@ const RESET_IN_HR_MIN_PATTERN = /resets?\s+in\s+~?\s*(\d+(?:\.\d+)?)\s*hr\s*(\d+
 const WILL_RESET_AT_PATTERN =
 	/(?:will\s+)?reset at\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)/i;
 const CN_RESET_AT_PATTERN = /将在\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*重置/;
-const RESET_AT_PATTERNS: readonly RegExp[] = [WILL_RESET_AT_PATTERN, CN_RESET_AT_PATTERN];
+// Google Cloud Code Assist structured RPC error timestamp ("quotaResetTimeStamp": "2026-10-31T20:38:36Z")
+const GOOGLE_RPC_RESET_TIMESTAMP_PATTERN =
+	/"quotaResetTimeStamp":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z)"/i;
+const RESET_AT_PATTERNS: readonly RegExp[] = [
+	WILL_RESET_AT_PATTERN,
+	CN_RESET_AT_PATTERN,
+	GOOGLE_RPC_RESET_TIMESTAMP_PATTERN,
+];
 // "retry-after-ms=98497000" / "retry-after-ms: 7200000" / "retry-after-ms = 7200000"
 const RETRY_AFTER_MS_BODY_PATTERN = /\bretry-after-ms\s*[:=]\s*([0-9]+)\b/i;
 
@@ -96,7 +108,20 @@ export function extractRetryHint(
 		else retryNow = true;
 	};
 
-	const quotaMatch = QUOTA_RESET_PATTERN.exec(body);
+	// Prefer structured quota timing to a display-oriented reset message.
+	// Independent RetryInfo, timestamp, and header signals still participate.
+	const quotaResetDelay = GOOGLE_RPC_RESET_DELAY_PATTERN.exec(body);
+	const quotaResetDelayMs = quotaResetDelay?.[1]
+		? Math.floor(
+				Number(quotaResetDelay[2] ?? 0) * 3_600_000 +
+					Number(quotaResetDelay[3] ?? 0) * 60_000 +
+					Number(quotaResetDelay[4] ?? 0) * (quotaResetDelay[5]?.toLowerCase() === "ms" ? 1 : 1_000),
+			)
+		: undefined;
+	const hasStructuredQuotaDelay = quotaResetDelayMs !== undefined && Number.isFinite(quotaResetDelayMs);
+	if (hasStructuredQuotaDelay) considerClamped(quotaResetDelayMs);
+
+	const quotaMatch = hasStructuredQuotaDelay ? null : QUOTA_RESET_PATTERN.exec(body);
 	if (quotaMatch) {
 		const hours = quotaMatch[1] ? Number.parseInt(quotaMatch[1], 10) : 0;
 		const minutes = quotaMatch[2] ? Number.parseInt(quotaMatch[2], 10) : 0;
@@ -117,7 +142,7 @@ export function extractRetryHint(
 	}
 
 	// The generic reset-in pattern only captures the leading "2hr" of "Resets in 2hr 15min".
-	const compoundResetMatch = RESET_IN_HR_MIN_PATTERN.exec(body);
+	const compoundResetMatch = hasStructuredQuotaDelay ? null : RESET_IN_HR_MIN_PATTERN.exec(body);
 	if (compoundResetMatch?.[1] && compoundResetMatch[2]) {
 		const hours = Number.parseFloat(compoundResetMatch[1]);
 		const minutes = Number.parseFloat(compoundResetMatch[2]);
@@ -126,7 +151,7 @@ export function extractRetryHint(
 		}
 	}
 
-	const accountResetMatch = WILL_RESET_IN_PATTERN.exec(body);
+	const accountResetMatch = hasStructuredQuotaDelay ? null : WILL_RESET_IN_PATTERN.exec(body);
 	if (accountResetMatch?.[1]) {
 		const value = Number.parseFloat(accountResetMatch[1]);
 		if (Number.isFinite(value) && value > 0) {

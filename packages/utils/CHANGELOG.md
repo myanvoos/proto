@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `extractRetryHint` prefers structured `quotaResetDelay` Go durations (`30m`, `1h30m`) over shorter display text, so a 30-minute quota is no longer retried after two seconds (port of 3efa3bab9e)
+- Opening a corrupt store quarantines it and can now salvage readable rows from the quarantine copy (`salvageQuarantinedCredentials` in pi-ai and the session agent store use it); failures log the quarantine path and `.recover` instructions instead of silently emptying the store
+- `extractRetryHint` now parses Cloud Code Assist quota resets: `Resets in 71h48m47s`, structured `quotaResetTimeStamp` / `quotaResetDelay` bodies, and `quotaResetTimeStamp` in the `retry-after` path used by antigravity-cli 1.5.14+ (port of e482002caf)
+
 ## [20.2.2] - 2026-11-15
 
 ### Added

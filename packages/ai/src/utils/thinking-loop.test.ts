@@ -13,6 +13,16 @@ function detect(text: string, chunk: number): string | null {
 	return detector.flush();
 }
 
+/** Like {@link detect} but with the semantic heuristics enabled (near-duplicate and stall paths). */
+function detectSemantic(text: string, chunk: number): string | null {
+	const detector = new ThinkingLoopDetector(true);
+	for (let i = 0; i < text.length; i += chunk) {
+		const hit = detector.push(text.slice(i, i + chunk));
+		if (hit) return hit;
+	}
+	return detector.flush();
+}
+
 /** The verdict must be a function of the text alone, never of the chunking. */
 function verdicts(text: string): Set<string> {
 	return new Set(CHUNK_SIZES.map(chunk => detect(text, chunk) ?? "(none)"));
@@ -84,4 +94,53 @@ test("thinkingLoopDetail ignores unrelated failures", () => {
 test("spaced punctuation runaways are caught without flagging digit padding", () => {
 	expect(detect("?! ".repeat(600), 17)).toMatch(/repeated an exact/);
 	expect(detect("00 ".repeat(600), 17)).toBeNull();
+});
+
+test("does not trip on one-line JSON records (#11129)", () => {
+	const items = Array.from(
+		{ length: 100 },
+		(_, i) =>
+			`{"case_id": ${35350 + i}, "case_name": "case ${i + 1}", "case_url": "https://example.com/#/CaseEdit?fs_id=${35350 + i}", "case_sheet": 0}`,
+	);
+	expect(detectSemantic(`[TA_CASES]#{"cases": [${items.join(", ")}]}`, 20)).toBeNull();
+});
+
+test("does not trip on array-valued JSON fields (#11129)", () => {
+	const items = Array.from(
+		{ length: 100 },
+		(_, i) =>
+			`{"case_id": ${35350 + i}, "case_name": "case ${i + 1}", "steps": [1, 2, 3], "tags": ["auth", "login"], "case_sheet": 0}`,
+	);
+	expect(detectSemantic(`[TA_CASES]#{"cases": [${items.join(", ")}]}`, 20)).toBeNull();
+});
+
+test("does not trip on markdown table rows with prose cells", () => {
+	const rows = ["| case_id | status | note |", "| --- | --- | --- |"];
+	for (let i = 0; i < 150; i++) rows.push(`| ${35350 + i} | Verify the login page loads | Pass |`);
+	expect(detectSemantic(rows.join("\n"), 20)).toBeNull();
+});
+
+test("still trips on a reasoning loop whose lines name a union type", () => {
+	const lines = Array.from(
+		{ length: 80 },
+		(_, i) =>
+			`Attempt ${i}: the result is a ChartOptions | TableOptions | null union, so I will narrow it again before the next call.`,
+	);
+	expect(detectSemantic(lines.join("\n"), 20)).toContain("near-identical segments");
+});
+
+test("still trips on shell pipelines (a table row leads with a pipe)", () => {
+	const lines = Array.from(
+		{ length: 80 },
+		(_, i) => `Attempt ${i}: I will run cat report.log | grep case | wc -l and compare the count before I decide.`,
+	);
+	expect(detectSemantic(lines.join("\n"), 20)).toContain("near-identical segments");
+});
+
+test("still trips on a reasoning loop where half the lines are table rows", () => {
+	const paragraphs = Array.from(
+		{ length: 40 },
+		(_, i) => `| ${35350 + i} | case ${i + 1} | Verify the login page |\nI will check this row again, then move on.`,
+	);
+	expect(detectSemantic(paragraphs.join("\n\n"), 20)).toContain("near-identical segments");
 });

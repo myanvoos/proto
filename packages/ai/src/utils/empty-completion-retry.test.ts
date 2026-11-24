@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import * as AIError from "../error";
 import type { AssistantMessage, AssistantMessageEvent, Context, Usage } from "../types";
-import { withReplaySafeStreamRetry } from "./empty-completion-retry";
+import { transportExhaustedMessages, withReplaySafeStreamRetry } from "./empty-completion-retry";
 import { AssistantMessageEventStream } from "./event-stream";
 
 const ZERO_USAGE: Usage = {
@@ -146,6 +146,59 @@ describe("withReplaySafeStreamRetry", () => {
 		expect(events.filter(event => event.type === "start")).toHaveLength(1);
 		expect(events.some(event => event.type === "toolcall_start" || event.type === "toolcall_end")).toBe(false);
 		expect(result.content).toEqual([{ type: "text", text: "hello" }]);
+	});
+
+	it("does not replay an error whose HTTP status the transport already retried to exhaustion", async () => {
+		// Replaying would multiply the transport's whole retry budget; the
+		// provider marks only those errors, never in-band stream errors.
+		let attempts = 0;
+		const stream = withReplaySafeStreamRetry(
+			"test-model",
+			EMPTY_CONTEXT,
+			{ providerRetryWait: async () => {} },
+			() => {
+				attempts++;
+				const message = emptyMessage();
+				message.stopReason = "error";
+				message.errorStatus = 500;
+				message.errorMessage = "500 upstream exploded";
+				transportExhaustedMessages.add(message);
+				return streamFromEvents([
+					{ type: "start", partial: message },
+					{ type: "error", reason: "error", error: message },
+				]);
+			},
+			{ retryProviderErrors: true, maxProviderErrorRetries: 1 },
+		);
+
+		await drain(stream);
+		expect(attempts).toBe(1);
+	});
+
+	it("replays an in-band 429 that the transport did not mark as exhausted", async () => {
+		let attempts = 0;
+		const stream = withReplaySafeStreamRetry(
+			"test-model",
+			EMPTY_CONTEXT,
+			{ providerRetryWait: async () => {} },
+			() => {
+				attempts++;
+				if (attempts > 1) return textAttempt("hello");
+				const message = emptyMessage();
+				message.stopReason = "error";
+				message.errorStatus = 429;
+				message.errorMessage = "429 rate limit exceeded";
+				return streamFromEvents([
+					{ type: "start", partial: message },
+					{ type: "error", reason: "error", error: message },
+				]);
+			},
+			{ retryProviderErrors: true, maxProviderErrorRetries: 1 },
+		);
+
+		const events = await drain(stream);
+		expect(attempts).toBe(2);
+		expect(events.at(-1)?.type).toBe("done");
 	});
 
 	it("does not retry a provider error once a tool-call argument delta committed the attempt", async () => {

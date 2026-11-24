@@ -148,6 +148,33 @@ export function applyModelPolicy<TApi extends Api>(source: ModelSpec<TApi>): Mod
 		model.maxContextWindow = Math.max(model.maxContextWindow ?? 0, 922_000);
 		if (model.provider === "openai") model.cost = tier(model.cost, 272_000, 2, 1.5);
 	}
+	// Exact deployment contract: the official Terra API supports reasoning
+	// `none`; disabling reasoning must not fall back to its lowest `low` tier.
+	// https://developers.openai.com/api/docs/models/gpt-6.1-terra
+	if (model.provider === "openai" && model.api === "openai-responses" && id === "gpt-6.1-terra") {
+		const openai = model as ModelSpec<"openai-responses">;
+		openai.compat = { ...openai.compat, reasoningDisableMode: "none-effort" };
+	}
+	// Mistral spells GLM 5.3 with a dash (`zai-glm-5-3`, `zai-glm-5-3-flash`) and
+	// documents the lineage's low/high/max ladder; Large 4 accepts only
+	// low/medium/high and rejects minimal/xhigh/max rather than aliasing them
+	// (docs.mistral.ai/inference/conversations/reasoning).
+	if (model.reasoning && /glm-5-3(?:-flash)?$/.test(id)) {
+		model.thinking = {
+			...model.thinking,
+			mode: model.thinking?.mode ?? "effort",
+			efforts: [Effort.Low, Effort.High, Effort.Max],
+			defaultLevel: Effort.Max,
+			requiresEffort: true,
+		};
+	}
+	if (model.provider === "mistral" && model.reasoning && /^mistral-large-4(?:-|$)/.test(id)) {
+		model.thinking = {
+			...model.thinking,
+			mode: model.thinking?.mode ?? "effort",
+			efforts: [Effort.Low, Effort.Medium, Effort.High],
+		};
+	}
 	if (["minimax", "minimax-cn", "minimax-code", "minimax-code-cn"].includes(model.provider) && id === "MiniMax-M3") {
 		model.cost = tier(model.cost, 512_000, 2);
 	}
@@ -172,6 +199,10 @@ export function applyModelPolicy<TApi extends Api>(source: ModelSpec<TApi>): Mod
 	}
 	if (model.provider === "cursor" && id.startsWith("deepseek-v41-flash-1017")) {
 		model.cost = { input: 0.3, output: 1.2, cacheRead: 0.006, cacheWrite: 0 };
+	}
+	// GPT-5.1: $1.25/$10.00, cache read $0.125.
+	if (model.provider === "cursor" && /^gpt-5\.1(?:-high|-low)?$/.test(id)) {
+		model.cost = { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 };
 	}
 	if (model.provider === "google" && /(?:^|[/-])gemma-?4(?:[-.]|$)/i.test(id)) {
 		model.reasoning = true;

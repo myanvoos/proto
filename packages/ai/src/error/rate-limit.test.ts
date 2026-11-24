@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isBillingCapUsageLimit } from "./rate-limit";
+import { isBillingCapUsageLimit, parseRateLimitReason } from "./rate-limit";
 
 describe("isBillingCapUsageLimit", () => {
 	const lithos =
@@ -20,6 +20,18 @@ describe("isBillingCapUsageLimit", () => {
 				"429 You exceeded your current quota, please check your plan and billing details. For details, see: https://help.aliyun.com/zh/model-studio/error-code#token-limit\nYou exceeded your current quota, please check your plan and billing details. For details, see: https://help.aliyun.com/zh/model-studio/error-code#token-limit (type=insufficient_quota param=insufficient_quota)",
 			),
 		).toBe(false);
+	});
+
+	it("treats structured INSUFFICIENT_G1_CREDITS_BALANCE as a billing cap", () => {
+		const body = `{"error":{"status":"RESOURCE_EXHAUSTED","message":"Credit balance is unavailable","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INSUFFICIENT_G1_CREDITS_BALANCE","domain":"cloudcode-pa.googleapis.com"}]}}`;
+		expect(parseRateLimitReason(body)).toBe("INSUFFICIENT_G1_CREDITS_BALANCE");
+		expect(isBillingCapUsageLimit(429, body)).toBe(true);
+	});
+
+	it("keeps a structured 30-minute quota reset out of the billing lane", () => {
+		const body = `{"error":{"status":"RESOURCE_EXHAUSTED","message":"Resets in 2s.","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"RATE_LIMIT_EXCEEDED","domain":"cloudcode-pa.googleapis.com","metadata":{"quotaResetDelay":"30m"}}]}}`;
+		expect(parseRateLimitReason(body)).toBe("QUOTA_EXHAUSTED");
+		expect(isBillingCapUsageLimit(429, body)).toBe(false);
 	});
 
 	it("keeps transient throttles and non-billing bodies out", () => {

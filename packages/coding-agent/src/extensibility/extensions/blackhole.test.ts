@@ -4,11 +4,37 @@ import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import {
+	buildMemoryLiveContext,
 	compileSummary,
 	MEMORY_THINKING_LEVEL,
 	resolveMemoryModelCandidates,
 } from "../../vendor/pi-blackhole/index.js";
 import { runExtensionCompact } from "./compact-handler";
+
+test("memory calls reuse the live system prompt and messages as a cache-hit prefix", () => {
+	const live = buildMemoryLiveContext({
+		getSystemPrompt: () => ["Live system prompt"],
+		sessionManager: {
+			getBranch: () => [
+				{ type: "message", message: { role: "user", content: "first" } },
+				{ type: "compaction", summary: "not a provider message" },
+				{ type: "message", message: { role: "assistant", content: "second" } },
+			],
+		},
+	});
+
+	expect(live).toEqual({
+		systemPrompt: ["Live system prompt"],
+		messages: [
+			{ role: "user", content: "first" },
+			{ role: "assistant", content: "second" },
+		],
+	});
+});
+
+test("memory calls fall back to their own prompt when the live prefix is unavailable", () => {
+	expect(buildMemoryLiveContext({})).toBeUndefined();
+});
 
 test("memory workers use a provider-compatible thinking effort", () => {
 	expect(MEMORY_THINKING_LEVEL).toBe("low");

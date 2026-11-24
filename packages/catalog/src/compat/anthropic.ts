@@ -167,7 +167,10 @@ export function buildAnthropicCompat(spec: ModelSpec<"anthropic-messages">): Res
 			midConversationControls ||
 			(official && parsed?.kind !== "sonnet" && supportsMidConversationSystemMessages(spec.id)),
 		supportsTurnScopedSystem: midConversationControls,
-		supportsMidConversationToolChanges: midConversationControls,
+		// Vertex rejects `tool_removal`/`tool_addition` blocks with 400 `Input tag
+		// 'tool_removal' ... does not match any of the expected tags` while it
+		// accepts `mid_conv_system`.
+		supportsMidConversationToolChanges: midConversationControls && spec.provider !== "google-vertex",
 		supportsPerMessageEffort: controlProvider && (claudeRevisionAtLeast(parsed, "5", "5.1") || haiku55),
 		supportsThinkingBindingControls:
 			controlProvider &&

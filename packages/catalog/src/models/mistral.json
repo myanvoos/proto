@@ -1599,12 +1599,9 @@
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
 				"medium",
-				"high",
-				"xhigh",
-				"max"
+				"high"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1683,12 +1680,9 @@
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
 				"medium",
-				"high",
-				"xhigh",
-				"max"
+				"high"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -1767,12 +1761,9 @@
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
 				"medium",
-				"high",
-				"xhigh",
-				"max"
+				"high"
 			]
 		},
 		"requiresGlyphTokenization": false,
@@ -3212,13 +3203,12 @@
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
-				"medium",
 				"high",
-				"xhigh",
 				"max"
-			]
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",
@@ -3297,13 +3287,12 @@
 		"thinking": {
 			"mode": "effort",
 			"efforts": [
-				"minimal",
 				"low",
-				"medium",
 				"high",
-				"xhigh",
 				"max"
-			]
+			],
+			"defaultLevel": "max",
+			"requiresEffort": true
 		},
 		"requiresGlyphTokenization": false,
 		"tokenizer": "glm5",

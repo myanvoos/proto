@@ -104,3 +104,17 @@ describe("Muse Code tool-name prefix", () => {
 		expect(meta.toolNamePrefix).toBeUndefined();
 	});
 });
+
+describe("OpenRouter Claude reasoning replay (port of 4df653426f)", () => {
+	test("chat completions path keeps Claude's reasoning history", () => {
+		const claude = buildOpenRouterCompat(openRouterSpec("anthropic/claude-sonnet-4.6"));
+		expect(claude.filterReasoningHistory).toBe(false);
+	});
+
+	test("Responses path keeps Claude's reasoning history", () => {
+		const claude = buildOpenAIResponsesCompat(
+			responsesSpec("openrouter", "anthropic/claude-sonnet-4.6", "https://openrouter.ai/api/v1"),
+		);
+		expect(claude.filterReasoningHistory).toBe(false);
+	});
+});

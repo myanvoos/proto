@@ -5,8 +5,10 @@ import {
 	annotateSqliteError,
 	isSqliteBusyError,
 	isSqliteCorruptionError,
+	openQuarantinedStoreForSalvage,
 	openSqliteDatabase,
 	openSqliteDatabaseSync,
+	readSalvageableRows,
 } from "./sqlite";
 import { TempDir } from "./temp";
 
@@ -178,3 +180,61 @@ test("a non-corruption init failure on a store that fails quick_check is preserv
 	expect(backups).toHaveLength(1);
 	expect(fs.readFileSync(dir.join(backups[0]!))).toEqual(damaged);
 });
+
+test("salvage opens a copy of a store whose header page count is torn, leaving the original untouched", () => {
+	using dir = TempDir.createSync("@proto-sqlite-salvage-");
+	const dbPath = dir.join("store.db");
+	const seed = new Database(dbPath);
+	seed.run("PRAGMA journal_mode=WAL");
+	seed.run("CREATE TABLE secrets (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+	seed.run("BEGIN");
+	for (let i = 1; i <= 200; i++)
+		seed.run("INSERT INTO secrets (id, value) VALUES (?, ?)", [i, `v${i}-${"x".repeat(200)}`]);
+	seed.run("COMMIT");
+	seed.run("PRAGMA wal_checkpoint(TRUNCATE)");
+	seed.close();
+	// Page 1 declares one more page than the file holds, so every statement fails.
+	const fd = fs.openSync(dbPath, "r+");
+	try {
+		const header = Buffer.alloc(100);
+		fs.readSync(fd, header, 0, 100, 0);
+		header.writeUInt32BE(fs.statSync(dbPath).size / header.readUInt16BE(16) + 1, 28);
+		fs.writeSync(fd, header, 28, 4, 28);
+	} finally {
+		fs.closeSync(fd);
+	}
+	const original = fs.readFileSync(dbPath);
+	const probe = new Database(dbPath);
+	try {
+		expect(isSqliteCorruptionError(failureSync(() => probe.query("SELECT count(*) FROM secrets").get()))).toBe(true);
+	} finally {
+		probe.close();
+	}
+
+	let copyPath: string;
+	{
+		using source = openQuarantinedStoreForSalvage(dbPath);
+		expect(source.headerRepaired).toBe(true);
+		copyPath = source.db.filename;
+		const rows = readSalvageableRows<{ id: number; value: string }>(source.db, "secrets", "id, value");
+		expect(rows.map(row => row.id)).toEqual(Array.from({ length: 200 }, (_, i) => i + 1));
+	}
+	expect(fs.existsSync(copyPath)).toBe(false);
+	expect(fs.readFileSync(dbPath).equals(original)).toBe(true);
+});
+
+test("salvage of an unreadable file throws", () => {
+	using dir = TempDir.createSync("@proto-sqlite-salvage-garbage-");
+	const dbPath = dir.join("store.db");
+	fs.writeFileSync(dbPath, Buffer.alloc(8192, 0x41));
+	expect(() => openQuarantinedStoreForSalvage(dbPath)).toThrow();
+});
+
+function failureSync(run: () => unknown): unknown {
+	try {
+		run();
+	} catch (error) {
+		return error;
+	}
+	throw new Error("expected the statement to fail");
+}

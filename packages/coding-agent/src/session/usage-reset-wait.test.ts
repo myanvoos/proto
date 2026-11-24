@@ -45,6 +45,23 @@ function reply(extra: Partial<AssistantMessage>): AssistantMessage {
 	};
 }
 
+// Google RPC errors carry an authoritative Go-duration reset in structured
+// metadata; the display message can name a much shorter wait.
+const THIRTY_MINUTE_QUOTA_ERROR = `429 Cloud Code Assist API error: ${JSON.stringify({
+	error: {
+		status: "RESOURCE_EXHAUSTED",
+		message: "Resets in 2s.",
+		details: [
+			{
+				"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+				reason: "RATE_LIMIT_EXCEEDED",
+				domain: "cloudcode-pa.googleapis.com",
+				metadata: { quotaResetDelay: "30m" },
+			},
+		],
+	},
+})}`;
+
 describe("retry.waitForUsageReset", () => {
 	let session: AgentSession | undefined;
 	let authStorage: AuthStorage | undefined;
@@ -103,9 +120,13 @@ describe("retry.waitForUsageReset", () => {
 			}),
 			modelRegistry: new ModelRegistry(authStorage),
 		});
+		const retryFinalErrors: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_end" && event.finalError !== undefined) retryFinalErrors.push(event.finalError);
+		});
 		await session.prompt("go");
 		await session.waitForIdle();
-		return { calls, sleeps, last: session.messages.at(-1) as AssistantMessage };
+		return { calls, sleeps, last: session.messages.at(-1) as AssistantMessage, retryFinalErrors };
 	}
 
 	it("sleeps through a provider-stated usage-limit reset past retry.maxDelayMs", async () => {
@@ -147,6 +168,36 @@ describe("retry.waitForUsageReset", () => {
 
 		expect(result.calls).toBe(1);
 		expect(result.last.stopReason).toBe("error");
+	});
+
+	it("waits out a structured 30-minute quota reset within retry.maxDelayMs", async () => {
+		// The 2s display text must not override the authoritative 30m metadata.
+		const result = await run(THIRTY_MINUTE_QUOTA_ERROR, false, 1, { "retry.maxDelayMs": 2_000_000 });
+
+		expect(result.sleeps.some(delayMs => delayMs >= 1_800_000)).toBe(true);
+		expect(result.calls).toBe(2);
+		expect(result.last.stopReason).toBe("stop");
+	});
+
+	it("waits past a structured quota reset cap when the opt-in is set", async () => {
+		// With retry.waitForUsageReset, the authoritative 30m metadata outranks
+		// the configured cap instead of failing the turn.
+		const result = await run(THIRTY_MINUTE_QUOTA_ERROR, true, 1, { "retry.maxDelayMs": 1_000_000 });
+
+		expect(result.sleeps.some(delayMs => delayMs >= 1_800_000)).toBe(true);
+		expect(result.calls).toBe(2);
+		expect(result.last.stopReason).toBe("stop");
+	});
+
+	it("fails fast on a structured 30-minute quota reset past retry.maxDelayMs", async () => {
+		const result = await run(THIRTY_MINUTE_QUOTA_ERROR, false, 1, { "retry.maxDelayMs": 1_000_000 });
+
+		expect(result.sleeps).toEqual([]);
+		expect(result.calls).toBe(1);
+		expect(result.last.stopReason).toBe("error");
+		expect(
+			result.retryFinalErrors.some(error => error.includes("1800000ms wait, exceeds retry.maxDelayMs (1000000ms)")),
+		).toBe(true);
 	});
 
 	it("fails fast on an out-of-credit balance even when retry.maxDelayMs covers the quota guess", async () => {

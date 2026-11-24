@@ -3,7 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getPluginsDir } from "@oh-my-pi/pi-utils";
-import { getEnabledPlugins, readProjectPluginOverrides, resolvePluginManifestEntries } from "./loader";
+import {
+	getEnabledPlugins,
+	readProjectPluginOverrides,
+	resolvePluginExtensionPaths,
+	resolvePluginManifestEntries,
+} from "./loader";
 import type { InstalledPlugin } from "./types";
 
 const tempDirs: string[] = [];
@@ -55,6 +60,33 @@ test("plugin manifest entries cannot escape through a symlink", async () => {
 	};
 
 	expect(resolvePluginManifestEntries(plugin, "commands")).toEqual([{ entry: "command.ts", resolvedPath: null }]);
+});
+
+test("non-string manifest entries are reported as unresolved and valid siblings still resolve", async () => {
+	const pluginRoot = await makeTempDir("proto-plugin-manifest-nonstring-");
+	await Bun.write(path.join(pluginRoot, "index.js"), "export default function () {};\n");
+	// Manifest JSON is not validated at read time, so an entry can be an object
+	// or null. `path.join` used to throw ERR_INVALID_ARG_TYPE here and abort
+	// extension loading for every plugin.
+	const plugin: InstalledPlugin = {
+		name: "fixture-plugin",
+		version: "1.0.0",
+		path: pluginRoot,
+		manifest: {
+			version: "1.0.0",
+			extensions: [{ path: "./index.js" }, null, "./index.js"] as unknown as string[],
+		},
+		enabledFeatures: null,
+		enabled: true,
+	};
+	const indexPath = await fs.realpath(path.join(pluginRoot, "index.js"));
+
+	expect(resolvePluginManifestEntries(plugin, "extensions")).toEqual([
+		{ entry: '{"path":"./index.js"}', resolvedPath: null },
+		{ entry: "null", resolvedPath: null },
+		{ entry: "./index.js", resolvedPath: indexPath },
+	]);
+	expect(resolvePluginExtensionPaths(plugin)).toEqual([indexPath]);
 });
 
 test("invalid project overrides fail closed before project-controlled plugins load", async () => {

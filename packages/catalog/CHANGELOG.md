@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude models on OpenRouter keep their thinking between tool calls again: the bundled rows no longer force reasoning-history filtering, and the compat resolver no longer hard-codes it for Anthropic rows (port of 4df653426f)
+- GPT-6.1 Terra sends `reasoning_effort=none` (not `lowest`) when reasoning is disabled; OpenAI rows only (port of 03f6225894)
+- Vertex-hosted Claude models no longer accept mid-conversation tool-set changes (request-side 400s), matching the rest of Anthropic's Vertex serving (port of 795f61681a)
+- GLM 5.3 gets its `low`/`high`/`max` effort ladder (and required effort) and Mistral Large 4 gets `low`/`medium`/`high` in the bundled data (port of a03a7fdbed)
+- The GitHub Copilot `/models` roster is authoritative again: models the account has disabled are no longer offered (port of 91276dc62a)
+- Cursor pricing for gpt-5.1 / gpt-5.1-high / gpt-5.1-low corrected to $1.25/$10 (port of 48f93242b3)
+- GitHub Copilot's provider descriptor now marks dynamic models authoritative, matching its model manager options
+
 ## [20.2.2] - 2026-11-15
 
 ### Added

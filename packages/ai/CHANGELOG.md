@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Mistral 429s that report a zero request allowance fail fast instead of burning transport retries, and carry the allowance header in the surfaced error (port of 03a02d0926)
+- Statusless "stream interrupted" gateway errors are transient and retriable again, while the same wording with an HTTP 4xx stays terminal (port of 49543a3a3a)
+- Structured Google RPC quota timing wins over display text: `quotaResetDelay: "30m"` means a 30-minute wait, and `INSUFFICIENT_G1_CREDITS_BALANCE` is a billing cap (port of 3efa3bab9e)
+- OpenAI completions streams whose provider error is replayed to the client are no longer retried a second time when the transport already exhausted its retry budget on a transient HTTP status (in-band 429/5xx inside a 200 stream keeps its one replay) (part of [#20215](https://github.com/can1357/oh-my-pi/pull/20215) by @JamieJ5926)
+- Replayed OpenRouter Responses reasoning items keep `id`, `format` and `signature`, so Gemini thought signatures survive long tool loops instead of being dropped on replay (port of 8333b958b9)
+- The thinking-loop guard no longer flags structured answer content (JSON records, JSON arrays of scalars, GFM tables) as a reasoning loop; prose tables leads-with-pipe rules still apply (port of 7d494eb5a9 + 92e16e31ca + a66b3c77f5)
+- Gemini planning-header runaway is now interrupted after 64 consecutive headers instead of 36 (port of a991e045ef)
+- antigravity-cli (agy ≥ 1.5.14) quota notices now fail the turn as a 429 with the account's reset window instead of a normal reply, so exhausted accounts actually rotate; notices split across stream chunks are recognized, and the reset window is parsed from `Resets in …` bodies (port of 23eb0ceb9f, ebeae304fa, 1ed084c6d5, e482002caf)
+- Synthetic weekly-only plans report their weekly usage again instead of none: the weekly `plan` payload is read as `synthetic:usd:7d` (port of 5a7e50b2c6)
+- Provider error messages containing "stream stalled" are treated as timeouts for retry and failover classification (port of f241b9824f)
+- 402 billing bodies (`billing_error`, `billing_not_configured`, "requires more credits", and the matching JSON `code`/`type` fields) classify as usage limits, so rotation runs instead of stopping on the error (port of 34c8e4ecb1)
+- Leaked DSML markup inside tool-call string arguments and in replayed Responses payloads is stripped instead of reaching the model or the wire (port of 754b60f687)
+
 ## [20.2.2] - 2026-11-15
 
 ### Added
