@@ -94,6 +94,8 @@ import {
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
 
 const ACP_DEFAULT_MODE_ID = "default";
+/** `agentCapabilities._meta` key advertising `_session/steering`, in proto's `_proto/*` extension namespace. */
+const STEERING_CAPABILITY_META_KEY = "proto/steering";
 const MODE_CONFIG_ID = "mode";
 const MODEL_CONFIG_ID = "model";
 const THINKING_CONFIG_ID = "thinking";
@@ -718,6 +720,8 @@ export class AcpAgent implements Agent {
 				version: VERSION,
 			},
 			authMethods,
+			// Legacy copy of the steering advertisement for clients that read it here, before it moved into
+			// agentCapabilities._meta under a namespaced key as ACP's extensibility rules ask.
 			_meta: { steering: { supported: true } },
 			agentCapabilities: {
 				loadSession: true,
@@ -731,10 +735,13 @@ export class AcpAgent implements Agent {
 				},
 				sessionCapabilities: {
 					list: {},
+					// session/fork is in ACP's unstable schema: stable clients ignore the key, and T3 Code enables
+					// thread forking from it.
 					fork: {},
 					resume: {},
 					close: {},
 				},
+				_meta: { [STEERING_CAPABILITY_META_KEY]: { supported: true } },
 			},
 		};
 	}

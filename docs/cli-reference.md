@@ -243,6 +243,12 @@ While session recovery retries a failing provider, each attempt is sent as an `a
 
 ACP clients receive automatic compaction transitions as `_proto/compaction/start` and `_proto/compaction/end` extension notifications, including maintenance outside an active prompt. Start carries `sessionId`, `reason`, and `action`; end carries `sessionId`, `action`, `aborted`, and `willRetry`, with optional `skipped`, `errorMessage`, and `tokensBefore`. Transitions that occur during session startup are delivered in order after bootstrap updates.
 
+#### ACP capabilities
+
+- `agentCapabilities._meta["proto/steering"]` advertises the `_session/steering` extension method. `_meta.steering` at the root of the `initialize` result is a deprecated copy for clients that read it there.
+- `sessionCapabilities.fork` advertises `session/fork`, which is part of ACP's unstable schema. Stable clients ignore it, and T3 Code uses it to offer thread forking.
+- `session/prompt` results include `usage` token counts, also from ACP's unstable schema. Stable clients ignore the field.
+
 ## Subcommands
 
 Run `proto <command> --help` for each command's own flags and examples.
