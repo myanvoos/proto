@@ -6,8 +6,23 @@
 
 - `/model` can remove a configured provider: with the provider focused in the sidebar, Delete (or Backspace with an empty search) offers `log out`, which deletes its stored credentials, and `disable`, which adds it to `disabledProviders` so env-var, `models.yml` and keyless providers can be hidden too. Disabled model providers are listed in a Disabled section, where Enter re-enables them. The toggle edits only bare IDs in `config.yml`, keeps path-scoped entries, and reports when project settings decide the list instead.
 
+### Changed
+
+- ACP errors use the spec's codes: a request before `initialize` gets -32600; an unknown or closed session, including `session/load`, `session/resume` and `session/fork` of a missing one, gets -32002 with `data.sessionId`; an unknown mode or a bad `session/list` cursor gets -32602. Internal errors (-32603) now state the reason in the message and keep the full text in `data.details`.
+- Over ACP, a provider that rejects its credentials (HTTP 401, or a 403 that is not a usage limit) now fails the prompt with -32603 and `data.reason: "provider_auth"` plus the provider, model and HTTP status. It is -32000 only when the client supports terminal auth, which can fix it. `authenticate` with the `agent` method now checks that the open sessions' models have credentials instead of always succeeding.
+- `proto acp` now exits before the handshake on an unknown short flag or an argument containing a space, such as `"--model a/b"` passed as one argument, and prints a hint to pass the flag and its value separately. Unknown long flags fail session creation and are reported on stderr. ACP clients that pass a flag and its value as one argument must split them.
+- ACP terminal auth (`--acp-terminal-auth`) runs only the provider sign-in step and exits (0 once a usable model exists) instead of opening the full TUI.
+- The ACP `initialize` response advertises steering under `agentCapabilities._meta["proto/steering"]`, keeping the root `_meta.steering` as a deprecated copy. Session `_meta` keys are now `proto/messageCount` and `proto/size`.
+
 ### Fixed
 
+- ACP clients no longer loop on "Agent is already processing": a prompt turn stays open until the session is idle, through provider retries and continuations; a prompt that arrives during a run no prompt owns interrupts it and then runs; and `session/prompt` is never answered with the busy error (-32003).
+- ACP `session/cancel` waits for the abort, marks tool calls still shown as running `failed`, and only then answers `cancelled`. A cancel-cleanup timeout no longer silently closes the session.
+- ACP honors `$/cancel_request`: a cancelled prompt answers `cancelled` and other requests answer -32800. Elicitation forms that proto abandons are withdrawn from the client.
+- Python state capture, and with it session dispose, no longer fails every turn when a spilled python-store payload was lost; the newest intact row is used.
+- ACP tool calls report `in_progress` from the moment they start and send their output once. File writes from kernel cells and shell redirects show as `edit` diffs with locations, think-style tools use the `think` kind and recall uses `search`, and `rawOutput` over 64 KiB is trimmed.
+- ACP `resource_link` and embedded `resource` prompt blocks keep their path or URI, so the model knows which file was linked.
+- ACP `session/load` replays the visible conversation, including history from before a compaction, instead of the post-compaction model context. Compaction summaries and developer, hook and hidden messages no longer replay as user messages, and the bootstrap `session_info_update.updatedAt` is the session's last modification.
 - Blackhole's memory calls now reuse the live system prompt and messages as a cache-hit prefix, with the memory instruction appended as a system reminder, instead of a cold summarizer prompt
 - Provider-stated usage-limit waits within `retry.maxDelayMs` are allowed, while billing caps — including structured `INSUFFICIENT_G1_CREDITS_BALANCE` — fail fast after credential and model fallbacks instead of sleeping a guessed window (port of 3efa3bab9e)
 - The embedded shell no longer leaves a URL literal when a directory merely named `proto` is an operand; `proto` (and `omp` alongside oh-my-pi) keeps its own URLs untouched through `nice`/`npx`/`sudo`

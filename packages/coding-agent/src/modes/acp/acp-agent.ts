@@ -795,7 +795,7 @@ export class AcpAgent implements Agent {
 				type: "terminal",
 				id: TERMINAL_AUTH_METHOD_ID,
 				name: "Set up Proto in terminal",
-				description: "Launch the proto TUI to add provider keys and select models.",
+				description: "Sign in to a model provider in a terminal, then return.",
 				args: [ACP_TERMINAL_AUTH_FLAG],
 			});
 		}
