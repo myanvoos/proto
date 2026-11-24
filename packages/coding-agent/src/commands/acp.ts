@@ -20,9 +20,11 @@ export default class Acp extends Command {
 			}
 			throw error;
 		}
-		if (!terminalAuth) {
-			parsed.mode = "acp";
+		if (terminalAuth) {
+			await runRootCommand(parsed, args, { acpTerminalAuth: true });
+			return;
 		}
+		parsed.mode = "acp";
 		await runRootCommand(parsed, args);
 	}
 }

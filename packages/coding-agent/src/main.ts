@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { createInterface } from "node:readline/promises";
 import { EventLoopKeepalive, type ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
+import { ProcessTerminal, TUI } from "@oh-my-pi/pi-tui";
 import { parseMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
 import { fuzzyFilter } from "@oh-my-pi/pi-tui/fuzzy";
 import { parseSpinnerInterval } from "@oh-my-pi/pi-tui/spinner-clock";
@@ -80,13 +81,15 @@ import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import type { MCPManager } from "./mcp";
+import { ACP_TERMINAL_AUTH_FLAG, finishTerminalAuth, terminalAuthArgs } from "./modes/acp/terminal-auth";
 import { adoptIndependentRoot } from "./modes/controllers/foreground-session";
 import { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "./modes/setup-version";
 import type * as SetupWizardModule from "./modes/setup-wizard";
-import type { SetupScene } from "./modes/setup-wizard";
+import type { SetupScene, SetupWizardOutcome } from "./modes/setup-wizard";
+import { runProvidersSetupStep } from "./modes/setup-wizard/lazy";
 import { buildSkillCommandPrompt } from "./modes/skill-command";
 import {
 	applyStartupComposerPreferences,
@@ -141,6 +144,7 @@ import { parseThinkingLevel } from "./thinking";
 import { sanitizeDisplayWarnings } from "./tools/render-utils";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
+import { openPath } from "./utils/open";
 
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
@@ -617,6 +621,28 @@ async function runInteractiveMode(
 		// Not the startup `session`: switching sessions can swap a different AgentSession into the foreground.
 		await submitInteractiveInput(mode, mode.session, input);
 	}
+}
+
+/**
+ * ACP terminal auth: the client shows this process in a terminal and waits for it to exit. Run only the
+ * provider sign-in step, on a bare terminal UI rather than the session interface, so nothing but that
+ * step is ever drawn. Resolves to the exit status.
+ */
+async function runTerminalAuthSignIn(session: AgentSession): Promise<number> {
+	const ui = new TUI(new ProcessTerminal());
+	ui.start();
+	let outcome: SetupWizardOutcome;
+	try {
+		outcome = await runProvidersSetupStep({ ui, settings: session.settings, session, openInBrowser: openPath });
+	} finally {
+		// Nothing awaited between the step closing and stop(): the screen goes back as it was, unpainted.
+		ui.stop();
+	}
+	// The step saves choices such as the web search provider through a debounced write; land it before exit.
+	await session.settings.flush();
+	const availableModels = session.modelRegistry.getAvailable().length;
+	await session.dispose();
+	return finishTerminalAuth(outcome, availableModels);
 }
 
 type SessionPromptResult = "accepted" | "declined" | "unavailable";
@@ -1461,6 +1487,8 @@ interface RunRootCommandDependencies {
 	createForeignSessionStore?: (source: ForeignSessionSource) => ForeignSessionStore;
 	settings?: Settings;
 	forceSetupWizard?: boolean;
+	/** `--acp-terminal-auth`: show only the provider sign-in step, then exit with its result. */
+	acpTerminalAuth?: boolean;
 }
 async function reuseLocalAuthStorage(settingsInstance: Settings): Promise<AuthStorage | undefined> {
 	const storage = settingsInstance.getStorage();
@@ -1524,9 +1552,15 @@ function missingInteractiveStreams(): string[] {
 	return missing;
 }
 
-function interactiveTerminalRequiredMessage(missing: readonly string[]): string {
+function interactiveTerminalRequiredMessage(missing: readonly string[], terminalAuth: boolean): string {
 	const subject =
 		missing.length === 1 ? `${missing[0]} is not a terminal` : `${missing.join(" and ")} are not terminals`;
+	if (terminalAuth) {
+		return (
+			`${BINARY_NAME} acp ${ACP_TERMINAL_AUTH_FLAG} signs in through an interactive terminal (${subject}).\n` +
+			"ACP clients run it in a terminal they show to the user.\n"
+		);
+	}
 	return (
 		`${BINARY_NAME} requires an interactive TTY to start its interface (${subject}).\n` +
 		`Run a one-shot prompt instead: ${BINARY_NAME} -p "your prompt"\n` +
@@ -1550,7 +1584,8 @@ export async function runRootCommand(
 	try {
 		await logger.time("initTheme:initial", ensureTheme);
 
-		const parsedArgs = parsed;
+		const terminalAuth = deps.acpTerminalAuth === true;
+		const parsedArgs = terminalAuth ? terminalAuthArgs(parsed) : parsed;
 		const explicitSessionSelection = Boolean(
 			parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || isForeignSessionImport(parsedArgs),
 		);
@@ -1601,7 +1636,8 @@ export async function runRootCommand(
 
 		const isProtocolMode = mode === "rpc" || mode === "rpc-ui" || mode === "acp";
 
-		const pipedInput = isProtocolMode ? undefined : await logger.time("readPipedInput", readPipedInput);
+		const pipedInput =
+			isProtocolMode || terminalAuth ? undefined : await logger.time("readPipedInput", readPipedInput);
 		const autoPrint = pipedInput !== undefined && !parsedArgs.print && parsedArgs.mode === undefined;
 		const isInteractive = !parsedArgs.print && !autoPrint && parsedArgs.mode === undefined;
 
@@ -1617,7 +1653,7 @@ export async function runRootCommand(
 			if (missing.length > 0) {
 				stopPendingStartupComposer();
 				stopStartupWatchdog();
-				process.stderr.write(interactiveTerminalRequiredMessage(missing));
+				process.stderr.write(interactiveTerminalRequiredMessage(missing, terminalAuth));
 				process.exit(1);
 			}
 		}
@@ -2110,7 +2146,8 @@ export async function runRootCommand(
 					extensionsResult.runtime.flagValues.set(name, value);
 				},
 			};
-			const initialArgs = applyExtensionFlags(extensionFlagSink, rawArgs) ?? parsedArgs;
+			const extensionArgs = applyExtensionFlags(extensionFlagSink, rawArgs) ?? parsedArgs;
+			const initialArgs = terminalAuth ? terminalAuthArgs(extensionArgs) : extensionArgs;
 			normalizeContinueSessionArgs(initialArgs, rawArgs);
 			const startupSessionFile = sessionManager?.getSessionFile();
 			if (isInteractive && startupSessionFile) {
@@ -2156,14 +2193,16 @@ export async function runRootCommand(
 				stdinContent: pipedInput,
 			});
 
-			const startupChangelogPromise = isInteractive
-				? logger.time(
-						"main:getChangelogForDisplay",
-						getChangelogForDisplay,
-						parsedArgs,
-						settingsInstance.get("startup.changelogMode"),
-					)
-				: undefined;
+			// Resolving the changelog records it as seen; a sign-in run never shows it.
+			const startupChangelogPromise =
+				isInteractive && !terminalAuth
+					? logger.time(
+							"main:getChangelogForDisplay",
+							getChangelogForDisplay,
+							parsedArgs,
+							settingsInstance.get("startup.changelogMode"),
+						)
+					: undefined;
 
 			const startupOptions = { ...sessionOptions, eventBus, preloadedExtensions: extensionsResult };
 			let created: CreateAgentSessionResult;
@@ -2202,6 +2241,15 @@ export async function runRootCommand(
 			} catch (error) {
 				await session.dispose();
 				throw error;
+			}
+
+			if (terminalAuth) {
+				stopStartupWatchdog();
+				logger.endTiming();
+				const exitCode = await runTerminalAuthSignIn(session);
+				stopThemeWatcher();
+				await postmortem.quit(exitCode);
+				return;
 			}
 
 			scheduleMarketplaceAutoUpdate({

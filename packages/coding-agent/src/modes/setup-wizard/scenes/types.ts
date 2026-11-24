@@ -3,8 +3,17 @@ import type { InteractiveModeContext } from "../../types";
 
 export type SetupSceneResult = "done" | "skipped";
 
+/**
+ * What the wizard and its scenes read from their host. Interactive mode provides it, and so does the
+ * bare terminal UI that ACP terminal auth runs the sign-in step in.
+ */
+export type SetupWizardContext = Pick<
+	InteractiveModeContext,
+	"ui" | "settings" | "session" | "openInBrowser" | "refreshScopedModelsAfterLogin"
+>;
+
 export interface SetupSceneHost {
-	ctx: InteractiveModeContext;
+	ctx: SetupWizardContext;
 	requestRender(): void;
 	finish(result: SetupSceneResult): void;
 	setFocus(component: Component | null): void;
@@ -43,6 +52,6 @@ export interface SetupScene {
 	id: string;
 	title: string;
 	minVersion: number;
-	shouldRun?(ctx: InteractiveModeContext): boolean | Promise<boolean>;
+	shouldRun?(ctx: SetupWizardContext): boolean | Promise<boolean>;
 	mount(host: SetupSceneHost): SetupSceneController;
 }

@@ -6,12 +6,14 @@ import { readLines } from "@oh-my-pi/pi-utils";
 import { workerEnvFromParent } from "../../subprocess/worker-client";
 
 // `proto acp` command-line contracts, driven through the real CLI: a misconfigured launch command must
-// fail loudly instead of running with defaults. No real provider is contacted.
+// fail loudly instead of running with defaults, and terminal auth must run a sign-in step that exits
+// with the status the client reads as the result. No real provider is contacted.
 const cliEntry = path.resolve(import.meta.dir, "..", "..", "cli.ts");
 
 const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "proto-acp-cli-"));
 const workDir = path.join(tmpDir, "work");
 const agentDir = path.join(tmpDir, "agent");
+const emptyAgentDir = path.join(tmpDir, "agent-empty");
 await fs.mkdir(workDir, { recursive: true });
 
 const modelServer = Bun.serve({
@@ -23,6 +25,7 @@ const modelServer = Bun.serve({
 // A local model server on the test host would count as a usable model.
 const baseConfig = "setupVersion: 4\ndisabledProviders: [ollama, llama.cpp, lm-studio]\n";
 await Bun.write(path.join(agentDir, "config.yml"), baseConfig);
+await Bun.write(path.join(emptyAgentDir, "config.yml"), baseConfig);
 await Bun.write(
 	path.join(agentDir, "models.yml"),
 	[
@@ -161,3 +164,78 @@ test("an unknown long flag fails session/new while an extension's flag is accept
 	}
 	expect(await stderr).toContain("unknown flag: --no-sesion");
 }, 60_000);
+
+const ESC = "\x1b";
+const CTRL_C = "\x03";
+const ALT_SCREEN_ENTER = "\x1b[?1049h";
+
+/** Runs terminal auth in an 80x24 PTY, the way a client presents it, and presses `key` once the step shows. */
+async function runTerminalAuth(agent: string, key: string): Promise<number> {
+	let output = "";
+	const decoder = new TextDecoder();
+	const shown = Promise.withResolvers<void>();
+	const child = Bun.spawn([process.execPath, cliEntry, "acp", "--acp-terminal-auth"], {
+		cwd: workDir,
+		env: cliEnv(agent),
+		terminal: {
+			cols: 80,
+			rows: 24,
+			data(_terminal, data) {
+				output += decoder.decode(data, { stream: true });
+				// The sign-in step is fullscreen: it is up once the alternate screen opens.
+				if (output.includes(ALT_SCREEN_ENTER)) shown.resolve();
+			},
+		},
+	});
+	try {
+		const started = await Promise.race([
+			shown.promise.then(() => true),
+			child.exited.then(() => false),
+			Bun.sleep(45_000).then(() => false),
+		]);
+		if (!started) throw new Error(`terminal auth never showed the sign-in step:\n${Bun.stripANSI(output)}`);
+		child.terminal?.write(key);
+		const exitCode = await Promise.race([child.exited, Bun.sleep(20_000).then(() => -1)]);
+		if (exitCode === -1)
+			throw new Error(`terminal auth did not exit after the step ended:\n${Bun.stripANSI(output)}`);
+		return exitCode;
+	} finally {
+		child.kill("SIGKILL");
+	}
+}
+
+async function sessionFiles(agent: string): Promise<string[]> {
+	try {
+		return (await fs.readdir(path.join(agent, "sessions"), { recursive: true })).filter(name =>
+			name.endsWith(".jsonl"),
+		);
+	} catch {
+		return [];
+	}
+}
+
+test.skipIf(process.platform === "win32")(
+	"terminal auth exits 0 when the sign-in step ends with a usable model, and keeps no session",
+	async () => {
+		const before = await sessionFiles(agentDir);
+		expect(await runTerminalAuth(agentDir, ESC)).toBe(0);
+		expect(await sessionFiles(agentDir)).toEqual(before);
+	},
+	90_000,
+);
+
+test.skipIf(process.platform === "win32")(
+	"terminal auth fails when the sign-in step ends without any usable model",
+	async () => {
+		expect(await runTerminalAuth(emptyAgentDir, ESC)).toBe(1);
+	},
+	90_000,
+);
+
+test.skipIf(process.platform === "win32")(
+	"cancelling the sign-in step fails terminal auth even when credentials exist",
+	async () => {
+		expect(await runTerminalAuth(agentDir, CTRL_C)).toBe(1);
+	},
+	90_000,
+);

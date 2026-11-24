@@ -1,13 +1,18 @@
 import type { Settings } from "../../config/settings";
 import { CURRENT_SETUP_VERSION } from "../setup-version";
-import type { InteractiveModeContext } from "../types";
 import { modelSetupScene } from "./scenes/model";
 import { providersSetupScene } from "./scenes/providers";
 import { themeSetupScene } from "./scenes/theme";
-import type { SetupScene } from "./scenes/types";
+import type { SetupScene, SetupWizardContext } from "./scenes/types";
 import { SetupWizardComponent, type SetupWizardOutcome } from "./wizard-overlay";
 
-export type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
+export type {
+	SetupScene,
+	SetupSceneController,
+	SetupSceneHost,
+	SetupSceneResult,
+	SetupWizardContext,
+} from "./scenes/types";
 export type { SetupWizardOutcome } from "./wizard-overlay";
 
 export { CURRENT_SETUP_VERSION };
@@ -35,7 +40,7 @@ function setupSkipEnvEnabled(value: string | undefined): boolean {
 export async function selectSetupScenes(
 	storedVersion: number,
 	scenes: readonly SetupScene[],
-	ctx?: InteractiveModeContext,
+	ctx?: SetupWizardContext,
 	options: SetupSceneSelectionOptions = {},
 ): Promise<SetupScene[]> {
 	const isTTY = options.isTTY ?? (process.stdin.isTTY && process.stdout.isTTY);
@@ -72,6 +77,8 @@ export const SETUP_CANCELLED_NOTICE =
 
 interface RunSetupWizardOptions {
 	markComplete?: boolean;
+	/** Runs once the last scene has ended, while the wizard still covers the screen. */
+	beforeClose?: () => Promise<void>;
 }
 
 /**
@@ -80,7 +87,7 @@ interface RunSetupWizardOptions {
  * the user with a config that only says setup happened.
  */
 export async function runSetupWizard(
-	ctx: InteractiveModeContext,
+	ctx: SetupWizardContext,
 	scenes: readonly SetupScene[] = ALL_SCENES,
 	options: RunSetupWizardOptions = {},
 ): Promise<SetupWizardOutcome> {
@@ -98,6 +105,7 @@ export async function runSetupWizard(
 		if (outcome === "completed" && options.markComplete !== false) {
 			await markSetupWizardComplete(ctx.settings);
 		}
+		await options.beforeClose?.();
 		return outcome;
 	} finally {
 		component.dispose();

@@ -14,7 +14,7 @@ export default class Index extends Command {
 	static strict = false;
 
 	async run(): Promise<void> {
-		const { args } = prepareAcpTerminalAuthArgs(this.argv);
+		const { args, terminalAuth } = prepareAcpTerminalAuthArgs(this.argv);
 		let parsed: ParsedArgs;
 		try {
 			parsed = parseArgs(args);
@@ -25,6 +25,7 @@ export default class Index extends Command {
 			}
 			throw error;
 		}
-		await runRootCommand(parsed, args);
+		// Clients that launch `proto --mode acp` get `proto --mode acp --acp-terminal-auth` for terminal auth.
+		await runRootCommand(parsed, args, terminalAuth ? { acpTerminalAuth: true } : undefined);
 	}
 }

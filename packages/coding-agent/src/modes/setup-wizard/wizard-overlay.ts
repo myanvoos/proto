@@ -11,8 +11,13 @@ import {
 import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 import { heroMeta, heroWordmark } from "../components/welcome";
 import { theme } from "../theme/theme";
-import type { InteractiveModeContext } from "../types";
-import type { SetupScene, SetupSceneController, SetupSceneHost, SetupSceneResult } from "./scenes/types";
+import type {
+	SetupScene,
+	SetupSceneController,
+	SetupSceneHost,
+	SetupSceneResult,
+	SetupWizardContext,
+} from "./scenes/types";
 
 type WizardPhase = "scene" | "done";
 
@@ -51,7 +56,7 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 	#sceneFocusTarget: Component | undefined;
 
 	constructor(
-		readonly ctx: InteractiveModeContext,
+		readonly ctx: SetupWizardContext,
 		readonly scenes: readonly SetupScene[],
 	) {}
 
