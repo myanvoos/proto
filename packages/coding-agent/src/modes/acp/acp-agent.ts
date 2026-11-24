@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import {
 	atomicWriteJson,
 	getAgentDir,
@@ -94,6 +95,10 @@ import {
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
 
 const ACP_DEFAULT_MODE_ID = "default";
+const AGENT_AUTH_METHOD_ID = "agent";
+const TERMINAL_AUTH_METHOD_ID = "terminal";
+/** `data.reason` of every error caused by provider credentials: missing, or rejected by the provider. */
+const PROVIDER_AUTH_REASON = "provider_auth";
 /** `agentCapabilities._meta` key advertising `_session/steering`, in proto's `_proto/*` extension namespace. */
 const STEERING_CAPABILITY_META_KEY = "proto/steering";
 const MODE_CONFIG_ID = "mode";
@@ -630,6 +635,30 @@ export function createAcpExtensionUiContext(
 	};
 }
 
+/** `data` of an error caused by provider credentials. `model` is the `provider/id` value of the model config option. */
+type ProviderAuthErrorData = {
+	reason: typeof PROVIDER_AUTH_REASON;
+	provider?: string;
+	model?: string;
+	httpStatus?: number;
+	details?: string;
+};
+
+/** A provider's refusal of its credentials, pinned to the credential-store generation it refused. */
+type CredentialRejection = { generation: number; httpStatus: number };
+
+/**
+ * HTTP status of a provider refusing the credentials it was sent: any 401, and any 403 the provider did not
+ * classify as a quota or concurrency limit (those refuse the request, not the key).
+ */
+function credentialRejectionStatus(message: AssistantMessage): number | undefined {
+	const status = message.errorStatus;
+	if (status === 401) return status;
+	if (status !== 403) return undefined;
+	const id = message.errorId;
+	return AIError.is(id, AIError.Flag.UsageLimit) || AIError.is(id, AIError.Flag.Transient) ? undefined : status;
+}
+
 function requireObjectParams(method: string, params: unknown): Record<string, unknown> {
 	if (typeof params !== "object" || params === null || Array.isArray(params)) {
 		throw RequestError.invalidParams({ method }, `${method} requires a params object`);
@@ -658,6 +687,8 @@ export class AcpAgent implements Agent {
 	#initialized = false;
 	#cancelCleanupTimeoutMs = ACP_CANCEL_CLEANUP_TIMEOUT_MS;
 	#blobs = new BlobStore(getBlobsDir());
+	/** Per provider: the last credential refusal a turn hit, so `authenticate` cannot vouch for those credentials. */
+	#credentialRejections = new Map<string, CredentialRejection>();
 
 	constructor(connection: AgentSideConnection, createSession: CreateAcpSession, initialSession?: AgentSession) {
 		this.#connection = connection;
@@ -698,15 +729,15 @@ export class AcpAgent implements Agent {
 		this.#clientCapabilities = params.clientCapabilities;
 		const authMethods: AuthMethod[] = [
 			{
-				id: "agent",
+				id: AGENT_AUTH_METHOD_ID,
 				name: "Use existing local credentials",
 				description: "Authenticate via the provider keys/OAuth state already configured under ~/.proto.",
 			},
 		];
-		if (params.clientCapabilities?.auth?.terminal === true) {
+		if (this.#supportsTerminalAuth()) {
 			authMethods.push({
 				type: "terminal",
-				id: "terminal",
+				id: TERMINAL_AUTH_METHOD_ID,
 				name: "Set up Proto in terminal",
 				description: "Launch the proto TUI to add provider keys and select models.",
 				args: [ACP_TERMINAL_AUTH_FLAG],
@@ -748,15 +779,19 @@ export class AcpAgent implements Agent {
 
 	async authenticate(params: AuthenticateRequest): Promise<AuthenticateResponse> {
 		this.#requireInitialized("authenticate");
-		requireStringField("authenticate", params, "methodId");
-		const supportsTerminalAuth = this.#clientCapabilities?.auth?.terminal === true;
-		const validMethods = supportsTerminalAuth ? ["agent", "terminal"] : ["agent"];
-		if (!validMethods.includes(params.methodId)) {
+		const methodId = requireStringField("authenticate", params, "methodId");
+		const supported = this.#supportsTerminalAuth()
+			? [AGENT_AUTH_METHOD_ID, TERMINAL_AUTH_METHOD_ID]
+			: [AGENT_AUTH_METHOD_ID];
+		if (!supported.includes(methodId)) {
 			throw RequestError.invalidParams(
-				{ field: "methodId", methodId: params.methodId, supported: validMethods },
-				`unknown auth method: ${params.methodId}`,
+				{ field: "methodId", methodId, supported },
+				`unknown auth method: ${methodId}`,
 			);
 		}
+		// Both methods end in proto's own credential store: `agent` uses what is there, and a finished terminal
+		// login wrote to it. Succeed only when requests can stop failing for credentials.
+		await this.#verifyLocalCredentials();
 		return {};
 	}
 
@@ -1675,7 +1710,7 @@ export class AcpAgent implements Agent {
 
 		if (event.type === "agent_end") {
 			await this.#flushMissedFinalAssistantText(record, event);
-			const failure = this.#turnFailure(event, promptTurn.cancelRequested);
+			const failure = this.#turnFailure(record, event, promptTurn.cancelRequested);
 			if (failure) {
 				// Report the failure now. Waiting for the session to go idle first
 				// would hold the client for as long as recovery keeps re-running the
@@ -1799,9 +1834,11 @@ export class AcpAgent implements Agent {
 	 * A provider failure is not a completed turn. Print mode reports these on
 	 * stderr with exit 1; over ACP the equivalent is a JSON-RPC error on
 	 * session/prompt instead of a successful stopReason with the error text
-	 * dressed up as assistant output.
+	 * dressed up as assistant output. A provider refusing its credentials is
+	 * told apart by the response's HTTP status, never by the error wording.
 	 */
 	#turnFailure(
+		record: ManagedSessionRecord,
 		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
 		cancelRequested: boolean,
 	): RequestError | undefined {
@@ -1810,15 +1847,99 @@ export class AcpAgent implements Agent {
 			.reverse()
 			.find((message): message is AssistantMessage => message.role === "assistant");
 		const reason = lastAssistant?.stopReason;
-		if (reason !== "error" && reason !== "aborted") return undefined;
+		if (reason !== "error" && reason !== "aborted") {
+			// A provider that answered has accepted its credentials, whatever it refused before.
+			if (lastAssistant) this.#credentialRejections.delete(lastAssistant.provider);
+			return undefined;
+		}
 		const errorMessage = lastAssistant?.errorMessage ?? "";
 		// A refusal is a legitimate ACP stop reason, not a transport failure.
 		if (reason === "error" && /content[_ ]?filter|refus(al|ed)/i.test(errorMessage)) return undefined;
 		const details = errorMessage || `turn ended with stopReason ${reason}`;
-		if (/\b(401|403)\b|unauthor|invalid[_ ]api[_ ]key|authentication/i.test(errorMessage)) {
-			return RequestError.authRequired({ details }, details);
+		const httpStatus = reason === "error" && lastAssistant ? credentialRejectionStatus(lastAssistant) : undefined;
+		if (lastAssistant && httpStatus !== undefined) {
+			const provider = lastAssistant.provider;
+			const model = `${provider}/${lastAssistant.model}`;
+			this.#credentialRejections.set(provider, {
+				generation: record.session.modelRegistry.authStorage.getGeneration(),
+				httpStatus,
+			});
+			return this.#providerAuthError(
+				`${provider} rejected the credentials for ${model} (HTTP ${httpStatus}): ${conciseErrorReason(details)}`,
+				{ reason: PROVIDER_AUTH_REASON, provider, model, httpStatus, details },
+			);
 		}
 		return RequestError.internalError({ details }, conciseErrorReason(details));
+	}
+
+	#supportsTerminalAuth(): boolean {
+		return this.#clientCapabilities?.auth?.terminal === true;
+	}
+
+	/**
+	 * -32000 promises the client that an advertised auth method can fix the request. Only the terminal login can
+	 * replace missing or rejected provider keys; `agent` uses the keys already configured, so without the terminal
+	 * method the same failure is -32603.
+	 */
+	#providerAuthError(message: string, data: ProviderAuthErrorData): RequestError {
+		return this.#supportsTerminalAuth()
+			? RequestError.authRequired(data, message)
+			: RequestError.internalError(data, message);
+	}
+
+	/**
+	 * Credentials are good enough to authenticate when every open session's model has some, and none is the set its
+	 * provider already refused. Before any session exists, check the model a new session would start with.
+	 */
+	async #verifyLocalCredentials(): Promise<void> {
+		const sessions = Array.from(this.#sessions.values(), record => record.session);
+		let probe: AgentSession | undefined;
+		if (sessions.length === 0) {
+			probe = normalizeCreatedAcpSession(
+				await this.#createSession(process.cwd(), { interactivePrompts: false }),
+			).session;
+			sessions.push(probe);
+		}
+		try {
+			for (const session of sessions) await this.#verifySessionCredentials(session);
+		} finally {
+			if (probe) await this.#disposeStandaloneSession(probe);
+		}
+	}
+
+	async #verifySessionCredentials(session: AgentSession): Promise<void> {
+		const model = session.model;
+		if (!model) {
+			throw this.#providerAuthError("no model with configured credentials is available", {
+				reason: PROVIDER_AUTH_REASON,
+			});
+		}
+		const registry = session.modelRegistry;
+		try {
+			// Adopt credentials another process committed (`proto login`, a finished terminal login) before judging them.
+			await registry.authStorage.pollExternalChanges();
+		} catch (error) {
+			logger.debug("ACP authenticate could not poll the credential store", { error: String(error) });
+		}
+		const provider = model.provider;
+		const modelId = this.#toModelId(model);
+		if (!registry.hasConfiguredAuth(model)) {
+			throw this.#providerAuthError(`no credentials are configured for ${modelId}; add them with \`proto login\``, {
+				reason: PROVIDER_AUTH_REASON,
+				provider,
+				model: modelId,
+			});
+		}
+		const rejection = this.#credentialRejections.get(provider);
+		if (!rejection) return;
+		if (rejection.generation !== registry.authStorage.getGeneration()) {
+			this.#credentialRejections.delete(provider);
+			return;
+		}
+		throw this.#providerAuthError(
+			`${provider} rejected the configured credentials for ${modelId} (HTTP ${rejection.httpStatus}); replace them with \`proto login\``,
+			{ reason: PROVIDER_AUTH_REASON, provider, model: modelId, httpStatus: rejection.httpStatus },
+		);
 	}
 
 	#resolveStopReason(

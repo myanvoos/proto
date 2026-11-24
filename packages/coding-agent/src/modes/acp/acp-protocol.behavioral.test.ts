@@ -240,7 +240,8 @@ test("a provider that rejects credentials fails session/prompt instead of answer
 		const sessionId = await server.newSession();
 		const frame = await server.prompt(sessionId, "hello");
 		expect(frame.result).toBeUndefined();
-		expect(frame.error?.code).toBe(-32000);
+		// No advertised auth method can replace the key, so this is not auth_required (-32000).
+		expect(frame.error?.code).toBe(-32603);
 		expect(frame.error?.message).toContain("Invalid API key");
 		// The failure must not be dressed up as model output.
 		expect(server.notifications("agent_message_chunk")).toEqual([]);

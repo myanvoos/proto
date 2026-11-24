@@ -232,16 +232,28 @@ The ACP server answers with JSON-RPC errors rather than pretending a request or 
 | Missing/ill-typed params, a `cwd` that is not an existing absolute directory, an unknown model, mode, config option or auth method, or a `session/list` cursor the server did not hand out | `-32602` Invalid params |
 | A `sessionId` that names no session open on this connection (`session/prompt`, `session/set_mode`, `session/set_config_option`), or no stored session (`session/load`, `session/resume`, `session/fork`) | `-32002` Resource not found, with `data.sessionId` |
 | Unknown method | `-32601` Method not found |
-| A turn that ended in a provider error (bad credentials → `-32000` Authentication required, anything else → `-32603` Internal error) | `-32000` / `-32603` |
+| A turn whose provider refused its credentials: HTTP 401, or a 403 the provider did not classify as a quota or concurrency limit | `-32000` Authentication required if the client advertised `clientCapabilities.auth.terminal`, otherwise `-32603` Internal error |
+| Any other failed turn or unexpected failure | `-32603` Internal error |
 | A line that is not JSON, or JSON that is not a JSON-RPC message | `-32700` Parse error / `-32600` Invalid request — answered on `id: null` without dropping the connection |
 
 A `-32603` message ends with the first line of the reason, as in `Internal error: <reason>`; `data.details` carries the full text.
+
+A credential failure carries `data.reason: "provider_auth"`, the `provider`, and the `model` as its `provider/id` config option value. A refused turn adds `httpStatus` and `details`. The error is `-32000` only when an advertised auth method can fix it, and only the terminal login can replace a missing or refused key. The `agent` method uses the credentials already configured, so a client that authenticates with it and retries would fail again.
 
 `initialize` negotiates: a client asking for a newer protocol version is answered with the newest version the agent speaks, and the downgrade is reported on stderr. A failed turn is reported as a JSON-RPC error rather than a successful response; an error event itself is not streamed as `agent_message_chunk` text, although text emitted before a provider failure may already have been sent.
 
 While session recovery retries a failing provider, each attempt is sent as an `agent_thought_chunk` reading `Provider error (retry N/M in Xs): …` — the same line print mode writes to stderr — so a retried turn is never silent.
 
 ACP clients receive automatic compaction transitions as `_proto/compaction/start` and `_proto/compaction/end` extension notifications, including maintenance outside an active prompt. Start carries `sessionId`, `reason`, and `action`; end carries `sessionId`, `action`, `aborted`, and `willRetry`, with optional `skipped`, `errorMessage`, and `tokensBefore`. Transitions that occur during session startup are delivered in order after bootstrap updates.
+
+#### ACP authentication
+
+`initialize` advertises these `authMethods`:
+
+| Method | Advertised | Behavior |
+| --- | --- | --- |
+| `agent` (Use existing local credentials) | Always | `authenticate` adopts logins that other processes saved, such as `proto login` or a finished terminal login. It then checks the model of every open session or, before any session exists, the model a new session would start with. It fails with `data.reason: "provider_auth"` when that model has no credentials, or when its provider refused them on its last turn and proto's credential store has not changed since. |
+| `terminal` (Set up Proto in terminal) | Only when the client sends `clientCapabilities.auth.terminal: true` | The client runs the agent command with the advertised `args` in a terminal to add provider keys. ACP clients must not pass this method to `authenticate`; if one does, it gets the same check as `agent`. |
 
 #### ACP capabilities
 
