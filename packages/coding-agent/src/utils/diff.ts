@@ -221,6 +221,73 @@ export function capEventDiff(before: string, after: string): CappedEventDiff | u
 	return { diff: [...head, omittedRowsMarker(omitted), ...tail].join("\n"), diffTruncated: true, added, removed };
 }
 
+export interface NumberedDiffExcerpts {
+	/** Pre-change lines the diff shows; `null` when it shows none, as for a created file. */
+	oldText: string | null;
+	/** Post-change lines the diff shows; empty when it shows none, as for a removed file. */
+	newText: string;
+	/** 1-based post-change line of the first change. */
+	firstChangedLine?: number;
+}
+
+function skippedLinesMarker(count: number): string {
+	return `… ${count} unchanged ${count === 1 ? "line" : "lines"}`;
+}
+
+function excerptText(lines: readonly string[]): string {
+	return lines.map(line => `${line}\n`).join("");
+}
+
+/**
+ * Rebuild the pre- and post-change excerpts a numbered hunk diff
+ * ({@link generateDiffString}, {@link capEventDiff}) shows: context rows land
+ * on both sides, `-` rows on the old side, `+` rows on the new side. Source
+ * lines skipped between hunks and an omitted-rows marker each become one marker
+ * line on both sides, so distant hunks never read as adjacent lines.
+ */
+export function numberedDiffExcerpts(diff: string): NumberedDiffExcerpts | undefined {
+	const oldLines: string[] = [];
+	const newLines: string[] = [];
+	let oldRows = 0;
+	let newRows = 0;
+	let previousSourceLine: number | undefined;
+	let firstChangedLine: number | undefined;
+	const pushMarker = (marker: string): void => {
+		oldLines.push(marker);
+		newLines.push(marker);
+	};
+	for (const row of diff.split("\n")) {
+		if (row === DIFF_GAP_ROW) continue;
+		const parsed = parseNumberedDiffRow(row);
+		if (!parsed) {
+			pushMarker(row);
+			previousSourceLine = undefined;
+			continue;
+		}
+		// Context and `-` rows carry source line numbers, `+` rows post-change ones.
+		if (parsed.prefix !== "+") {
+			if (previousSourceLine !== undefined && parsed.lineNumber > previousSourceLine + 1) {
+				pushMarker(skippedLinesMarker(parsed.lineNumber - previousSourceLine - 1));
+			}
+			previousSourceLine = parsed.lineNumber;
+			oldLines.push(parsed.content);
+			oldRows++;
+		}
+		if (parsed.prefix !== "-") {
+			newLines.push(parsed.content);
+			newRows++;
+		}
+		// No change precedes the first one, so its source line is also its post-change line.
+		if (parsed.prefix !== " ") firstChangedLine ??= parsed.lineNumber;
+	}
+	if (oldRows === 0 && newRows === 0) return undefined;
+	return {
+		oldText: oldRows === 0 ? null : excerptText(oldLines),
+		newText: newRows === 0 ? "" : excerptText(newLines),
+		firstChangedLine,
+	};
+}
+
 export function generateDiffString(
 	oldContent: string,
 	newContent: string,

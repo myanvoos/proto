@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import type { SessionUpdate } from "@oh-my-pi/pi-utils/acp";
+import type { SessionUpdate, ToolCallContent, ToolKind } from "@oh-my-pi/pi-utils/acp";
 import type { AgentSessionEvent } from "../../session/agent-session";
+import { capEventDiff } from "../../utils/diff";
 import { mapAgentSessionEventToAcpSessionUpdates } from "./acp-event-mapper";
 
 type ToolUpdate = Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>;
@@ -28,6 +29,10 @@ function texts(update: ToolUpdate): string[] {
 	return (update.content ?? []).flatMap(item =>
 		item.type === "content" && item.content.type === "text" ? [item.content.text] : [],
 	);
+}
+
+function diffs(update: ToolUpdate): Extract<ToolCallContent, { type: "diff" }>[] {
+	return (update.content ?? []).filter(item => item.type === "diff");
 }
 
 describe("ACP tool call lifecycle", () => {
@@ -63,6 +68,73 @@ describe("ACP tool call lifecycle", () => {
 			isError: true,
 		} as AgentSessionEvent);
 		expect(texts(end)).toEqual(["partial listing", "permission denied"]);
+	});
+
+	test("think and recall carry their ACP tool kinds", () => {
+		const expected: Array<[string, ToolKind]> = [
+			["think", "think"],
+			["recall", "search"],
+		];
+		for (const [toolName, kind] of expected) {
+			const start = mapOne({ type: "tool_execution_start", toolCallId: toolName, toolName, args: {} });
+			expect(start.kind).toBe(kind);
+		}
+	});
+});
+
+describe("ACP file mutation mapping", () => {
+	const edited = path.join(root, "src/app.ts");
+	const created = path.join(root, "notes.md");
+
+	test("kernel and shell writes become edit diffs with navigable locations", () => {
+		const update = bashEnd([
+			{ op: "kernel-state", language: "javascript", executionCount: 1 },
+			{ op: "write", path: edited, id: `run:${edited}`, diff: " 1|a\n-2|b\n+2|B\n 3|c\n+4|d" },
+			{ op: "write", path: created, id: created, diff: "+1|hello\n+2|world" },
+			{ op: "revert", path: path.join(root, "restored.ts"), id: "run:restored" },
+		]);
+		expect(update.kind).toBe("edit");
+		expect(diffs(update)).toEqual([
+			{ type: "diff", path: edited, oldText: "a\nb\nc\n", newText: "a\nB\nc\nd\n" },
+			{ type: "diff", path: created, oldText: null, newText: "hello\nworld\n" },
+		]);
+		expect(update.locations).toEqual([
+			{ path: edited, line: 2 },
+			{ path: created, line: 1 },
+		]);
+	});
+
+	test("a run that only removes files is a delete", () => {
+		const removed = path.join(root, "old.txt");
+		const update = bashEnd([{ op: "delete", path: removed, id: removed, diff: "-1|x\n-2|y" }]);
+		expect(update.kind).toBe("delete");
+		expect(diffs(update)).toEqual([{ type: "diff", path: removed, oldText: "x\ny\n", newText: "" }]);
+		expect(update.locations).toEqual([{ path: removed }]);
+	});
+
+	test("distant hunks and an omitted middle stay marked in the excerpts", () => {
+		const before = `${Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join("\n")}\n`;
+		const after = before.replace("line 5\n", "LINE 5\n").replace("line 40\n", "line 40\ninserted\n");
+		const rewrite = `${Array.from({ length: 1200 }, (_, i) => `row ${i + 1}`).join("\n")}\n`;
+		const capped = capEventDiff(rewrite, rewrite.toUpperCase());
+		expect(capped?.diffTruncated).toBe(true);
+		const update = bashEnd([
+			{ op: "write", path: edited, id: edited, diff: capEventDiff(before, after)?.diff },
+			{ op: "write", path: created, id: created, diff: capped?.diff, diffTruncated: true },
+		]);
+
+		const [hunks, truncated] = diffs(update);
+		expect(hunks.oldText).toBe(
+			"line 3\nline 4\nline 5\nline 6\nline 7\n… 31 unchanged lines\nline 39\nline 40\nline 41\nline 42\n",
+		);
+		expect(hunks.newText).toBe(
+			"line 3\nline 4\nLINE 5\nline 6\nline 7\n… 31 unchanged lines\nline 39\nline 40\ninserted\nline 41\nline 42\n",
+		);
+		const omitted = /^… \d+ diff lines omitted$/m;
+		expect(truncated.oldText).toMatch(omitted);
+		expect(truncated.newText).toMatch(omitted);
+		expect(truncated.oldText).toStartWith("row 1\n");
+		expect(truncated.newText).toEndWith("ROW 1200\n");
 	});
 });
 

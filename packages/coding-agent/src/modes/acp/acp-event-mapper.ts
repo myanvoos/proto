@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type {
 	SessionNotification,
@@ -17,6 +18,7 @@ import { resolveToCwd, splitPathAndSel } from "../../tools/path-utils";
 import { tokenizeShellSegments } from "../../tools/shell-tokenize";
 import { parseProtolensBashCommand } from "../../tools/xdev";
 import { probeXdevCliArgs } from "../../tools/xdev-cli";
+import { numberedDiffExcerpts } from "../../utils/diff";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
 interface MessageProgress {
@@ -214,9 +216,14 @@ function mapToolKind(toolName: string): ToolKind {
 		case "shell":
 		case "exec":
 			return "execute";
+		// T3 Code draws a `search` whose title is not a web-search phrase as a local file search.
 		case "web_search":
 			return "fetch";
+		case "recall":
+			return "search";
 		case "checklist":
+		case "goal":
+		case "think":
 			return "think";
 		default:
 			return "other";
@@ -268,21 +275,27 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		case "tool_execution_end": {
 			const args = getToolExecutionEndArgs(event, options);
 			if (isInternalFleetMessageTool(event.toolName, args)) return [];
-			const resultContent = [
-				...extractDiffToolCallContent(event.result),
+			const mutations = mapFileMutations(event.result);
+			const content = mergeToolUpdateContent(buildToolStartContent(event.toolName, args), [
 				...extractToolCallContent(event.result, options),
-			];
-			const content = mergeToolUpdateContent(buildToolStartContent(event.toolName, args), resultContent);
+				...mutations.content,
+			]);
 			const update: SessionUpdate = {
 				sessionUpdate: "tool_call_update",
 				toolCallId: event.toolCallId,
 				status: event.isError ? "failed" : "completed",
 				rawOutput: boundRawOutput(event.result),
 			};
+			if (mutations.kind) {
+				update.kind = mutations.kind;
+			}
 			if (content.length > 0) {
 				update.content = content;
 			}
-			const locations = extractToolLocationsFromResult(event.result, options.cwd);
+			const locations = mergeLocations(
+				extractToolLocationsFromResult(event.result, options.cwd),
+				mutations.locations,
+			);
 			if (locations.length > 0) {
 				update.locations = locations;
 			}
@@ -666,60 +679,54 @@ function extractToolLocationsFromResult(result: unknown, cwd?: string): ToolCall
 	if (typeof result !== "object" || result === null) return [];
 	const details = (result as { details?: unknown }).details;
 	if (typeof details !== "object" || details === null) return [];
-	const direct = extractToolLocations(details, cwd);
+	const locations = extractToolLocations(details, cwd);
 	const resolvedFile = existingFileLocationPath(
 		extractStringProperty<ResolvedPathContainer>(details, "resolvedPath"),
 		cwd,
 	);
-	if (resolvedFile && !direct.some(location => location.path === resolvedFile)) {
-		direct.push({ path: resolvedFile });
-	}
-	const perFile = (details as { perFileResults?: unknown }).perFileResults;
-	if (!Array.isArray(perFile)) {
-		return direct;
-	}
-	const seen = new Set(direct.map(loc => loc.path));
-	const locations = [...direct];
-	for (const entry of perFile) {
-		const raw = extractStringProperty<PathContainer>(entry, "path");
-		if (!raw) continue;
-		const path = toAcpLocationPath(raw, cwd);
-		if (seen.has(path)) continue;
-		seen.add(path);
-		locations.push({ path });
+	if (resolvedFile && !locations.some(location => location.path === resolvedFile)) {
+		locations.push({ path: resolvedFile });
 	}
 	return locations;
 }
 
-function extractDiffToolCallContent(result: unknown): ToolCallContent[] {
-	if (typeof result !== "object" || result === null) return [];
-	const details = (result as { details?: unknown }).details;
-	if (typeof details !== "object" || details === null) return [];
-	const blocks: ToolCallContent[] = [];
-	const perFile = (details as { perFileResults?: unknown }).perFileResults;
-	const entries: unknown[] = Array.isArray(perFile) ? perFile : [details];
-	for (const entry of entries) {
-		const block = buildDiffContent(entry);
-		if (block) blocks.push(block);
-	}
-	return blocks;
+function mergeLocations(first: ToolCallLocation[], second: ToolCallLocation[]): ToolCallLocation[] {
+	if (second.length === 0) return first;
+	const seen = new Set(first.map(location => location.path));
+	return [...first, ...second.filter(location => !seen.has(location.path))];
 }
 
-function buildDiffContent(entry: unknown): ToolCallContent | undefined {
-	if (typeof entry !== "object" || entry === null) return undefined;
-	const candidate = entry as { path?: unknown; oldText?: unknown; newText?: unknown; isError?: unknown };
-	if (candidate.isError === true) return undefined;
-	const path = typeof candidate.path === "string" && candidate.path.length > 0 ? candidate.path : undefined;
-	if (!path) return undefined;
-	const oldText = typeof candidate.oldText === "string" ? candidate.oldText : undefined;
-	const newText = typeof candidate.newText === "string" ? candidate.newText : undefined;
-	if (oldText === undefined && newText === undefined) return undefined;
-	return {
-		type: "diff",
-		path,
-		oldText: oldText ?? null,
-		newText: newText ?? "",
-	};
+interface FileMutationUpdate {
+	kind?: ToolKind;
+	content: ToolCallContent[];
+	locations: ToolCallLocation[];
+}
+
+// Kernel cells and shell redirections report each file they changed as a `write` or `delete` status event carrying
+// its numbered hunk diff. A `revert` means the run restored the file, so it changed nothing.
+function mapFileMutations(result: unknown): FileMutationUpdate {
+	const update: FileMutationUpdate = { content: [], locations: [] };
+	const details = isRecord(result) ? result.details : undefined;
+	const events = isRecord(details) ? details.statusEvents : undefined;
+	if (!Array.isArray(events)) return update;
+	const located = new Set<string>();
+	let deletesOnly = true;
+	for (const event of events) {
+		if (!isRecord(event) || (event.op !== "write" && event.op !== "delete")) continue;
+		const filePath = event.path;
+		if (typeof filePath !== "string" || !path.isAbsolute(filePath)) continue;
+		if (event.op === "write") deletesOnly = false;
+		const excerpts = typeof event.diff === "string" ? numberedDiffExcerpts(event.diff) : undefined;
+		if (excerpts) {
+			update.content.push({ type: "diff", path: filePath, oldText: excerpts.oldText, newText: excerpts.newText });
+		}
+		if (located.has(filePath)) continue;
+		located.add(filePath);
+		const line = event.op === "write" ? excerpts?.firstChangedLine : undefined;
+		update.locations.push(line === undefined ? { path: filePath } : { path: filePath, line });
+	}
+	if (located.size > 0) update.kind = deletesOnly ? "delete" : "edit";
+	return update;
 }
 
 function boundRawOutput(value: unknown): unknown {
