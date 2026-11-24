@@ -36,6 +36,27 @@ describe("extractRetryHint account reset bodies", () => {
 		expect(Math.abs(hint! - expected)).toBeLessThan(100);
 	});
 
+	it("parses Cloud Code Assist compound Resets in format", () => {
+		expect(
+			extractRetryHint(
+				undefined,
+				"Cloud Code Assist API error (429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 71h48m47s.",
+			),
+		).toBe((71 * 3600 + 48 * 60 + 47) * 1000);
+	});
+
+	it("parses a structured quotaResetTimeStamp body", () => {
+		const ts = new Date(Date.now() + 3_600_000).toISOString();
+		const hint = extractRetryHint(undefined, `{"error":{"quotaResetTimeStamp":"${ts}"}}`);
+		expect(hint).toBeDefined();
+		expect(Math.abs(hint! - 3_600_000)).toBeLessThan(2000);
+	});
+
+	it("honors retryDelay and quotaResetDelay JSON fields", () => {
+		expect(extractRetryHint(undefined, '{"retryDelay": "34.5s"}')).toBe(34_500);
+		expect(extractRetryHint(undefined, '{"quotaResetDelay": "90s"}')).toBe(90_000);
+	});
+
 	it("parses retry-after-ms from a response body", () => {
 		expect(extractRetryHint(undefined, "request blocked; retry-after-ms=98497000")).toBe(98_497_000);
 	});

@@ -14,6 +14,7 @@ import {
 import { create, Flag, is } from "./flags-core";
 import {
 	calculateRateLimitBackoffMs,
+	is402BillingCapBody,
 	isUsageLimitOutcome,
 	matchesUsageLimitText,
 	parseRateLimitReason,
@@ -367,5 +368,77 @@ describe("Google structured quota precedence", () => {
 		expect(
 			parseRateLimitReason(body([{ "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "5s" }])),
 		).toBe("RATE_LIMIT_EXCEEDED");
+	});
+});
+
+describe("stream-stall timeout wording", () => {
+	it("classifies inflected stream-stall wording as timeout + transient while preserving word boundaries", () => {
+		for (const errorMessage of [
+			"pi-native stream stall while waiting for the next event",
+			"Anthropic stream stalled while waiting for the next event",
+			"Provider stream stalls while waiting for the next event",
+			"Provider stream stalling while waiting for the next event",
+		]) {
+			for (const id of [
+				classify(new Error(errorMessage), "anthropic-messages"),
+				classifyMessage({ api: "anthropic-messages", errorMessage }),
+			]) {
+				expect(is(id, Flag.Timeout)).toBe(true);
+				expect(is(id, Flag.Transient)).toBe(true);
+				expect(retriable(id)).toBe(true);
+			}
+		}
+
+		for (const nonMatch of ["upstream stalled", "stream stallone"]) {
+			const id = classify(new Error(nonMatch), "anthropic-messages");
+			expect(is(id, Flag.Timeout)).toBe(false);
+		}
+
+		const clientDenied = classifyMessage({
+			api: "anthropic-messages",
+			errorStatus: 400,
+			errorMessage: "Anthropic stream stalled while waiting for the next event",
+		});
+		expect(is(clientDenied, Flag.Timeout)).toBe(false);
+		expect(retriable(clientDenied)).toBe(false);
+	});
+});
+
+describe("402 billing-error bodies", () => {
+	it("treats a 402 billing-verification failure as a usage limit but the same body on 400 as a bad request", () => {
+		const body =
+			"Billing verification failed. Billing Issue. To use this API key, your team needs to resolve a billing issue first. (type=billing_error param=billing_not_configured)";
+		expect(isUsageLimitOutcome(402, `402 ${body}`)).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError(body, 402))).toBe(true);
+		expect(isUsageLimitOutcome(400, `400 ${body}`)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(body, 400))).toBe(false);
+	});
+
+	it("recognizes structured billing fields even without billing prose", () => {
+		for (const body of [
+			"402 Request rejected (type=billing_error param=billing_not_configured)",
+			"402 Request rejected (code=billing_not_configured)",
+			'{"error":{"message":"Request rejected","type":"billing_error"}}',
+			'{"error":{"message":"Request rejected","code":"billing_not_configured"}}',
+		]) {
+			expect(is402BillingCapBody(body)).toBe(true);
+			expect(isUsageLimitOutcome(402, body)).toBe(true);
+		}
+		for (const code of ["billing_error", "billing_not_configured"]) {
+			expect(isUsageLimit(new ProviderHttpError("Request rejected", 402, { code }))).toBe(true);
+			expect(isUsageLimit(new ProviderHttpError("Request rejected", 400, { code }))).toBe(false);
+		}
+	});
+
+	it("does not rotate subscription-required responses mentioning unchanged credits", () => {
+		const body = "A subscription is required for this endpoint; your credits are unchanged";
+		expect(isUsageLimitOutcome(402, body)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(body, 402))).toBe(false);
+	});
+
+	it("returns false for non-quota informative bodies", () => {
+		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
+		expect(is402BillingCapBody("A subscription is required; see the billing page")).toBe(false);
+		expect(is402BillingCapBody("Request rejected (type=billing_error_other)")).toBe(false);
 	});
 });

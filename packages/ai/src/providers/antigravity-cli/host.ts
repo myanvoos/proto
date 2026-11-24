@@ -15,6 +15,7 @@ import {
 	type SessionConfigOption,
 	type SessionNotification,
 } from "@oh-my-pi/pi-utils/acp";
+import { ProviderHttpError } from "../../error/classes";
 import type {
 	AntigravityCliCheckpoint,
 	Context,
@@ -46,6 +47,16 @@ const ANNOUNCEMENT_TIMEOUT_MS = 2_000;
 const HOLD_LIMIT_MS = 165_000;
 const CANCEL_TIMEOUT_MS = 5_000;
 const MCP_TOOL_NAME = /\bmcp_ide-tools_(\S+)/;
+// agy <1.5.14 streams its own retry attempts as a line of agent text; anchored so prose mentioning an API error stays text.
+const RETRY_NOTICE = /(?:^|\n)[^\S\n]*(?:⚠\uFE0F?[^\S\n]*)?API error \(attempt \d+\):[^\S\n]*([^\n]+)/;
+// agy ≥1.5.14 retries silently and ends a turn whose retries all failed with one "⚠ <error>" line.
+const FINAL_NOTICE = /^\s*⚠\uFE0F?[^\S\n]*([^\n]+?)\s*$/;
+// A trailing warning line, withheld until the turn either continues or ends on it.
+const TRAILING_WARNING = /(?<=^|\n)[^\S\n]*⚠[^\n]*\s*$/;
+const QUOTA_EXHAUSTED = /\bRESOURCE_EXHAUSTED\b|\bcode 429\b|\b[Qq]uota reached\b/;
+const NOTICE_MARK = /^[^\S\n]*(?:⚠\uFE0F?[^\S\n]*)?/;
+const NOTICE_HEAD = "API error (attempt ";
+const NOTICE_ATTEMPT = /^\d*$|^\d+\)(?::.*)?$/;
 
 /** Per-step request settings. */
 export interface AgyStepOptions {
@@ -163,6 +174,8 @@ export class AgyHost implements ProviderSessionState {
 	readonly #turns = new Set<Turn>();
 	#loading: object | undefined;
 	#contextTokens = 0;
+	/** Trailing line of streamed text withheld because it may still become a quota notice. */
+	#held: { kind: "text" | "thinking"; text: string } | undefined;
 	#announced = new Map<string, number>();
 	#announcementWaiters = new Set<{ name: string; finish(announced: boolean): void }>();
 
@@ -539,6 +552,7 @@ export class AgyHost implements ProviderSessionState {
 			cancelling: false,
 		};
 		turn.stopped.promise.catch(() => undefined);
+		this.#held = undefined;
 		this.#turn = turn;
 		this.#turns.add(turn);
 		void turn.response.promise
@@ -663,6 +677,7 @@ export class AgyHost implements ProviderSessionState {
 			expiry: this.#options.schedule(this.#options.holdLimitMs, () => this.#detach(pending)),
 		};
 		this.#pending = pending;
+		this.#releaseHeld(step.writer);
 		step.writer.toolCall({ type: "toolCall", id, name, arguments: args });
 		step.writer.usage(this.#contextTokens);
 		const digest = transcriptDigest([...step.messages, step.writer.output]);
@@ -699,11 +714,15 @@ export class AgyHost implements ProviderSessionState {
 		const writer = this.#step?.aborted ? undefined : this.#step?.writer;
 		switch (update.sessionUpdate) {
 			case "agent_message_chunk":
-				if (update.content.type === "text") writer?.text(update.content.text);
+			case "agent_thought_chunk": {
+				if (update.content.type !== "text") return;
+				this.#stream(
+					update.sessionUpdate === "agent_message_chunk" ? "text" : "thinking",
+					update.content.text,
+					writer,
+				);
 				return;
-			case "agent_thought_chunk":
-				if (update.content.type === "text") writer?.thinking(update.content.text);
-				return;
+			}
 			case "usage_update":
 				this.#contextTokens = update.used;
 				return;
@@ -716,6 +735,43 @@ export class AgyHost implements ProviderSessionState {
 				return;
 			}
 		}
+	}
+
+	/**
+	 * ACP may split a retry notice across chunks, so the unfinished last line is withheld
+	 * until it either reads as a quota notice or can no longer become one. A trailing
+	 * warning line is withheld until the turn continues past it or ends on it.
+	 */
+	#stream(kind: "text" | "thinking", chunk: string, writer: StepWriter | undefined): void {
+		if (this.#held?.kind !== kind) this.#releaseHeld(writer);
+		const text = (this.#held?.text ?? "") + chunk;
+		this.#held = undefined;
+		const exhausted = quotaNotice(RETRY_NOTICE, text);
+		if (exhausted) {
+			this.#rateLimited(exhausted);
+			return;
+		}
+		const lineStart = text.lastIndexOf("\n") + 1;
+		const retryStart = mayBecomeRetryNotice(text.slice(lineStart)) ? lineStart : text.length;
+		const visible = text.slice(0, Math.min(retryStart, TRAILING_WARNING.exec(text)?.index ?? text.length));
+		if (visible.length < text.length) this.#held = { kind, text: text.slice(visible.length) };
+		if (visible) emit(writer, kind, visible);
+	}
+
+	#releaseHeld(writer: StepWriter | undefined): void {
+		const held = this.#held;
+		this.#held = undefined;
+		if (held) emit(writer, held.kind, held.text);
+	}
+
+	/**
+	 * agy <1.5.14 retries quota failures itself and only reports each attempt as message text.
+	 * Stop its retry loop and surface a 429 so omp can rotate credentials or fall back.
+	 */
+	#rateLimited(detail: string): void {
+		const error = rateLimitError(detail);
+		const fail = () => this.#fail(error);
+		this.#cancelTurn().then(fail, fail);
 	}
 
 	#turnEnded(turn: Turn, response: PromptResponse): void {
@@ -731,6 +787,12 @@ export class AgyHost implements ProviderSessionState {
 			return;
 		}
 		const writer = step.writer;
+		const exhausted = this.#held && quotaNotice(FINAL_NOTICE, this.#held.text);
+		if (exhausted) {
+			this.#fail(rateLimitError(exhausted));
+			return;
+		}
+		this.#releaseHeld(writer);
 		if (
 			!writer.output.content.some(
 				block => (block.type === "text" && block.text.trim().length > 0) || block.type === "toolCall",
@@ -871,6 +933,33 @@ function toMcpOutput(result: ToolResultMessage): McpToolOutput {
 
 function errorOutput(text: string): McpToolOutput {
 	return { content: [{ type: "text", text }], isError: true };
+}
+
+/**
+ * The quota detail of an agy notice matched by `notice`: a RETRY_NOTICE such as
+ * "⚠ API error (attempt 7): RESOURCE_EXHAUSTED (code 429): …" or a FINAL_NOTICE such as
+ * "⚠ Individual quota reached. … Resets in 124h22m23s.".
+ */
+function quotaNotice(notice: RegExp, text: string): string | undefined {
+	const detail = notice.exec(text)?.[1]?.trim();
+	return detail && QUOTA_EXHAUSTED.test(detail) ? detail : undefined;
+}
+
+/** The 429 that lets omp rotate credentials or fall back on an exhausted agy account. */
+function rateLimitError(detail: string): ProviderHttpError {
+	return new ProviderHttpError(`Antigravity CLI rate limited: ${detail}`, 429, { code: "RESOURCE_EXHAUSTED" });
+}
+
+/** True while an unterminated line is a prefix of, or an unfinished, agy retry notice. */
+function mayBecomeRetryNotice(line: string): boolean {
+	const rest = line.replace(NOTICE_MARK, "");
+	if (rest.length < NOTICE_HEAD.length) return NOTICE_HEAD.startsWith(rest);
+	return rest.startsWith(NOTICE_HEAD) && NOTICE_ATTEMPT.test(rest.slice(NOTICE_HEAD.length));
+}
+
+function emit(writer: StepWriter | undefined, kind: "text" | "thinking", text: string): void {
+	if (kind === "text") writer?.text(text);
+	else writer?.thinking(text);
 }
 
 function mapAgyError(error: unknown): Error {

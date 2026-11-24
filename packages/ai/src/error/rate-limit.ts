@@ -204,7 +204,12 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 	const lower = lowerWithStatus.replace(RESOURCE_EXHAUSTED_PATTERN, "");
 	const hasResourceExhaustedStatus = lower !== lowerWithStatus;
 
-	if (lower.includes("quota will reset") || lower.includes("exhausted your capacity")) {
+	if (
+		lower.includes("quota will reset") ||
+		lower.includes("exhausted your capacity") ||
+		lower.includes("individual quota reached") ||
+		lower.includes("individual quota")
+	) {
 		return "QUOTA_EXHAUSTED";
 	}
 
@@ -314,15 +319,29 @@ export function isUsageLimitStatus(status: number | undefined): boolean {
 }
 
 const STATUS_402_QUOTA_PATTERN =
-	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|account.?funds))\b/i;
+	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|credits?|account.?funds)|requires?\s+more\s+credits|billing[-_.\s]*(?:verification|error|issue)|can only afford)\b/i;
+
+// Machine fields survive provider parsing even when the human detail is generic.
+const BILLING_ERROR_CODE_PATTERN = /^billing_(?:error|not_configured)$/i;
+const BILLING_ERROR_FIELD_PATTERN = /\b(?:type|code|param)=billing_(?:error|not_configured)(?=[\s)]|$)/i;
 
 /**
- * Whether a 402 body describes an account-billing cap: opaque, payment/deactivation/balance/funds
- * worded, or quota/concurrency exhausted. Informative non-quota 402s (e.g. "A subscription is
+ * Whether a 402 body describes an account-billing cap: opaque, payment/deactivation/balance/funds/
+ * billing-error worded, or quota/concurrency exhausted. Informative non-quota 402s (e.g. "A subscription is
  * required for this endpoint") stay non-usage-limits so they don't burn sibling credentials.
  */
 export function is402BillingCapBody(message: string | undefined): boolean {
 	if (message === undefined || isOpaqueStatusBody(message)) return true;
+	if (BILLING_ERROR_CODE_PATTERN.test(message) || BILLING_ERROR_FIELD_PATTERN.test(message)) return true;
+	const body = parseJsonBody(message);
+	const error = asRecord(body?.error) ?? body;
+	if (
+		[error?.type, error?.code, error?.param].some(
+			value => typeof value === "string" && BILLING_ERROR_CODE_PATTERN.test(value),
+		)
+	) {
+		return true;
+	}
 	if (STATUS_402_QUOTA_PATTERN.test(message)) return true;
 	const reason = parseRateLimitReason(message);
 	return isQuotaExhaustedReason(reason) || reason === "CONCURRENT_LIMIT";

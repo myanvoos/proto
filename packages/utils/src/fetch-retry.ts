@@ -1,10 +1,12 @@
 import { scheduler } from "node:timers/promises";
 
-const QUOTA_RESET_PATTERN = /reset after (?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
+// "reset after 1h2m3s" / "10m15s" / "39s" / "Resets in 71h48m47s"
+const QUOTA_RESET_PATTERN =
+	/(?:(?:will\s+)?reset after|(?:will\s+)?resets?\s+in|"(?:retryDelay|quotaResetDelay)":\s*")\s*(?:(\d+)h)?(?:(\d+)m)?(\d+(?:\.\d+)?)s/i;
 
 const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
 
-const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
+const RETRY_DELAY_FIELD_PATTERN = /"(?:retryDelay|quotaResetDelay)":\s*"([0-9.]+)(ms|s)"/i;
 
 const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
 
@@ -16,7 +18,14 @@ const RESET_IN_HR_MIN_PATTERN = /resets?\s+in\s+~?\s*(\d+(?:\.\d+)?)\s*hr\s*(\d+
 const WILL_RESET_AT_PATTERN =
 	/(?:will\s+)?reset at\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)/i;
 const CN_RESET_AT_PATTERN = /将在\s*([0-9]{4}-[0-9]{2}-[0-9]{2}\s+[0-9]{2}:[0-9]{2}:[0-9]{2})\s*重置/;
-const RESET_AT_PATTERNS: readonly RegExp[] = [WILL_RESET_AT_PATTERN, CN_RESET_AT_PATTERN];
+// Google Cloud Code Assist structured RPC error timestamp ("quotaResetTimeStamp": "2026-10-31T20:38:36Z")
+const GOOGLE_RPC_RESET_TIMESTAMP_PATTERN =
+	/"quotaResetTimeStamp":\s*"([0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?Z)"/i;
+const RESET_AT_PATTERNS: readonly RegExp[] = [
+	WILL_RESET_AT_PATTERN,
+	CN_RESET_AT_PATTERN,
+	GOOGLE_RPC_RESET_TIMESTAMP_PATTERN,
+];
 // "retry-after-ms=98497000" / "retry-after-ms: 7200000" / "retry-after-ms = 7200000"
 const RETRY_AFTER_MS_BODY_PATTERN = /\bretry-after-ms\s*[:=]\s*([0-9]+)\b/i;
 
