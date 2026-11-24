@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.3.0] - 2026-11-24
+
 ### Fixed
 
 - Mistral 429s that report a zero request allowance fail fast instead of burning transport retries, and carry the allowance header in the surfaced error (port of 03a02d0926)

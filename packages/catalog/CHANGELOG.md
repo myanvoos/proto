@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.3.0] - 2026-11-24
+
 ### Fixed
 
 - Claude models on OpenRouter keep their thinking between tool calls again: the bundled rows no longer force reasoning-history filtering, and the compat resolver no longer hard-codes it for Anthropic rows (port of 4df653426f)

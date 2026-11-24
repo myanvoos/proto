@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.3.0] - 2026-11-24
+
 ### Fixed
 
 - Shell `grep -o` with a `$`-anchored pattern printed nothing and `grep -z` missed records matching it; matches are now taken against the line without its terminator, as in GNU grep (port of [#19262](https://github.com/can1357/oh-my-pi/pull/19262) by @tuschla)

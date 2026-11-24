@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.3.0] - 2026-11-24
+
 ### Added
 
 - ACP errors: `RequestError.sessionNotFound` (-32002 with `data.sessionId`), `RequestError.internalErrorFrom` and `conciseErrorReason`, which put a concise reason in -32603 messages.
