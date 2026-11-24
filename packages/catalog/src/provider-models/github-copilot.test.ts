@@ -4,7 +4,7 @@ import { getBundledModels, getBundledProviders } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec } from "../types";
 import { githubCopilotModelManagerOptions, routeGitHubCopilotModelSpec } from "./openai-compat";
 
-function copilotModelsFetch(ids: readonly string[]): FetchImpl {
+function copilotModelsFetch(ids: readonly string[], extra: Record<string, Record<string, unknown>> = {}): FetchImpl {
 	const impl = async (input: string | URL | Request): Promise<Response> => {
 		const url = String(input);
 		if (url === "https://api.github.com/copilot_internal/user") return new Response("{}", { status: 404 });
@@ -17,6 +17,7 @@ function copilotModelsFetch(ids: readonly string[]): FetchImpl {
 						type: "chat",
 						limits: { max_context_window_tokens: 400_000, max_output_tokens: 128_000 },
 					},
+					...extra[id],
 				})),
 			});
 		}
@@ -25,8 +26,12 @@ function copilotModelsFetch(ids: readonly string[]): FetchImpl {
 	return Object.assign(impl, { preconnect: fetch.preconnect });
 }
 
-async function discover(ids: readonly string[], staticModels: readonly ModelSpec<Api>[] = []): Promise<Model<Api>[]> {
-	const options = githubCopilotModelManagerOptions({ apiKey: "gho_test", fetch: copilotModelsFetch(ids) });
+async function discover(
+	ids: readonly string[],
+	staticModels: readonly ModelSpec<Api>[] = [],
+	extra: Record<string, Record<string, unknown>> = {},
+): Promise<Model<Api>[]> {
+	const options = githubCopilotModelManagerOptions({ apiKey: "gho_test", fetch: copilotModelsFetch(ids, extra) });
 	const result = await resolveProviderModels({ ...options, staticModels, cacheDbPath: ":memory:" }, "online");
 	return result.models;
 }
@@ -95,5 +100,22 @@ describe("GitHub Copilot discovery routing", () => {
 		expect(discovered?.requestModelId).toBeUndefined();
 		expect(discovered?.thinking?.effortRouting).toBeUndefined();
 		expect(routedReference.thinking?.effortRouting).toEqual(referenceRouting);
+	});
+
+	it("lists only the models the account can select, with the roster authoritative over bundled rows", async () => {
+		const models = await discover(
+			["gpt-4o", "claude-haiku-5.5", "gpt-4o-mini"],
+			[{ ...COMPLETIONS_ROW, id: "bundled-only", name: "Bundled Only" }],
+			{
+				"gpt-4o": { policy: { state: "enabled" } },
+				"claude-haiku-5.5": { policy: { state: "disabled" } },
+				"gpt-4o-mini": { model_picker_enabled: false },
+			},
+		);
+		const ids = models.map(model => model.id);
+		expect(ids).toContain("gpt-4o");
+		expect(ids).toContain("gpt-4o-mini");
+		expect(ids).not.toContain("claude-haiku-5.5");
+		expect(ids).not.toContain("bundled-only");
 	});
 });

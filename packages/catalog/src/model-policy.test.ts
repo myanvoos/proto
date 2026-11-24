@@ -2,8 +2,8 @@ import { describe, expect, it } from "bun:test";
 import { buildModel, modelAcceptsSamplingParams } from "./build";
 import { Effort } from "./effort";
 import { isPromptCachePersistent, resolvePromptCacheLookback } from "./model-policy";
-import { clampThinkingLevelForModel } from "./model-thinking";
-import { calculateUncachedInputCost } from "./models";
+import { clampThinkingLevelForModel, getSupportedEfforts } from "./model-thinking";
+import { calculateUncachedInputCost, getBundledModel } from "./models";
 import type { Api, ModelSpec } from "./types";
 
 function spec<TApi extends Api = "openai-completions">(
@@ -141,5 +141,60 @@ describe("reviewed catalog policies", () => {
 				Effort.Medium,
 			),
 		).toBe(Effort.Low);
+	});
+});
+
+describe("upstream catalog correctness ports", () => {
+	it("disables GPT-6.1 Terra reasoning with `none` while Sol keeps its lowest-effort fallback", () => {
+		for (const [id, mode] of [
+			["gpt-6.1-terra", "none-effort"],
+			["gpt-6.1-sol", "lowest-effort"],
+		] as const) {
+			const discovered = buildModel({
+				...spec(id, "openai", "openai-responses"),
+				baseUrl: "https://api.openai.com/v1",
+				reasoning: true,
+			});
+			expect(discovered.compat.reasoningDisableMode).toBe(mode);
+			expect(getBundledModel<"openai-responses">("openai", id).compat.reasoningDisableMode).toBe(mode);
+		}
+	});
+
+	it("offers Mistral's documented effort ladders for dashed GLM 5.3 ids and Large 4", () => {
+		for (const [id, efforts] of [
+			["zai-glm-5-3", [Effort.Low, Effort.High, Effort.Max]],
+			["zai-glm-5-3-flash", [Effort.Low, Effort.High, Effort.Max]],
+			["mistral-large-4", [Effort.Low, Effort.Medium, Effort.High]],
+			["mistral-large-4-0", [Effort.Low, Effort.Medium, Effort.High]],
+			["mistral-large-4-0-8", [Effort.Low, Effort.Medium, Effort.High]],
+		] as const) {
+			const discovered = buildModel({
+				...spec(id, "mistral"),
+				baseUrl: "https://api.mistral.ai/v1",
+				reasoning: true,
+				thinking: {
+					mode: "effort",
+					efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+				},
+			});
+			expect(getSupportedEfforts(discovered)).toEqual([...efforts]);
+			expect(getSupportedEfforts(getBundledModel("mistral", id))).toEqual([...efforts]);
+		}
+		expect(getBundledModel("mistral", "zai-glm-5-3").thinking).toMatchObject({
+			defaultLevel: Effort.Max,
+			requiresEffort: true,
+		});
+	});
+});
+
+describe("Cursor GPT-5.1 pricing", () => {
+	it("prices the GPT-5.1 base lanes at the published card", () => {
+		for (const id of ["gpt-5.1", "gpt-5.1-high", "gpt-5.1-low"]) {
+			const card = { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 };
+			expect(
+				buildModel({ ...spec(id, "cursor"), cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }).cost,
+			).toMatchObject(card);
+			expect(getBundledModel("cursor", id).cost).toMatchObject(card);
+		}
 	});
 });

@@ -423,7 +423,7 @@ export function buildOpenAICompat(spec: ModelSpec<"openai-completions">): Resolv
 				: resolveReasoningDisableMode(thinkingFormat),
 		omitReasoningEffort: false,
 		includeEncryptedReasoning: true,
-		filterReasoningHistory: isOpenRouter && (isAnthropicModel || isOpenRouterMuseSpark),
+		filterReasoningHistory: isOpenRouterMuseSpark,
 		thinkingKeep: usesMoonshotKimiPreservedThinking ? "all" : undefined,
 		reasoningContentField: isClinePass ? "reasoning" : "reasoning_content",
 
@@ -574,7 +574,6 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 	const supportsPromptCacheBreakpoints = supportsOfficialOpenAIPromptCacheBreakpoints(spec.provider, id, baseUrl);
 	const thinkingFormat: ResolvedOpenAISharedCompat["thinkingFormat"] = isOpenRouter ? "openrouter" : "openai";
 	const isKimiModel = id ? isKimiModelId(id) : false;
-	const isAnthropicModel = id ? isClaudeModelId(id) || isAnthropicNamespacedModelId(id) : false;
 	const isDeepseekFamily = id ? isDeepseekModelIdOrName(id) || isDeepseekModelIdOrName(spec.name) : false;
 	const reasoningCapable = Boolean(spec.reasoning);
 	const isMuseSpark = id ? isMuseSparkModelId(id) : false;
@@ -628,7 +627,7 @@ export function buildOpenAIResponsesCompat(spec: OpenAIResponsesSpecLike): Resol
 		omitReasoningEffort: false,
 
 		includeEncryptedReasoning: !isOpenCodeMuseSpark,
-		filterReasoningHistory: (isOpenRouter && isAnthropicModel) || isOpenRouterMuseSpark || isOpenCodeMuseSpark,
+		filterReasoningHistory: isOpenRouterMuseSpark || isOpenCodeMuseSpark,
 		disableReasoningOnForcedToolChoice: isKimiModel,
 		disableReasoningOnToolChoice: isDeepseekFamily && reasoningCapable && !isOpenRouter,
 		supportsToolChoice: !isMetaModelApi,

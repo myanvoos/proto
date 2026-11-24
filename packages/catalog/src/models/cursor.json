@@ -2526,9 +2526,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 1.25,
+			"output": 10,
+			"cacheRead": 0.125,
 			"cacheWrite": 0
 		},
 		"contextWindow": 200000,
@@ -2663,9 +2663,9 @@
 			"text"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 1.25,
+			"output": 10,
+			"cacheRead": 0.125,
 			"cacheWrite": 0
 		},
 		"contextWindow": 200000,
@@ -2689,9 +2689,9 @@
 			"image"
 		],
 		"cost": {
-			"input": 0,
-			"output": 0,
-			"cacheRead": 0,
+			"input": 1.25,
+			"output": 10,
+			"cacheRead": 0.125,
 			"cacheWrite": 0
 		},
 		"contextWindow": 200000,

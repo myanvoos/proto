@@ -4279,7 +4279,7 @@
 			"supportsSamplingParams": false,
 			"supportsPenaltyAndStopParams": true,
 			"thinkingFormat": "openai",
-			"reasoningDisableMode": "lowest-effort",
+			"reasoningDisableMode": "none-effort",
 			"omitReasoningEffort": false,
 			"includeEncryptedReasoning": true,
 			"filterReasoningHistory": false,

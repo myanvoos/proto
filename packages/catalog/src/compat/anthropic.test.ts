@@ -39,3 +39,17 @@ describe("buildAnthropicCompat message threads", () => {
 		expect(buildAnthropicCompat(spec("claude-sonnet-4-6", "amazon-bedrock")).supportsMessageThreads).toBe(false);
 	});
 });
+
+describe("buildAnthropicCompat mid-conversation tool changes", () => {
+	it("keeps tool changes off Vertex, which rejects tool_removal but accepts mid-conversation system", () => {
+		for (const id of ["claude-opus-5-5", "claude-opus-4-8", "claude-fable-5", "claude-fable-5-1", "claude-opus-5"]) {
+			const direct = buildAnthropicCompat(spec(id));
+			const vertex = buildAnthropicCompat(
+				spec(`${id}@default`, "google-vertex", "https://us-east5-aiplatform.googleapis.com"),
+			);
+			expect(direct.supportsMidConversationToolChanges).toBe(true);
+			expect(vertex.supportsMidConversationToolChanges).toBe(false);
+			expect(vertex.supportsMidConversationSystem).toBe(true);
+		}
+	});
+});

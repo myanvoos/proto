@@ -6558,7 +6558,17 @@ function extractCopilotSupportsVision(entry: OpenAICompatibleModelRecord): boole
 	return toBoolean(supports.vision);
 }
 
-function isCopilotChatModel(entry: OpenAICompatibleModelRecord): boolean {
+/**
+ * Only models the account can select. `/models` lists chat models the account is blocked from
+ * (`policy.state: "disabled"`). `model_picker_enabled: false` is not a block: Free and Student
+ * accounts get it on every row and still answer 200 on legacy chat models. It also mixes chat
+ * and embedding models; only `type: "chat"` entries are usable here.
+ */
+function isCopilotSelectableModel(entry: OpenAICompatibleModelRecord): boolean {
+	const policy = isRecord(entry.policy) ? entry.policy : undefined;
+	if (policy?.state === "disabled") {
+		return false;
+	}
 	if (!isRecord(entry.capabilities)) {
 		return true;
 	}
@@ -6623,6 +6633,8 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 	return {
 		providerId: "github-copilot",
 		cacheProviderId: resolveModelCacheProviderId("github-copilot", { apiKey: rawApiKey, baseUrl }),
+		// The authenticated `/models` roster is the account's own list: a bundled model it omits is not offered.
+		dynamicModelsAuthoritative: true,
 		dropCachedModelIdsOnStaticMismatch: COPILOT_CACHE_INVALIDATED_MODEL_IDS,
 
 		restorableHeaderFallback: { ...COPILOT_API_HEADERS },
@@ -6646,7 +6658,7 @@ export function githubCopilotModelManagerOptions(config?: GithubCopilotModelMana
 						defaults: ModelSpec<Api>,
 						_context: OpenAICompatibleModelMapperContext<Api>,
 					): ModelSpec<Api> | null => {
-						if (!isCopilotChatModel(entry)) {
+						if (!isCopilotSelectableModel(entry)) {
 							return null;
 						}
 						const reference = resolveReference(defaults.id);
