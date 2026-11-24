@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [20.2.3] - 2026-11-24
+
 ### Fixed
 
 - Session teardown on exit is now bounded (10 s): a dispose that never settles — a wedged provider socket, bash executor, or kernel — used to leave the TUI in "Still closing…" forever. On deadline the session is abandoned and the next Ctrl+C exits instead of hanging; detached-session disposal is bounded the same way.

@@ -5217,7 +5217,7 @@ dependencies = [
 
 [[package]]
 name = "pi-ast"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "anyhow",
  "ast-grep-core",
@@ -5259,7 +5259,7 @@ dependencies = [
 
 [[package]]
 name = "pi-builtins"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "ansi-width",
  "anyhow",
@@ -5345,11 +5345,11 @@ dependencies = [
 
 [[package]]
 name = "pi-diff"
-version = "20.2.2"
+version = "20.2.3"
 
 [[package]]
 name = "pi-iso"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "async-trait",
  "libc",
@@ -5361,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "pi-natives"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5423,7 +5423,7 @@ dependencies = [
 
 [[package]]
 name = "pi-shell"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5461,7 +5461,7 @@ dependencies = [
 
 [[package]]
 name = "pi-vcs"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "futures",
  "gix",
@@ -5477,7 +5477,7 @@ dependencies = [
 
 [[package]]
 name = "pi-vfs"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "async-trait",
  "libc",
@@ -5490,7 +5490,7 @@ dependencies = [
 
 [[package]]
 name = "pi-walker"
-version = "20.2.2"
+version = "20.2.3"
 dependencies = [
  "async-trait",
  "flume",
