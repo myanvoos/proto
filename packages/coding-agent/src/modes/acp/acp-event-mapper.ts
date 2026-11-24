@@ -1,14 +1,17 @@
 import * as fs from "node:fs";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import type {
 	SessionNotification,
 	SessionUpdate,
 	ToolCall,
 	ToolCallContent,
 	ToolCallLocation,
+	ToolCallStatus,
 	ToolKind,
 } from "@oh-my-pi/pi-utils/acp";
 import { parseProtolensUrl } from "../../internal-urls/protolens-protocol";
 import type { AgentSessionEvent } from "../../session/agent-session";
+import { truncateMiddle } from "../../session/streaming-output";
 import type { ChecklistStatus } from "../../tools/checklist";
 import { resolveToCwd, splitPathAndSel } from "../../tools/path-utils";
 import { tokenizeShellSegments } from "../../tools/shell-tokenize";
@@ -121,6 +124,11 @@ interface TextMessageLike {
 }
 
 const ACP_TEXT_LIMIT = 4_000;
+// `rawOutput` mirrors the tool result for clients that inspect it; T3 Code renders a command's output from its
+// `content` text. A result serializing past the cap (inline images, kernel payloads, diff sets) keeps only that text,
+// cut in the middle so both the start and the end of the output survive.
+const ACP_RAW_OUTPUT_MAX_BYTES = 64 * 1024;
+const ACP_RAW_OUTPUT_TEXT_MAX_BYTES = 32 * 1024;
 
 function xdevDispatchDevice(toolName: string, args: unknown): string | undefined {
 	if (toolName === "read") {
@@ -246,7 +254,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 				sessionUpdate: "tool_call_update",
 				toolCallId: event.toolCallId,
 				status: toolUpdateStatus(event.partialResult),
-				rawOutput: event.partialResult,
+				rawOutput: boundRawOutput(event.partialResult),
 			};
 			if (content.length > 0) {
 				update.content = content;
@@ -269,7 +277,7 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 				sessionUpdate: "tool_call_update",
 				toolCallId: event.toolCallId,
 				status: event.isError ? "failed" : "completed",
-				rawOutput: event.result,
+				rawOutput: boundRawOutput(event.result),
 			};
 			if (content.length > 0) {
 				update.content = content;
@@ -499,7 +507,7 @@ export function buildToolCallStartUpdate(input: {
 	args: unknown;
 	intent?: string;
 	cwd?: string;
-	status?: "pending" | "completed";
+	status?: ToolCallStatus;
 }): SessionUpdate {
 	const update: ToolCall & { sessionUpdate: "tool_call" } = {
 		sessionUpdate: "tool_call",
@@ -507,7 +515,8 @@ export function buildToolCallStartUpdate(input: {
 		name: input.toolName,
 		title: buildToolTitle(input.toolName, input.args, input.intent),
 		kind: mapToolKind(input.toolName),
-		status: input.status ?? "pending",
+		// tool_execution_start fires as the tool begins executing: arguments are final and nothing awaits approval.
+		status: input.status ?? "in_progress",
 		rawInput: input.args,
 	};
 	const content = buildToolStartContent(input.toolName, input.args);
@@ -711,6 +720,26 @@ function buildDiffContent(entry: unknown): ToolCallContent | undefined {
 		oldText: oldText ?? null,
 		newText: newText ?? "",
 	};
+}
+
+function boundRawOutput(value: unknown): unknown {
+	const json = safeJsonStringify(value);
+	if (json === undefined || Buffer.byteLength(json, "utf-8") <= ACP_RAW_OUTPUT_MAX_BYTES) return value;
+	const limit = { maxBytes: ACP_RAW_OUTPUT_TEXT_MAX_BYTES };
+	const blocks = getContentBlocks(value);
+	if (!blocks) return truncateMiddle(typeof value === "string" ? value : json, limit).content;
+	const text = blocks
+		.map(block =>
+			getContentType(block) === "text" ? extractStringProperty<TextLikeContent>(block, "text") : undefined,
+		)
+		.filter((chunk): chunk is string => chunk !== undefined)
+		.join("\n");
+	const bounded: Record<string, unknown> = {
+		content: text ? [{ type: "text", text: truncateMiddle(text, limit).content }] : [],
+		truncated: true,
+	};
+	if (isRecord(value) && value.isError === true) bounded.isError = true;
+	return bounded;
 }
 
 function extractTerminalId(value: unknown): string | undefined {
@@ -951,7 +980,10 @@ function textToolCallContent(text: string): ToolCallContent {
 }
 
 function hasEquivalentTextContent(content: ToolCallContent[], text: string): boolean {
-	return content.some(item => item.type === "content" && item.content.type === "text" && item.content.text === text);
+	const normalized = text.trim();
+	return content.some(
+		item => item.type === "content" && item.content.type === "text" && item.content.text.trim() === normalized,
+	);
 }
 
 function hasTerminalContent(content: ToolCallContent[], terminalId: string): boolean {
@@ -977,16 +1009,9 @@ function extractReadableText(value: unknown): string | undefined {
 		return normalizeText(directText);
 	}
 
-	const contentBlocks = getContentBlocks(value);
-	if (contentBlocks) {
-		const text = contentBlocks
-			.map(block => extractStructuredText(block))
-			.filter((chunk): chunk is string => typeof chunk === "string" && chunk.length > 0)
-			.join("\n");
-		if (text.length > 0) {
-			return normalizeText(text);
-		}
-		// Envelopes without text already ride the frame as rawOutput; serializing them would render a JSON blob row.
+	// Content blocks already map to structured content, so joining their text again would repeat the output. An
+	// envelope without text already rides the frame as rawOutput; serializing it would render a JSON blob row.
+	if (getContentBlocks(value)) {
 		return undefined;
 	}
 	if (extractDetailsImages(value)) {
