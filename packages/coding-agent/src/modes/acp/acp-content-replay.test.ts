@@ -288,3 +288,40 @@ test("session/load replays the visible conversation, compacted history included,
 		await harness.dispose();
 	}
 });
+
+test("a loaded session reports when it was last modified, the same updatedAt session/list gives", async () => {
+	const stored = await storeSession(manager => {
+		manager.appendMessage(user("QUESTION"));
+		manager.appendMessage(assistant("ANSWER"));
+	});
+	// Created now; last touched at a distinct, known time.
+	const lastModified = new Date("2031-02-03T04:05:06.000Z");
+	await fs.utimes(stored.file, lastModified, lastModified);
+
+	const harness = await startAcp();
+	try {
+		await harness.acp.loadSession({ sessionId: stored.id, cwd, mcpServers: [] });
+		const deadline = Date.now() + 10_000;
+		let info: SessionNotification["update"] | undefined;
+		while (!info && Date.now() < deadline) {
+			info = harness.updates.find(
+				notification => notification.update.sessionUpdate === "session_info_update",
+			)?.update;
+			if (!info) await Bun.sleep(10);
+		}
+		expect(info?.sessionUpdate === "session_info_update" ? info.updatedAt : undefined).toBe(
+			lastModified.toISOString(),
+		);
+
+		const listed = (await harness.acp.listSessions({ cwd })).sessions.find(
+			session => session.sessionId === stored.id,
+		);
+		expect(listed?.updatedAt).toBe(lastModified.toISOString());
+		// Extension metadata is namespaced, never a bare key at the root of `_meta`.
+		const meta = listed?._meta ?? {};
+		expect(Object.keys(meta).every(key => key.startsWith("proto/"))).toBe(true);
+		expect(meta["proto/messageCount"]).toBe(2);
+	} finally {
+		await harness.dispose();
+	}
+});

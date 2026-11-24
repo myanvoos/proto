@@ -2396,11 +2396,31 @@ export class AcpAgent implements Agent {
 			cwd: session.cwd,
 			title: session.title,
 			updatedAt: session.modified.toISOString(),
+			// ACP extensibility: custom `_meta` keys carry an implementation prefix, the namespace of
+			// proto's `_proto/...` extension methods.
 			_meta: {
-				messageCount: session.messageCount,
-				size: session.size,
+				"proto/messageCount": session.messageCount,
+				"proto/size": session.size,
 			},
 		};
+	}
+
+	/**
+	 * When the session was last modified, on the clock `session/list` reports: the session file's
+	 * modification time. A session with no file falls back to its latest entry.
+	 */
+	async #sessionUpdatedAt(session: AgentSession): Promise<string | undefined> {
+		const manager = session.sessionManager;
+		const sessionFile = manager.getSessionFile();
+		if (sessionFile) {
+			try {
+				await manager.flush();
+				return (await fs.stat(sessionFile)).mtime.toISOString();
+			} catch (error) {
+				logger.debug("ACP could not read the session file's modification time", { sessionFile, error });
+			}
+		}
+		return manager.getLeafEntry()?.timestamp ?? manager.getHeader()?.timestamp;
 	}
 
 	#scheduleBootstrapUpdates(sessionId: string): void {
@@ -2449,7 +2469,7 @@ export class AcpAgent implements Agent {
 			update: {
 				sessionUpdate: "session_info_update",
 				title: record.session.sessionName,
-				updatedAt: record.session.sessionManager.getHeader()?.timestamp,
+				updatedAt: await this.#sessionUpdatedAt(record.session),
 			},
 		});
 		while (record.pendingCompactionNotifications.length > 0) {
