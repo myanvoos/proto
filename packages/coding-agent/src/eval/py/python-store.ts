@@ -85,22 +85,35 @@ export async function validatePythonStoreEnvironment(graph: PythonGraphEnvelope)
 	);
 }
 
+/**
+ * The newest store state on the branch. A row whose payload can no longer be read back (its temp spill copy was
+ * lost, leaving only metadata) is superseded by any later intact row. Only when such a row is the newest does the
+ * state become unknown, and reading it fails with that cause instead of dereferencing the missing payload.
+ */
 function readPythonStore(owner: string, manager: Pick<StoreManager, "getBranch">): PythonStoreState {
 	const pending = staged.get(owner);
 	if (pending) return pending;
 	let state: PythonStoreState = { revision: 0, graph: null };
+	let unreadableEntryId: string | undefined;
 	for (const entry of manager.getBranch()) {
-		if (entry.type !== "custom") continue;
-		if (entry.customType === STORE_ENTRY) {
-			validatePythonStore(entry.data);
-			state = entry.data;
-		} else if (entry.customType === "declared-state") {
-			const manifest = entry.data as { pythonStore?: unknown };
-			if (manifest.pythonStore !== undefined) {
-				validatePythonStore(manifest.pythonStore);
-				state = manifest.pythonStore;
-			}
+		if (entry.type !== "custom" || (entry.customType !== STORE_ENTRY && entry.customType !== "declared-state")) {
+			continue;
 		}
+		if (entry.data === undefined || entry.data === null) {
+			unreadableEntryId = entry.id;
+			continue;
+		}
+		const stored =
+			entry.customType === STORE_ENTRY ? entry.data : (entry.data as { pythonStore?: unknown }).pythonStore;
+		if (stored === undefined) continue;
+		validatePythonStore(stored);
+		state = stored;
+		unreadableEntryId = undefined;
+	}
+	if (unreadableEntryId !== undefined) {
+		throw new Error(
+			`Python store state is unavailable: session entry ${unreadableEntryId} can no longer be read back. Reopen the session to rebuild it from the session file.`,
+		);
 	}
 	return state;
 }
