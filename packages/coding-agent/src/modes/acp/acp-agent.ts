@@ -352,6 +352,36 @@ type ReplayableToolItem = {
 	input?: unknown;
 };
 
+/**
+ * The local path a `file:` prompt resource names, or `undefined` for any other scheme. A query or
+ * fragment the client added (Zed's `?symbol=` and `#L10:20` for a symbol or selection) stays on the
+ * path: dropping it would present an excerpt as the whole file.
+ */
+function promptResourceFilePath(uri: string): string | undefined {
+	const parsed = URL.parse(uri);
+	if (parsed?.protocol !== "file:") return undefined;
+	const suffix = `${parsed.search}${parsed.hash}`;
+	parsed.search = "";
+	parsed.hash = "";
+	try {
+		return `${Bun.fileURLToPath(parsed)}${suffix}`;
+	} catch {
+		// A `file:` URI naming a remote host has no local path; the caller keeps the URI.
+		return undefined;
+	}
+}
+
+/**
+ * A `resource_link` as the model reads it: the client's title or name, linked to the absolute path
+ * (for `file:` URIs) or the URI, so the model can open what the user pointed at.
+ */
+function formatPromptResourceLink(link: Extract<PromptRequest["prompt"][number], { type: "resource_link" }>): string {
+	const location = promptResourceFilePath(link.uri) ?? link.uri;
+	const label = link.title || link.name;
+	if (!label || label === location) return location;
+	return `[${label}](${/[\s()<>]/.test(location) ? `<${location}>` : location})`;
+}
+
 type MCPConfigMap = {
 	[name: string]: MCPServerConfig;
 };
@@ -2190,17 +2220,25 @@ export class AcpAgent implements Agent {
 				case "image":
 					images.push({ type: "image", data: block.data, mimeType: block.mimeType });
 					break;
-				case "resource":
+				case "resource": {
+					const filePath = promptResourceFilePath(block.resource.uri);
 					if ("text" in block.resource) {
-						textParts.push(block.resource.text);
-					} else if (typeof block.resource.mimeType === "string" && block.resource.mimeType.startsWith("image/")) {
+						// File content gets the envelope an @-mentioned file gets, so the model knows where it came from.
+						textParts.push(
+							filePath === undefined
+								? `<resource uri="${block.resource.uri}">\n${block.resource.text}\n</resource>`
+								: `<file path="${filePath}">\n${block.resource.text}\n</file>`,
+						);
+						break;
+					}
+					textParts.push(`[embedded resource: ${filePath ?? block.resource.uri}]`);
+					if (typeof block.resource.mimeType === "string" && block.resource.mimeType.startsWith("image/")) {
 						images.push({ type: "image", data: block.resource.blob, mimeType: block.resource.mimeType });
-					} else {
-						textParts.push(`[embedded resource: ${block.resource.uri}]`);
 					}
 					break;
+				}
 				case "resource_link":
-					textParts.push(block.title ?? block.name ?? block.uri);
+					textParts.push(formatPromptResourceLink(block));
 					break;
 				case "audio":
 					textParts.push("[audio omitted]");
