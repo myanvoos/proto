@@ -5,8 +5,26 @@ Use it for any merge: single file, feature branch, or full release sync.
 
 ## Last Sync Point (historical upstream marker)
 
-**Commit:** `7c49c11aa5` (`upstream/main`, oh-my-pi `v18.20.2`)
-**Date:** 2026-11-15
+**Commit:** `4df653426f` (`upstream/main`, `fix(catalog): replayed claude reasoning history on openrouter`)
+**Date:** 2026-11-24
+**Previous:** `7c49c11aa5` (oh-my-pi `v18.20.2`), synced 2026-11-15
+
+Sync of 2026-11-24 (`sync/upstream-2026-11`). What landed, by area:
+
+- **Rust builtins/shell:** grep `-o`/`-z` end anchors, sed multibyte empty-match panic, rg anchored globs vs cwd, TZ for find/stat/diff (+ UTC fallback for out-of-range times), pty non-canonical-mode wait, minimizer kept out of small/explicit-format/single-file output. (`c5ab92fb4d`, `f2e4f5cdd1`, `59615a1410`, `563b03b504`/`55b2c8d48a`/`ec692d3fec`, `e1ec8e1159`, `c938b5af61`)
+- **Embedded shell URLs:** external programs spawned by the shell receive internal URLs in every argument form (`@url`, `-F name=@url`, `-ourl`, env values); unresolvable URLs stay literal; `omp` keeps its URLs through `nice`/`npx`/`sudo`. Rust-side only (`b41e4be768` — its TS client-terminal counterpart was not ported; this repo expands URLs in `bash-skill-urls.ts` instead).
+- **AI:** transport-exhausted HTTP errors are no longer replayed (in-band 200-stream errors keep their replay), OpenRouter reasoning replay keeps `id`/`format`/`signature`, thinking-loop guard ignores structured answer content (JSON records and scalar arrays, GFM table rows), Gemini planning-header threshold 64, `stream stalled` counts as a timeout, 402 billing bodies count as usage limits, Synthetic weekly plans report `synthetic:usd:7d`, leaked DSML markup is stripped from tool-call arguments and replayed payloads, antigravity-cli quota notices surface as 429 with the reset window.
+- **Catalog:** OpenRouter Claude rows replay reasoning history (`filterReasoningHistory: false` + compat resolver); GPT-6.1 Terra `none-effort`; Vertex Claude mid-conversation tool changes off; GLM 5.3 / Large 4 effort ladders; Copilot roster honors account-disabled models; Cursor `gpt-5.1` pricing. No regeneration run; edits were hand-ported to the per-provider JSONs.
+- **Agent:** RPC forwards `config_warnings_changed`/`cache_warming_start`/`cache_warming_end`; corrupt `agent.db` credentials salvage from the quarantine copy instead of vanishing; plugin manifests with non-string entries no longer abort extension loading.
+
+Deliberately **not** ported:
+
+- Vim mode (proto has none) and ~60 desktop/AX/Wayland commits; `wire`/`mnemopi`/`stats`/`collab-web`/`snapcompact`/`metaharness` (features proto deleted); upstream's KDL catalog layout and full catalog regeneration (proto keeps per-provider JSON + `src/model-policy.ts`).
+- `35d76ddd82` crate renames (pi-* → omp-*), `c938b5af61`'s TS neighbors, `42d5142c80`-class daemon refactors — architecture differs by design.
+- `hostCommandUrls`/`bash-host-urls.ts` as written: proto's client-terminal path already expands URLs at the same call site.
+- `e1ec8e1159` is in; `975447143a` (tty-writer rewrite) and `b41e4be768`'s broken-at-upstream TS hunk are out.
+
+Known gaps left by this sync: catalog pricing/effort drift beyond the listed fixes (a fresh `gen:models` run will fold in models.dev changes), and the pre-existing `utils.test.ts` failure on "truncated JSON arguments" (predates the sync).
 
 Update this section after each sync; do not reuse the previous range. This commit is an upstream oh-my-pi marker and may not exist in this repo's local object database.
 
