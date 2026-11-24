@@ -5,6 +5,12 @@ import type { ExtensionFactory } from "../../extensibility/extensions/types";
 
 export const MEMORY_THINKING_LEVEL: "low";
 
+/** The live prompt prefix a blackhole memory call reuses so it reads the session's prompt cache. */
+export function buildMemoryLiveContext(context: {
+	getSystemPrompt?: () => string[];
+	sessionManager?: { getBranch(): ReadonlyArray<{ type: string; message?: unknown }> };
+}): { systemPrompt: string[]; messages: unknown[] } | undefined;
+
 export function resolveMemoryModelCandidates(context: {
 	model?: Model;
 	models: { resolve(spec: string): Model | undefined };

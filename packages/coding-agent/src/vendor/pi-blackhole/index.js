@@ -10905,7 +10905,7 @@ function selectDropCandidates(ids, observations, maxDrops, reflections = []) {
   }).slice(0, maxDrops).map((candidate) => candidate.id);
 }
 async function runDropper(args) {
-  const { model, apiKey, headers, reflections, observations, budgetTokens, skipFullness, signal } = args;
+  const { model, apiKey, headers, reflections, observations, budgetTokens, skipFullness, signal, liveContext } = args;
   if (observations.length === 0) return void 0;
   const observationTokens = observations.reduce(
     (sum, observation) => sum + observation.tokenCount,
@@ -11042,13 +11042,13 @@ This maximum is a hard upper bound, not a target. Drop fewer or none if fewer ob
   const prompts = [
     {
       role: "user",
-      content: [{ type: "text", text: userText }],
+      content: [{ type: "text", text: `<system-reminder>\n${userText}\n</system-reminder>` }],
       timestamp: Date.now()
     }
   ];
   const context = {
-    systemPrompt: DROPPER_SYSTEM,
-    messages: [],
+    systemPrompt: liveContext?.systemPrompt ?? DROPPER_SYSTEM,
+    messages: liveContext?.messages ?? [],
     tools: [dropObservations]
   };
   const reasoning = model.reasoning;
@@ -11458,7 +11458,8 @@ async function runObserver(args) {
     priorObservations,
     chunk,
     allowedSourceEntryIds,
-    signal
+    signal,
+    liveContext
   } = args;
   const conversation = chunk.trim();
   if (!conversation) return { observations: void 0 };
@@ -11528,13 +11529,13 @@ ${conversation}`;
   const prompts = [
     {
       role: "user",
-      content: [{ type: "text", text: userText }],
+      content: [{ type: "text", text: `<system-reminder>\n${userText}\n</system-reminder>` }],
       timestamp: Date.now()
     }
   ];
   const context = {
-    systemPrompt: OBSERVER_SYSTEM,
-    messages: [],
+    systemPrompt: liveContext?.systemPrompt ?? OBSERVER_SYSTEM,
+    messages: liveContext?.messages ?? [],
     tools: [recordObservations]
   };
   const reasoning = model.reasoning;
@@ -11712,7 +11713,7 @@ function normalizeReflectionContent(content) {
   return normalized;
 }
 async function runReflector(args) {
-  const { model, apiKey, headers, reflections, observations, signal } = args;
+  const { model, apiKey, headers, reflections, observations, signal, liveContext } = args;
   if (observations.length === 0) return void 0;
   const allowedObservationIds = observations.map((observation) => observation.id);
   const existingReflectionIds = new Set(reflections.map((reflection) => reflection.id));
@@ -11778,13 +11779,13 @@ Crystallize any missing durable facts or patterns into new reflections. If nothi
   const prompts = [
     {
       role: "user",
-      content: [{ type: "text", text: userText }],
+      content: [{ type: "text", text: `<system-reminder>\n${userText}\n</system-reminder>` }],
       timestamp: Date.now()
     }
   ];
   const context = {
-    systemPrompt: REFLECTOR_SYSTEM,
-    messages: [],
+    systemPrompt: liveContext?.systemPrompt ?? REFLECTOR_SYSTEM,
+    messages: liveContext?.messages ?? [],
     tools: [recordReflections]
   };
   const reasoning = model.reasoning;
@@ -12090,6 +12091,22 @@ function validateCursors(entries, runtime) {
     }
   }
 }
+// A memory call that reuses the live prefix is a cache-hit continuation: the
+// session's system prompt and messages are sent unchanged, with the memory
+// instruction appended as one user turn instead of a cold summarizer prompt.
+// Fall back to the original prompt when the host does not expose the prefix.
+function buildMemoryLiveContext(ctx) {
+  try {
+    const getSystemPrompt = ctx?.getSystemPrompt;
+    const systemPrompt = typeof getSystemPrompt === "function" ? getSystemPrompt() : void 0;
+    const entries = ctx?.sessionManager?.getBranch?.() ?? [];
+    const messages = entries.filter((e) => e.type === "message" && e.message).map((e) => e.message);
+    if (!systemPrompt || messages.length === 0) return void 0;
+    return { systemPrompt, messages };
+  } catch {
+    return void 0;
+  }
+}
 function maybeLaunchConsolidation(pi, runtime, ctx) {
   runtime.ensureConfig(ctx.cwd, (msg) => ctx.ui?.notify?.(msg, "warning"));
   if (runtime.config.memory === false) return;
@@ -12143,7 +12160,8 @@ function maybeLaunchConsolidation(pi, runtime, ctx) {
     model: ctx.model,
     modelCandidates: resolveMemoryModelCandidates(ctx),
     modelRegistry: ctx.modelRegistry,
-    sessionManager: ctx.sessionManager
+    sessionManager: ctx.sessionManager,
+    liveContext: buildMemoryLiveContext(ctx)
   };
   void runtime.launchConsolidationTask(
     ctx,
@@ -12340,7 +12358,8 @@ async function runObserverStage(pi, runtime, ctx, resolveModel) {
         allowedSourceEntryIds: sourceEntryIds,
         maxTurns: runtime.config.agentMaxTurns,
         thinkingLevel: stageThinkingLevel(runtime, "observer", stageModelForThinking),
-        providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs
+        providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
+        liveContext: ctx.liveContext
       });
       if (result.observations && result.observations.length > 0) {
         const data = buildObservationsRecordedData(result.observations, coversUpToId);
@@ -12560,7 +12579,8 @@ async function runReflectorStage(pi, runtime, ctx, resolveModel) {
         existingObservationsSummary: existingObservationsSummary || void 0,
         maxTurns: runtime.config.agentMaxTurns,
         thinkingLevel: stageThinkingLevel(runtime, "reflector", stageModelForThinking),
-        providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs
+        providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
+        liveContext: ctx.liveContext
       });
       if (!reflections || reflections.length === 0) {
         runtime.advanceCursor(
@@ -12753,7 +12773,8 @@ async function runDropperStage(pi, runtime, ctx, resolveModel, sameRunReflection
         skipFullness: runtime.config.dropperPoolFullnessThreshold,
         maxTurns: runtime.config.agentMaxTurns,
         thinkingLevel: stageThinkingLevel(runtime, "dropper", stageModelForThinking),
-        providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs
+        providerIdleTimeoutMs: runtime.config.providerIdleTimeoutMs,
+        liveContext: ctx.liveContext
       });
       const latestReflectionCoverageId = isManualMode(runtime.config) ? pending?.reflection?.coversUpToId : latestCoverageMarkerId(entries, OM_REFLECTIONS_RECORDED);
       const effectiveReflectionCoverageId = sameRunReflectionCoverageId ?? latestReflectionCoverageId;
@@ -14624,6 +14645,6 @@ var index_default = async (pi) => {
   registerVccRecallCommand(pi);
 };
 
-export { MEMORY_THINKING_LEVEL, capRecallBlocks, compile as compileSummary, index_default as default, executeRecall, expandEntryFile, getActiveLineageEntryIds, loadAllMessages, resolveMemoryModelCandidates, searchEntries };
+export { MEMORY_THINKING_LEVEL, buildMemoryLiveContext, capRecallBlocks, compile as compileSummary, index_default as default, executeRecall, expandEntryFile, getActiveLineageEntryIds, loadAllMessages, resolveMemoryModelCandidates, searchEntries };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

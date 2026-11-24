@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Blackhole's memory calls now reuse the live system prompt and messages as a cache-hit prefix, with the memory instruction appended as a system reminder, instead of a cold summarizer prompt
 - Provider-stated usage-limit waits within `retry.maxDelayMs` are allowed, while billing caps — including structured `INSUFFICIENT_G1_CREDITS_BALANCE` — fail fast after credential and model fallbacks instead of sleeping a guessed window (port of 3efa3bab9e)
 - The embedded shell no longer leaves a URL literal when a directory merely named `proto` is an operand; `proto` (and `omp` alongside oh-my-pi) keeps its own URLs untouched through `nice`/`npx`/`sudo`
 - External programs spawned by the embedded shell now get internal URLs resolved in every argument form — @url, `-F name=@url`, `-ourl`, and environment values — and arguments the resolver cannot back stay as written (previously such arguments failed the spawn). `proto` keeps receiving its own URLs untouched, including behind `nice`/`npx`/`sudo` (port of b41e4be768).
